@@ -7364,7 +7364,7 @@ export default function Sidebar() {
           cwd={editProjectDialogProject.cwd}
           folderName={editProjectDialogProject.folderName}
           initialValue={{
-            name: editProjectDialogProject.localName ?? editProjectDialogProject.name,
+            name: editProjectDialogProject.localName ?? "",
             appearance: editProjectDialogProject.appearance ?? null,
           }}
           onOpenChange={(nextOpen) => {
