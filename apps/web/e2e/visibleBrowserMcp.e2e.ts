@@ -880,28 +880,33 @@ test("preserves composer keyboard ownership during browser navigation", async ()
           value: input.value, start: input.selectionStart, end: input.selectionEnd };
       })()`);
         const expected = { focus: true, active: true, value: "draft text", start: 3, end: 6 };
-        const focusComposer = async () => {
+        const focusComposer = async (label: string, native = true) => {
           if (process.platform === "darwin") app.focus({ steal: true });
           BrowserWindow.getAllWindows()[0]!.focus();
           await waitFor(
             () => BrowserWindow.getAllWindows()[0]!.isFocused(),
-            "initial window focus",
+            `${label}: initial window focus`,
           );
           host.focus();
           await host.executeJavaScript(`(() => {
           const input = document.querySelector('#host-composer');
           input.value = 'draft text'; input.focus(); input.setSelectionRange(3, 6);
         })()`);
-          await waitFor(async () => (await readComposer()).focus, "initial host focus");
-          await waitFor(
-            () => webContents.getFocusedWebContents()?.id === host.id,
-            "initial native host focus",
-          );
+          await waitFor(async () => (await readComposer()).focus, `${label}: initial host focus`);
+          await waitFor(() => host.isFocused(), `${label}: initial native host focus`);
+          // Electron's global helper prefers webviews when both an embedder and
+          // its guest report focus. The host's real DOM focus distinguishes them.
+          if (native)
+            await waitFor(
+              () => webContents.getFocusedWebContents()?.id === host.id,
+              `${label}: initial native focus owner`,
+            );
           assert.deepEqual(await readComposer(), expected);
         };
         const assertComposer = async (label: string, native: boolean) => {
           const state = await readComposer();
           assert.deepEqual(state, expected, `${label}: composer focus/draft/selection`);
+          assert.equal(host.isFocused(), true, `${label}: native host focus`);
           if (native) assert.equal(webContents.getFocusedWebContents()?.id, host.id, label);
         };
         const verifyTyping = async (label: string, native: boolean) => {
@@ -937,7 +942,7 @@ test("preserves composer keyboard ownership during browser navigation", async ()
           }
         };
         const url = (path: string) => new URL(path, origin).href;
-        await focusComposer();
+        await focusComposer("preview/open");
         const state = manager.prepareAutomationTab({
           threadId: f.threadId,
           url: url("/focus?initial"),
@@ -986,9 +991,9 @@ test("preserves composer keyboard ownership during browser navigation", async ()
             "cdp",
             "delayed",
           ] as const) {
-            await focusComposer();
             const target = url(`/focus?case=${surface}-${operation}`);
             const label = `${surface}/${operation}`;
+            await focusComposer(label, native);
             await navigate(
               contents,
               async () => {
@@ -1047,7 +1052,7 @@ test("preserves composer keyboard ownership during browser navigation", async ()
           }
 
           if (surface === "preview") continue;
-          await focusComposer();
+          await focusComposer(`${surface}/intentional input`, native);
           // Deliberately transfer both native and DOM focus into the browser.
           // The existing MCP scenario separately exercises trusted browser clicks.
           if (!native) await host.executeJavaScript("document.querySelector('webview').focus()");
@@ -1112,7 +1117,8 @@ test("preserves composer keyboard ownership during browser navigation", async ()
           passed.push(`${surface}/intentional input`);
 
           for (const popupKind of ["direct", "blank", "post"] as const) {
-            await focusComposer();
+            const label = `${surface}/popup-${popupKind}`;
+            await focusComposer(label, native);
             const beforeIds = manager.getState({ threadId: f.threadId }).tabs.map((tab) => tab.id);
             const popupUrl = url("/focus-popup");
             await contents.executeJavaScript(
@@ -1139,9 +1145,8 @@ test("preserves composer keyboard ownership during browser navigation", async ()
               threadId: f.threadId,
               tabId: childTab.id,
             }).webContents;
-            const label = `${surface}/popup-${popupKind}`;
             if (popupKind === "blank") {
-              await assertComposer(`${label}/created`, true);
+              await assertComposer(`${label}/created`, native);
               await navigate(
                 child,
                 () =>
@@ -1151,7 +1156,7 @@ test("preserves composer keyboard ownership during browser navigation", async ()
             } else {
               await waitFor(() => child.getURL() === popupUrl && !child.isLoading(), label);
             }
-            await assertComposer(`${label}/loaded`, true);
+            await assertComposer(`${label}/loaded`, native);
             assert.equal(child.session, contents.session);
             assert.equal(await child.executeJavaScript("Boolean(window.opener)"), true);
             if (popupKind === "post")
@@ -1167,7 +1172,7 @@ test("preserves composer keyboard ownership during browser navigation", async ()
                 ),
               url("/focus-popup?next"),
             );
-            await verifyTyping(label, true);
+            await verifyTyping(label, native);
             await contents.executeJavaScript(
               `window.popupResult = null;
               window.addEventListener('message', function onPopupResult(event) {
