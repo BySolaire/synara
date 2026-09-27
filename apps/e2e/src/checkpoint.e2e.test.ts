@@ -72,7 +72,7 @@ describe.skipIf(!TEST_DATABASE_URL)("A → B → C slice checkpoint", () => {
     expect(Buffer.from(binary.payload, "base64")).toEqual(bytes);
     expect(binary.binary).toBe(true);
     expect(session.transport).toBe("relay");
-    expect(host.directUrl).toMatch(/^ws:\/\/127\.0\.0\.1:\d+\/ws\/host$/);
+    expect(host.directUrl).toMatch(/^ws:\/\/127\.0\.0\.1:\d+\/ws\/host\/v2$/);
   });
 
   it("reuses one session credential on the direct transport without re-minting", async () => {
@@ -116,22 +116,12 @@ describe.skipIf(!TEST_DATABASE_URL)("A → B → C slice checkpoint", () => {
     expect(session.socket.readyState).toBe(1);
   });
 
-  it("kills a live member session after discoverability is revoked", async () => {
+  it("refuses team grants even when the owner makes the host discoverable", async () => {
     await using fixture = await createE2eFixture(TEST_DATABASE_URL as string);
     const linked = await fixture.linkHost();
-    await using _host = await fixture.startHost();
-    const member = await fixture.createMember();
-    await using client = await fixture.createClient(member);
-    const grant = await client.requestGrant(linked.row.id);
-    await using session = await client.connectWithGrant({
-      candidates: [{ kind: "relay", url: fixture.relayOrigin }],
-      environmentId: linked.row.environmentId,
-      grant,
-    });
-    const closed = session.waitForClose(15_000);
-
-    await fixture.setDiscoverable(linked.row.id, false);
-    await expect(closed).resolves.toMatchObject({ code: REMOTE_SESSION_REVOKED_CLOSE_CODE });
+    await fixture.setDiscoverable(linked.row.id, true);
+    await using client = await fixture.createClient(await fixture.createMember());
+    await expect(client.requestGrant(linked.row.id)).rejects.toMatchObject({ status: 403 });
   });
 
   it("degrades cleanly across relay and account API outages", async () => {
@@ -152,7 +142,8 @@ describe.skipIf(!TEST_DATABASE_URL)("A → B → C slice checkpoint", () => {
     const relayClosed = relaySession.waitForClose();
 
     await fixture.stopRelay();
-    await expect(relayClosed).resolves.toMatchObject({ code: 1001 });
+    // The opaque relay cannot inject an authenticated inner WebSocket close.
+    await expect(relayClosed).resolves.toMatchObject({ code: 1006 });
     await expect(
       directSession.echo({ sequence: 4, payload: "relay offline" }),
     ).resolves.toMatchObject({ payload: "relay offline" });
@@ -165,7 +156,7 @@ describe.skipIf(!TEST_DATABASE_URL)("A → B → C slice checkpoint", () => {
     await expect(
       offlineSession.echo({ sequence: 5, payload: "api offline" }),
     ).resolves.toMatchObject({ payload: "api offline" });
-    await using newDevice = await fixture.createClient();
+    await using newDevice = await fixture.createClient(undefined, false);
     await expect(newDevice.register()).rejects.toMatchObject({
       name: HeadlessClientError.name,
       message: "device registration could not reach the account API",

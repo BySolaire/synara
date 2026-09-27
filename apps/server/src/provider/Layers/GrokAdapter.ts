@@ -1,3 +1,4 @@
+import { snapshotProviderTurns } from "../snapshotProviderTurns.ts";
 /**
  * GrokAdapterLive - Grok Build CLI (`grok agent ... stdio`) via ACP.
  *
@@ -23,6 +24,7 @@ import {
 import {
   getDefaultEffort,
   getModelCapabilities,
+  humanizeModelSlug,
   normalizeGrokModelOptions,
 } from "@synara/shared/model";
 import { decodeOutboundJson, decodeOutboundText, outboundHttp } from "@synara/shared/outboundHttp";
@@ -340,6 +342,7 @@ interface PendingUserInput {
 
 interface GrokSessionContext {
   harnessPolicyDelivered?: boolean;
+  readonly enableComputerControl?: boolean;
   readonly gatewaySessionLease?: AgentGatewaySessionLease;
   readonly threadId: ThreadId;
   readonly lifecycleGeneration?: string;
@@ -450,7 +453,7 @@ function formatGrokModelName(slug: string): string {
   if (slug === "grok-build") {
     return "Grok 4.3";
   }
-  return slug.replace(/[-_/]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+  return humanizeModelSlug(slug);
 }
 
 function isGrokBuildApiModelSlug(slug: string): boolean {
@@ -1016,6 +1019,7 @@ export function makeGrokAdapter(
             agentGatewayCredentials,
             input.threadId,
             PROVIDER,
+            input,
           );
           yield* Effect.addFinalizer(() =>
             sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
@@ -1195,6 +1199,9 @@ export function makeGrokAdapter(
                   runtimeMode: input.runtimeMode,
                   interactionMode: ctx?.activeInteractionMode,
                   options: params.options,
+                  computerControlEnabled: ctx?.enableComputerControl === true,
+                  activeTurn: ctx?.activeTurnId !== undefined,
+                  toolCall: params.toolCall,
                 });
                 if (policyOutcome !== undefined) {
                   if (policyOutcome.outcome === "selected") {
@@ -1296,6 +1303,7 @@ export function makeGrokAdapter(
           };
 
           ctx = {
+            enableComputerControl: input.enableComputerControl === true,
             threadId: input.threadId,
             ...(gatewaySessionLease ? { gatewaySessionLease } : {}),
             ...(input.lifecycleGeneration !== undefined
@@ -2132,7 +2140,7 @@ export function makeGrokAdapter(
     const readThread: GrokAdapterShape["readThread"] = (threadId) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(threadId);
-        return { threadId, turns: ctx.turns };
+        return { threadId, turns: snapshotProviderTurns(ctx.turns) };
       });
 
     const rollbackThread: GrokAdapterShape["rollbackThread"] = (threadId, numTurns) =>
@@ -2147,7 +2155,7 @@ export function makeGrokAdapter(
         }
         const nextLength = Math.max(0, ctx.turns.length - numTurns);
         ctx.turns.splice(nextLength);
-        return { threadId, turns: ctx.turns };
+        return { threadId, turns: snapshotProviderTurns(ctx.turns) };
       });
 
     const stopSession: GrokAdapterShape["stopSession"] = (threadId) =>

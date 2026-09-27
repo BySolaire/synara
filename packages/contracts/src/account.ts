@@ -513,7 +513,11 @@ export type RefreshTokenResponse = typeof RefreshTokenResponse.Type;
  */
 export const AccountStatus = Schema.Union([
   Schema.Struct({ state: Schema.Literal("signed-out") }),
-  Schema.Struct({ state: Schema.Literal("signed-in"), me: AccountMe }),
+  Schema.Struct({
+    state: Schema.Literal("signed-in"),
+    me: AccountMe,
+    accountAuthority: Schema.optional(TrimmedNonEmptyString),
+  }),
 ]);
 export type AccountStatus = typeof AccountStatus.Type;
 

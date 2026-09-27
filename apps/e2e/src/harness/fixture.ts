@@ -11,7 +11,7 @@ import { HeadlessClient } from "../headlessClient";
 import { createApp } from "../../../api/src/app";
 import { runMigrations } from "../../../api/src/db/migrate";
 import { startFakeWorkos, type FakeWorkos } from "../../../api/src/testing/fakeWorkos";
-import { createRelayApp, type RelayApplication } from "../../../relay/src/app";
+import { startBunRelay } from "./relay";
 import {
   accountCredentialsPath,
   readAccountFile,
@@ -60,6 +60,8 @@ export type HostSecretsCoordinatorFixture = {
 };
 
 export interface E2eFixture extends AsyncDisposable {
+  readonly baseDir: string;
+  prepareController(baseDir: string): Promise<void>;
   readonly apiOrigin: string;
   readonly relayOrigin: string;
   readonly owner: TestSession;
@@ -70,7 +72,7 @@ export interface E2eFixture extends AsyncDisposable {
   requestRelayTicket(proof: string, hostId: string): Promise<void>;
   startHost(): Promise<RunningHost>;
   createMember(): Promise<TestSession>;
-  createClient(session?: TestSession): Promise<HeadlessClient>;
+  createClient(session?: TestSession, pairWithHost?: boolean): Promise<HeadlessClient>;
   createHostSecretsCoordinator(deviceId: string): HostSecretsCoordinatorFixture;
   setDiscoverable(hostId: string, discoverable: boolean): Promise<void>;
   stopRelay(): Promise<void>;
@@ -140,9 +142,8 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
     await fs.rm(baseDir, { recursive: true, force: true });
     throw error;
   });
-  let relayHttp: EphemeralHttpServer | undefined;
+  let relayHttp: Awaited<ReturnType<typeof startBunRelay>> | undefined;
   let workos: FakeWorkos | undefined;
-  let relay: RelayApplication | undefined;
   let api: Awaited<ReturnType<typeof createApp>> | undefined;
   let owner: TestSession | undefined;
   let disposed = false;
@@ -163,7 +164,6 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
       }
     }
     hosts.clear();
-    relay?.close();
     await relayHttp?.close().catch(() => undefined);
     if (api && owner) {
       const hostIds = await api.pool
@@ -215,29 +215,14 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
     );
     apiHttp.setRequestListener(getRequestListener(api.app.fetch));
 
-    relayHttp = await bindEphemeralHttpServer();
-    relay = await createRelayApp(
-      {
-        port: 0,
-        apiBaseUrl: apiHttp.origin,
-        apiIssuer: `${apiHttp.origin}/api/v1`,
-        relayServiceToken,
-        maxPairs: 64,
-        highWaterBytes: 32 * 1024,
-      },
-      {
-        pendingTimeoutMs: 2_000,
-        keepaliveIntervalMs: 250,
-        revocationPollIntervalMs: 25,
-        revocationInitialBackoffMs: 10,
-        revocationMaxBackoffMs: 100,
-        stallTimeoutMs: 15_000,
-        backpressurePollMs: 5,
-        logger: { error() {}, warn() {} },
-      },
-    );
-    relayHttp.setRequestListener(getRequestListener(relay.app.fetch));
-    relayHttp.server.on("upgrade", relay.handleUpgrade);
+    relayHttp = await startBunRelay({
+      port: 0,
+      apiBaseUrl: apiHttp.origin,
+      apiIssuer: `${apiHttp.origin}/api/v1`,
+      relayServiceToken,
+      maxPairs: 64,
+      highWaterBytes: 32 * 1024,
+    });
 
     owner = await ownerSession(workos);
     userIds.add(owner.userId);
@@ -300,6 +285,18 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
   }
 
   return {
+    baseDir,
+    async prepareController(controllerDir) {
+      const stored = await readAccountFile(baseDir);
+      if (!stored) throw new Error("Fixture account is missing");
+      const {
+        hostId: _id,
+        hostOwnerUserId: _owner,
+        hostKeyGeneration: _generation,
+        ...session
+      } = stored;
+      await writeAccountCredentials(controllerDir, session);
+    },
     apiOrigin: apiHttp.origin,
     relayOrigin: activeRelayHttp.origin,
     owner: activeOwner,
@@ -361,15 +358,6 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
     async startHost() {
       const host = await startRealHost({ baseDir, relayOrigin: activeRelayHttp.origin });
       hosts.add(host);
-      const deadline = Date.now() + 10_000;
-      while (relay?.core.hostCount !== 1) {
-        if (Date.now() >= deadline) {
-          await host[Symbol.asyncDispose]();
-          hosts.delete(host);
-          throw new Error("real host did not establish its relay control socket");
-        }
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
       return host;
     },
     async createMember() {
@@ -387,13 +375,21 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
       userIds.add(session.userId);
       return session;
     },
-    async createClient(session = activeOwner) {
+    async createClient(session = activeOwner, pairWithHost = true) {
       const client = new HeadlessClient({
         apiOrigin: apiHttp.origin,
         userId: session.userId,
         accessToken: session.accessToken,
       });
       clients.add(client);
+      const host = [...hosts].at(-1);
+      if (pairWithHost && host && session.userId === activeOwner.userId) {
+        const device = await client.register();
+        const invitation = await host.createInvitation();
+        const pairing = client.pair(invitation, host.directUrl);
+        // Owner approval is a separate action, after the exact key is pending.
+        await Promise.all([pairing, host.approveInvitation(invitation.inviteId, device.jkt)]);
+      }
       return client;
     },
     createHostSecretsCoordinator(deviceId) {
@@ -415,8 +411,6 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
       await account.updateHost(activeOwner.accessToken, hostId, { discoverable });
     },
     async stopRelay() {
-      relay?.close();
-      relay = undefined;
       await activeRelayHttp.close();
     },
     async stopApi() {

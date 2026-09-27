@@ -1,13 +1,12 @@
-import { assert, describe, it } from "@effect/vitest";
+import historicalAccountLineages from "./fixtures/historicalAccountLineages.json";
+import AccountUsageSyncMigration from "./Migrations/109_AccountUsageSync.ts";
+import AccountUsageSyncIdentityMigration from "./Migrations/110_AccountUsageSyncIdentity.ts";
+import { inspectMigrationBackupPlan } from "./MigrationBackup.ts";
+import { assert, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import {
-  MIGRATION_LINEAGE_ALIASES,
-  migrationEntries,
-  planMigrationLineageAliasRepairs,
-  runMigrations,
-} from "./Migrations.ts";
+import { migrationEntries, runMigrations } from "./Migrations.ts";
 import { MigrationSchemaTooNewError } from "./Errors.ts";
 import * as NodeSqliteClient from "./NodeSqliteClient.ts";
 import DurableProviderCommandDeliveryMigration from "./Migrations/064_DurableProviderCommandDelivery.ts";
@@ -202,45 +201,6 @@ providerDeliveryCutoverLayer(
   },
 );
 
-const managedAttachmentsFreshLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
-
-managedAttachmentsFreshLayer("managed attachment migration on a fresh database", (it) => {
-  it.effect("reserves legacy migration 54 and creates the managed ledger on a fresh database", () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-
-      const executed = yield* runMigrations();
-      assert.deepInclude(executed, [54, "DurableProviderCommandDelivery"]);
-      assert.deepInclude(executed, [55, "ManagedAttachments"]);
-      assert.deepInclude(executed, [64, "DurableProviderCommandDeliveryCutover"]);
-      assert.deepInclude(executed, [65, "DurableQueuedTurnPromotions"]);
-      assert.deepInclude(executed, [66, "DurableProviderRuntimeEvents"]);
-      assert.deepInclude(executed, [67, "ProviderDeliveryReconciliation"]);
-      assert.deepInclude(executed, [79, "Spaces"]);
-
-      const tables = yield* sql<{ readonly name: string }>`
-        SELECT name
-        FROM sqlite_master
-        WHERE type = 'table'
-          AND name IN ('managed_attachment_blobs', 'managed_attachment_cleanup_jobs')
-        ORDER BY name
-      `;
-      assert.deepStrictEqual(
-        tables.map((row) => row.name),
-        ["managed_attachment_blobs", "managed_attachment_cleanup_jobs"],
-      );
-
-      const providerDeliveryTables = yield* sql<{ readonly count: number }>`
-        SELECT COUNT(*) AS count
-        FROM sqlite_master
-        WHERE type = 'table'
-          AND name IN ('orchestration_consumer_state', 'orchestration_event_deliveries')
-      `;
-      assert.strictEqual(providerDeliveryTables[0]?.count, 2);
-    }),
-  );
-});
-
 const managedAttachmentsLegacyLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
 managedAttachmentsLegacyLayer("managed attachment migration after private migration 54", (it) => {
@@ -301,60 +261,85 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         [97, "ProjectionThreadsSidechatLifecycle"],
         [98, "MigrateKiloToOpenCode"],
         [99, "InvalidateProjectionThreadsCursor"],
-        [100, "AccountUsageSync"],
-        [101, "AccountUsageSyncIdentity"],
+        [100, "MessageTextChunks"],
+        [101, "RemoveTranscriptMarkers"],
+        [102, "ProjectionThreadMessagesTurnBoundary"],
+        [103, "ClaudeTokenAccounting"],
+        [104, "ProjectionThreadsClaudeCacheReview"],
+        [105, "AsyncUserInput"],
+        [106, "ProjectImportOrigins"],
+        [107, "ProjectionThreadsHumanMessage"],
+        [108, "GatewayCompletions"],
+        [109, "AccountUsageSync"],
+        [110, "AccountUsageSyncIdentity"],
+        [111, "RemoteDeviceTrust"],
+        [112, "RemoteConnectionPreferences"],
       ]);
 
       const tracker = yield* trackerRows(sql);
-      assert.deepStrictEqual(tracker.slice(-47), [
-        { migration_id: 55, name: "ManagedAttachments" },
-        { migration_id: 56, name: "CommandReceiptFingerprints" },
-        { migration_id: 57, name: "ThreadScopedProjectionMessageIdentity" },
-        { migration_id: 58, name: "ThreadScopedPendingApprovalIdentity" },
-        { migration_id: 59, name: "ProviderSessionLifecycleGeneration" },
-        { migration_id: 60, name: "PendingApprovalLifecycleGeneration" },
-        { migration_id: 61, name: "PendingApprovalSettlementState" },
-        { migration_id: 62, name: "PendingInteractionSettlementParity" },
-        { migration_id: 63, name: "ProjectionMessageCausalSequence" },
-        { migration_id: 64, name: "DurableProviderCommandDeliveryCutover" },
-        { migration_id: 65, name: "DurableQueuedTurnPromotions" },
-        { migration_id: 66, name: "DurableProviderRuntimeEvents" },
-        { migration_id: 67, name: "ProviderDeliveryReconciliation" },
-        { migration_id: 68, name: "GitHandoffOperations" },
-        { migration_id: 69, name: "ProjectPullRequestPins" },
-        { migration_id: 70, name: "AgentGatewayOperations" },
-        { migration_id: 71, name: "ProjectionThreadsGatewayProvenance" },
-        { migration_id: 72, name: "AgentGatewayOperationRetention" },
-        { migration_id: 73, name: "OperationalDiagnostics" },
-        { migration_id: 74, name: "ExternalMcpIntegrations" },
-        { migration_id: 75, name: "ExternalMcpActiveCapacity" },
-        { migration_id: 76, name: "ExternalMcpHardening" },
-        { migration_id: 77, name: "ExternalMcpCompensatingCapacity" },
-        { migration_id: 78, name: "ExternalMcpLiveTurnCapacity" },
-        { migration_id: 79, name: "Spaces" },
-        { migration_id: 80, name: "ExternalMcpProjectScope" },
-        { migration_id: 81, name: "AutomationProposals" },
-        { migration_id: 82, name: "AutomationMemory" },
-        { migration_id: 83, name: "AutomationHeartbeatEligibility" },
-        { migration_id: 84, name: "AutomationNotificationPolicy" },
-        { migration_id: 85, name: "AutomationSettings" },
-        { migration_id: 86, name: "NormalizeStudioThreadWorkspaces" },
-        { migration_id: 87, name: "DropUnusedOrchestrationEventIndexes" },
-        { migration_id: 88, name: "ProjectionThreadsSettledAt" },
-        { migration_id: 89, name: "RecoverRetentionHiddenThreads" },
-        { migration_id: 90, name: "ProjectionThreadMessageTextSegments" },
-        { migration_id: 91, name: "AutomationFailureTolerance" },
-        { migration_id: 92, name: "BackfillAutomationRunThreadSource" },
-        { migration_id: 93, name: "BackfillMaxIterationsDisabledReason" },
-        { migration_id: 94, name: "ProjectionThreadsGoal" },
-        { migration_id: 95, name: "ProjectionThreadsGoalTiming" },
-        { migration_id: 96, name: "ProjectionThreadsGoalAchievements" },
-        { migration_id: 97, name: "ProjectionThreadsSidechatLifecycle" },
-        { migration_id: 98, name: "MigrateKiloToOpenCode" },
-        { migration_id: 99, name: "InvalidateProjectionThreadsCursor" },
-        { migration_id: 100, name: "AccountUsageSync" },
-        { migration_id: 101, name: "AccountUsageSyncIdentity" },
-      ]);
+      assert.deepStrictEqual(
+        tracker.filter((row) => row.migration_id >= 55),
+        [
+          { migration_id: 55, name: "ManagedAttachments" },
+          { migration_id: 56, name: "CommandReceiptFingerprints" },
+          { migration_id: 57, name: "ThreadScopedProjectionMessageIdentity" },
+          { migration_id: 58, name: "ThreadScopedPendingApprovalIdentity" },
+          { migration_id: 59, name: "ProviderSessionLifecycleGeneration" },
+          { migration_id: 60, name: "PendingApprovalLifecycleGeneration" },
+          { migration_id: 61, name: "PendingApprovalSettlementState" },
+          { migration_id: 62, name: "PendingInteractionSettlementParity" },
+          { migration_id: 63, name: "ProjectionMessageCausalSequence" },
+          { migration_id: 64, name: "DurableProviderCommandDeliveryCutover" },
+          { migration_id: 65, name: "DurableQueuedTurnPromotions" },
+          { migration_id: 66, name: "DurableProviderRuntimeEvents" },
+          { migration_id: 67, name: "ProviderDeliveryReconciliation" },
+          { migration_id: 68, name: "GitHandoffOperations" },
+          { migration_id: 69, name: "ProjectPullRequestPins" },
+          { migration_id: 70, name: "AgentGatewayOperations" },
+          { migration_id: 71, name: "ProjectionThreadsGatewayProvenance" },
+          { migration_id: 72, name: "AgentGatewayOperationRetention" },
+          { migration_id: 73, name: "OperationalDiagnostics" },
+          { migration_id: 74, name: "ExternalMcpIntegrations" },
+          { migration_id: 75, name: "ExternalMcpActiveCapacity" },
+          { migration_id: 76, name: "ExternalMcpHardening" },
+          { migration_id: 77, name: "ExternalMcpCompensatingCapacity" },
+          { migration_id: 78, name: "ExternalMcpLiveTurnCapacity" },
+          { migration_id: 79, name: "Spaces" },
+          { migration_id: 80, name: "ExternalMcpProjectScope" },
+          { migration_id: 81, name: "AutomationProposals" },
+          { migration_id: 82, name: "AutomationMemory" },
+          { migration_id: 83, name: "AutomationHeartbeatEligibility" },
+          { migration_id: 84, name: "AutomationNotificationPolicy" },
+          { migration_id: 85, name: "AutomationSettings" },
+          { migration_id: 86, name: "NormalizeStudioThreadWorkspaces" },
+          { migration_id: 87, name: "DropUnusedOrchestrationEventIndexes" },
+          { migration_id: 88, name: "ProjectionThreadsSettledAt" },
+          { migration_id: 89, name: "RecoverRetentionHiddenThreads" },
+          { migration_id: 90, name: "ProjectionThreadMessageTextSegments" },
+          { migration_id: 91, name: "AutomationFailureTolerance" },
+          { migration_id: 92, name: "BackfillAutomationRunThreadSource" },
+          { migration_id: 93, name: "BackfillMaxIterationsDisabledReason" },
+          { migration_id: 94, name: "ProjectionThreadsGoal" },
+          { migration_id: 95, name: "ProjectionThreadsGoalTiming" },
+          { migration_id: 96, name: "ProjectionThreadsGoalAchievements" },
+          { migration_id: 97, name: "ProjectionThreadsSidechatLifecycle" },
+          { migration_id: 98, name: "MigrateKiloToOpenCode" },
+          { migration_id: 99, name: "InvalidateProjectionThreadsCursor" },
+          { migration_id: 100, name: "MessageTextChunks" },
+          { migration_id: 101, name: "RemoveTranscriptMarkers" },
+          { migration_id: 102, name: "ProjectionThreadMessagesTurnBoundary" },
+          { migration_id: 103, name: "ClaudeTokenAccounting" },
+          { migration_id: 104, name: "ProjectionThreadsClaudeCacheReview" },
+          { migration_id: 105, name: "AsyncUserInput" },
+          { migration_id: 106, name: "ProjectImportOrigins" },
+          { migration_id: 107, name: "ProjectionThreadsHumanMessage" },
+          { migration_id: 108, name: "GatewayCompletions" },
+          { migration_id: 109, name: "AccountUsageSync" },
+          { migration_id: 110, name: "AccountUsageSyncIdentity" },
+          { migration_id: 111, name: "RemoteDeviceTrust" },
+          { migration_id: 112, name: "RemoteConnectionPreferences" },
+        ],
+      );
       const preserved = yield* sql<{ readonly count: number }>`
         SELECT COUNT(*) AS count FROM orchestration_consumer_state
       `;
@@ -445,8 +430,19 @@ agentGatewayRetentionLegacyLayer(
           [97, "ProjectionThreadsSidechatLifecycle"],
           [98, "MigrateKiloToOpenCode"],
           [99, "InvalidateProjectionThreadsCursor"],
-          [100, "AccountUsageSync"],
-          [101, "AccountUsageSyncIdentity"],
+          [100, "MessageTextChunks"],
+          [101, "RemoveTranscriptMarkers"],
+          [102, "ProjectionThreadMessagesTurnBoundary"],
+          [103, "ClaudeTokenAccounting"],
+          [104, "ProjectionThreadsClaudeCacheReview"],
+          [105, "AsyncUserInput"],
+          [106, "ProjectImportOrigins"],
+          [107, "ProjectionThreadsHumanMessage"],
+          [108, "GatewayCompletions"],
+          [109, "AccountUsageSync"],
+          [110, "AccountUsageSyncIdentity"],
+          [111, "RemoteDeviceTrust"],
+          [112, "RemoteConnectionPreferences"],
         ]);
 
         const columns = yield* sql<{ readonly name: string }>`
@@ -541,13 +537,24 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [97, "ProjectionThreadsSidechatLifecycle"],
         [98, "MigrateKiloToOpenCode"],
         [99, "InvalidateProjectionThreadsCursor"],
-        [100, "AccountUsageSync"],
-        [101, "AccountUsageSyncIdentity"],
+        [100, "MessageTextChunks"],
+        [101, "RemoveTranscriptMarkers"],
+        [102, "ProjectionThreadMessagesTurnBoundary"],
+        [103, "ClaudeTokenAccounting"],
+        [104, "ProjectionThreadsClaudeCacheReview"],
+        [105, "AsyncUserInput"],
+        [106, "ProjectImportOrigins"],
+        [107, "ProjectionThreadsHumanMessage"],
+        [108, "GatewayCompletions"],
+        [109, "AccountUsageSync"],
+        [110, "AccountUsageSyncIdentity"],
+        [111, "RemoteDeviceTrust"],
+        [112, "RemoteConnectionPreferences"],
       ]);
 
       const tracker = yield* trackerRows(sql);
       assert.deepStrictEqual(
-        tracker.slice(-31).map((row) => [row.migration_id, row.name]),
+        tracker.filter((row) => row.migration_id >= 71).map((row) => [row.migration_id, row.name]),
         [
           [71, "ProjectionThreadsGatewayProvenance"],
           [72, "AgentGatewayOperationRetention"],
@@ -578,8 +585,19 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [97, "ProjectionThreadsSidechatLifecycle"],
           [98, "MigrateKiloToOpenCode"],
           [99, "InvalidateProjectionThreadsCursor"],
-          [100, "AccountUsageSync"],
-          [101, "AccountUsageSyncIdentity"],
+          [100, "MessageTextChunks"],
+          [101, "RemoveTranscriptMarkers"],
+          [102, "ProjectionThreadMessagesTurnBoundary"],
+          [103, "ClaudeTokenAccounting"],
+          [104, "ProjectionThreadsClaudeCacheReview"],
+          [105, "AsyncUserInput"],
+          [106, "ProjectImportOrigins"],
+          [107, "ProjectionThreadsHumanMessage"],
+          [108, "GatewayCompletions"],
+          [109, "AccountUsageSync"],
+          [110, "AccountUsageSyncIdentity"],
+          [111, "RemoteDeviceTrust"],
+          [112, "RemoteConnectionPreferences"],
         ],
       );
 
@@ -669,13 +687,24 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [97, "ProjectionThreadsSidechatLifecycle"],
         [98, "MigrateKiloToOpenCode"],
         [99, "InvalidateProjectionThreadsCursor"],
-        [100, "AccountUsageSync"],
-        [101, "AccountUsageSyncIdentity"],
+        [100, "MessageTextChunks"],
+        [101, "RemoveTranscriptMarkers"],
+        [102, "ProjectionThreadMessagesTurnBoundary"],
+        [103, "ClaudeTokenAccounting"],
+        [104, "ProjectionThreadsClaudeCacheReview"],
+        [105, "AsyncUserInput"],
+        [106, "ProjectImportOrigins"],
+        [107, "ProjectionThreadsHumanMessage"],
+        [108, "GatewayCompletions"],
+        [109, "AccountUsageSync"],
+        [110, "AccountUsageSyncIdentity"],
+        [111, "RemoteDeviceTrust"],
+        [112, "RemoteConnectionPreferences"],
       ]);
 
       const tracker = yield* trackerRows(sql);
       assert.deepStrictEqual(
-        tracker.slice(-27).map((row) => [row.migration_id, row.name]),
+        tracker.filter((row) => row.migration_id >= 75).map((row) => [row.migration_id, row.name]),
         [
           [75, "ExternalMcpActiveCapacity"],
           [76, "ExternalMcpHardening"],
@@ -702,8 +731,19 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [97, "ProjectionThreadsSidechatLifecycle"],
           [98, "MigrateKiloToOpenCode"],
           [99, "InvalidateProjectionThreadsCursor"],
-          [100, "AccountUsageSync"],
-          [101, "AccountUsageSyncIdentity"],
+          [100, "MessageTextChunks"],
+          [101, "RemoveTranscriptMarkers"],
+          [102, "ProjectionThreadMessagesTurnBoundary"],
+          [103, "ClaudeTokenAccounting"],
+          [104, "ProjectionThreadsClaudeCacheReview"],
+          [105, "AsyncUserInput"],
+          [106, "ProjectImportOrigins"],
+          [107, "ProjectionThreadsHumanMessage"],
+          [108, "GatewayCompletions"],
+          [109, "AccountUsageSync"],
+          [110, "AccountUsageSyncIdentity"],
+          [111, "RemoteDeviceTrust"],
+          [112, "RemoteConnectionPreferences"],
         ],
       );
       const preservedSpaces = yield* sql<{ readonly spaceId: string }>`
@@ -851,18 +891,6 @@ managedAttachmentsConstraintsLayer("managed attachment schema constraints", (it)
   );
 });
 
-const managedAttachmentsIdempotencyLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
-
-managedAttachmentsIdempotencyLayer("managed attachment migration idempotency", (it) => {
-  it.effect("is idempotent after the managed attachment schema is registered", () =>
-    Effect.gen(function* () {
-      yield* runMigrations();
-      const executed = yield* runMigrations();
-      assert.lengthOf(executed, 0);
-    }),
-  );
-});
-
 const latestMigrationId = Math.max(...migrationEntries.map(([id]) => id));
 
 // `migrationEntries` is `as const`, so an inferred Map keys on the literal id union and rejects
@@ -880,53 +908,6 @@ const trackerCreatedAtById = (sql: SqlClient.SqlClient) =>
   sql<{ readonly migration_id: number; readonly created_at: string }>`
     SELECT migration_id, created_at FROM effect_sql_migrations ORDER BY migration_id ASC
   `.pipe(Effect.map((rows) => new Map(rows.map((row) => [row.migration_id, row.created_at]))));
-
-describe("migration lineage aliases", () => {
-  it("keeps every declared alias consistent with the current lineage", () => {
-    for (const alias of MIGRATION_LINEAGE_ALIASES) {
-      // The migration must still live at `currentId` under the historical name,
-      // otherwise the alias silently stops repairing the databases it names.
-      assert.strictEqual(
-        canonicalNamesById.get(alias.currentId),
-        alias.historicalName,
-        `alias for ${alias.historicalName} no longer resolves to migration ${alias.currentId}`,
-      );
-      // The historical slot must still be a real divergence, and must still be
-      // occupied — the repair renames the row to whatever lives there now.
-      assert.isDefined(canonicalNamesById.get(alias.historicalId));
-      assert.notStrictEqual(canonicalNamesById.get(alias.historicalId), alias.historicalName);
-    }
-  });
-
-  it("repairs a released v0.5.5 tracker in place", () => {
-    const recorded = canonicalTrackerThrough(53);
-    recorded.set(54, "ProjectPullRequestPins");
-
-    assert.deepStrictEqual(planMigrationLineageAliasRepairs(recorded), [
-      { kind: "rename", migrationId: 54, name: "DurableProviderCommandDelivery" },
-    ]);
-  });
-
-  it("declines when the tracker also diverges outside the alias", () => {
-    const recorded = canonicalTrackerThrough(53);
-    recorded.set(54, "ProjectPullRequestPins");
-    // Development builds between v0.5.5 and v0.6.0 also claimed migration 55.
-    recorded.set(55, "AgentGatewayOperations");
-
-    assert.deepStrictEqual(planMigrationLineageAliasRepairs(recorded), []);
-  });
-
-  it("declines for a healthy tracker and for a foreign lineage", () => {
-    assert.deepStrictEqual(
-      planMigrationLineageAliasRepairs(canonicalTrackerThrough(latestMigrationId)),
-      [],
-    );
-
-    const foreign = canonicalTrackerThrough(16);
-    for (let id = 17; id <= 60; id++) foreign.set(id, `ForeignMigration${id}`);
-    assert.deepStrictEqual(planMigrationLineageAliasRepairs(foreign), []);
-  });
-});
 
 const releasedV055Layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
@@ -1010,4 +991,91 @@ divergedBeyondAliasLayer("tracker that diverges beyond a known alias", (it) => {
       );
     }),
   );
+});
+
+// The fixture was extracted from the actual five private builds, not migrationEntries.
+// Main migration implementations through 108 are immutable and remain the schema owner.
+layer("historical account upgrades", (it) => {
+  for (const lineage of historicalAccountLineages) {
+    for (let tailLength = 1; tailLength <= lineage.tail.length; tailLength++) {
+      it.effect(
+        `upgrades ${lineage.ref.slice(0, 8)} with ${tailLength} account rows without skipping main`,
+        () =>
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* runMigrations({ toMigrationInclusive: lineage.canonicalPrefix });
+            const prefix = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+            assert.deepStrictEqual(
+              prefix.map((r) => [r.migration_id, r.name]),
+              lineage.entries.slice(0, lineage.canonicalPrefix),
+            );
+            yield* AccountUsageSyncMigration;
+            // Includes the interrupted Identity case: schema committed before tracker.
+            yield* AccountUsageSyncIdentityMigration;
+            yield* sql`UPDATE account_usage_sync SET watermark_minute = '2026-01-01T00:00:00Z', last_failure_at = 'sentinel', account_identity = 'authority#account'`;
+            for (const entry of lineage.tail.slice(0, tailLength)) {
+              yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (${entry[0]}, ${entry[1]})`;
+            }
+            const backupPlan = yield* inspectMigrationBackupPlan;
+            assert.isDefined(backupPlan);
+            assert.isFalse("lineageDivergence" in backupPlan!);
+            const expected = Array.from(
+              { length: 112 - lineage.canonicalPrefix },
+              (_, i) => lineage.canonicalPrefix + i + 1,
+            );
+            const applied = yield* runMigrations();
+            assert.deepStrictEqual(
+              applied.map(([id]) => id),
+              expected,
+            );
+            assert.deepStrictEqual(
+              yield* sql`SELECT * FROM effect_sql_migrations WHERE migration_id <= ${lineage.canonicalPrefix} ORDER BY migration_id`,
+              prefix,
+            );
+            assert.deepStrictEqual(yield* sql`SELECT * FROM account_usage_sync`, [
+              {
+                id: 1,
+                watermark_minute: "2026-01-01T00:00:00Z",
+                last_failure_at: "sentinel",
+                account_identity: "authority#account",
+              },
+            ]);
+            assert.lengthOf(
+              yield* sql`SELECT name FROM sqlite_master WHERE name = 'message_text_chunks'`,
+              1,
+            );
+            assert.notInclude(yield* projectionThreadsColumnNames(sql), "thread_markers_json");
+            assert.deepStrictEqual(yield* runMigrations(), []);
+          }).pipe(Effect.provide(NodeSqliteClient.layerMemory())),
+      );
+    }
+  }
+  for (const fault of [
+    "unknown-tail",
+    "missing-table",
+    "missing-prefix",
+    "bad-singleton",
+  ] as const) {
+    it.effect(`refuses ${fault} before any tracker mutation`, () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: 99 });
+        if (fault !== "missing-table") yield* AccountUsageSyncMigration;
+        yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (100, 'AccountUsageSync')`;
+        if (fault === "unknown-tail")
+          yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (101, 'UnknownAccountTail')`;
+        if (fault === "missing-prefix")
+          yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 50`;
+        if (fault === "bad-singleton") yield* sql`DELETE FROM account_usage_sync`;
+        yield* sql`UPDATE effect_sql_migrations SET name = 'ReconcileLegacyT3SchemaImport' WHERE migration_id = 32`;
+        const before = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+        const result = yield* Effect.result(runMigrations());
+        assert.strictEqual(result._tag, "Failure");
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+          before,
+        );
+      }).pipe(Effect.provide(NodeSqliteClient.layerMemory())),
+    );
+  }
 });

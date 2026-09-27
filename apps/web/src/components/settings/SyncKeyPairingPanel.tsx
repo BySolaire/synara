@@ -40,10 +40,7 @@ function PairingRequestField({
   const id = useId();
   return (
     <div className="space-y-2">
-      <label
-        htmlFor={id}
-        className="block text-[length:var(--app-font-size-ui-sm,11px)] font-medium text-foreground"
-      >
+      <label htmlFor={id} className="block text-ui-sm font-medium text-foreground">
         Pairing request
       </label>
       <Textarea
@@ -57,7 +54,7 @@ function PairingRequestField({
         autoCorrect="off"
         autoComplete="off"
         spellCheck={false}
-        className="[&_textarea]:min-h-24 [&_textarea]:break-all [&_textarea]:font-mono [&_textarea]:text-[11px]"
+        className="[&_textarea]:min-h-24 [&_textarea]:break-all [&_textarea]:font-mono [&_textarea]:text-ui-xs"
         onChange={onValueChange ? (event) => onValueChange(event.target.value) : undefined}
       />
     </div>
@@ -245,10 +242,7 @@ export function SyncKeyPairingPanel() {
         contentClassName="space-y-4 border-t border-border/70 px-3 py-3"
       >
         {startBusy ? (
-          <p
-            role="status"
-            className="text-[length:var(--app-font-size-ui,12px)] text-muted-foreground"
-          >
+          <p role="status" className="text-ui text-muted-foreground">
             Creating a pairing request...
           </p>
         ) : null}
@@ -256,10 +250,10 @@ export function SyncKeyPairingPanel() {
         {state.phase === "new-request" ? (
           <div className="space-y-4">
             <div className="space-y-1">
-              <h3 className="text-[length:var(--app-font-size-ui,12px)] font-medium text-foreground">
+              <h3 className="text-ui font-medium text-foreground">
                 Send this request to your other device
               </h3>
-              <p className="text-[length:var(--app-font-size-ui-sm,11px)] text-muted-foreground">
+              <p className="text-ui-sm text-muted-foreground">
                 Copy and send the whole blob. It contains this device&apos;s ID and public key, not
                 your Sync Key. On the other device, choose Approve a device and paste it there.
               </p>
@@ -270,7 +264,7 @@ export function SyncKeyPairingPanel() {
               disabled={state.pending}
             />
             {state.message ? (
-              <p id={statusId} role="alert" className="text-xs text-destructive">
+              <p id={statusId} role="alert" className="text-ui-xs text-destructive">
                 {state.message}
               </p>
             ) : null}
@@ -293,10 +287,10 @@ export function SyncKeyPairingPanel() {
         {state.phase === "existing-request" ? (
           <div className="space-y-4">
             <div className="space-y-1">
-              <h3 className="text-[length:var(--app-font-size-ui,12px)] font-medium text-foreground">
+              <h3 className="text-ui font-medium text-foreground">
                 Paste the request from the new device
               </h3>
-              <p className="text-[length:var(--app-font-size-ui-sm,11px)] text-muted-foreground">
+              <p className="text-ui-sm text-muted-foreground">
                 Only approve a request you just created on the device you expect.
               </p>
             </div>
@@ -309,7 +303,7 @@ export function SyncKeyPairingPanel() {
               onValueChange={(value) => dispatch({ type: "request-changed", value })}
             />
             {state.message ? (
-              <p id={statusId} role="alert" className="text-xs text-destructive">
+              <p id={statusId} role="alert" className="text-ui-xs text-destructive">
                 {state.message}
               </p>
             ) : null}
@@ -326,10 +320,10 @@ export function SyncKeyPairingPanel() {
         {state.phase === "existing-code" ? (
           <div className="space-y-3">
             <div className="space-y-1">
-              <h3 className="text-[length:var(--app-font-size-ui,12px)] font-medium text-foreground">
+              <h3 className="text-ui font-medium text-foreground">
                 Type this code on the new device
               </h3>
-              <p className="text-[length:var(--app-font-size-ui-sm,11px)] text-muted-foreground">
+              <p className="text-ui-sm text-muted-foreground">
                 The new device must show the same code before it adopts the Sync Key.
               </p>
             </div>
@@ -343,12 +337,8 @@ export function SyncKeyPairingPanel() {
         {state.phase === "new-confirm" ? (
           <div className="space-y-4">
             <div className="space-y-1">
-              <h3 className="text-[length:var(--app-font-size-ui,12px)] font-medium text-foreground">
-                Compare the two devices
-              </h3>
-              <p className="text-[length:var(--app-font-size-ui-sm,11px)] text-muted-foreground">
-                This device shows:
-              </p>
+              <h3 className="text-ui font-medium text-foreground">Compare the two devices</h3>
+              <p className="text-ui-sm text-muted-foreground">This device shows:</p>
               <VerificationCode>{state.ownVerificationCode}</VerificationCode>
             </div>
             <ShortCodeField
@@ -363,7 +353,7 @@ export function SyncKeyPairingPanel() {
               onSubmit={() => void confirmSyncKey()}
             />
             {state.message ? (
-              <p id={statusId} role="alert" className="text-xs text-destructive">
+              <p id={statusId} role="alert" className="text-ui-xs text-destructive">
                 {state.message}
               </p>
             ) : null}
@@ -382,7 +372,7 @@ export function SyncKeyPairingPanel() {
 
         {state.phase === "new-success" ? (
           <div className="space-y-3">
-            <p role="status" className="text-xs text-foreground">
+            <p role="status" className="text-ui-xs text-foreground">
               Host secrets are now synced.
             </p>
             <Button size="xs" variant="outline" onClick={reset}>

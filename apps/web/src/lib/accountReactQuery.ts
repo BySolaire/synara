@@ -1,3 +1,11 @@
+import {
+  controlAccountScope,
+  accountStatusScope,
+  adoptControlAccountScope,
+} from "./hosts/controlQueryScope";
+import { remoteHostQueryKeys } from "./hosts/queries";
+import { readExecutionContext } from "./hosts/executionContext";
+import { deactivateHost } from "./hosts/activeHost";
 // FILE: accountReactQuery.ts
 // Purpose: React Query options and invalidation for the Synara account session.
 // Layer: Web data-fetching (see serverReactQuery.ts for the conventions).
@@ -18,7 +26,7 @@ export const accountQueryKeys = {
    * the shared server) lands on a DIFFERENT key than the stale entry.
    */
   usageSummary: (userId: string, utcOffsetMinutes: number) =>
-    ["account", "usageSummary", userId, utcOffsetMinutes] as const,
+    ["account", "usageSummary", userId, utcOffsetMinutes, controlAccountScope()] as const,
 };
 
 /**
@@ -37,6 +45,7 @@ export function accountStatusQueryOptions() {
     staleTime: 60_000,
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,
+    refetchInterval: 60_000,
     retry: 1,
   });
 }
@@ -87,7 +96,13 @@ export async function invalidateAccountStatus(queryClient: QueryClient): Promise
  * refetches, and while signed out there is nothing to refetch at all.
  */
 export function removeAccountScopedQueries(queryClient: QueryClient): void {
-  queryClient.removeQueries({ queryKey: accountQueryKeys.usageSummaryAll() });
+  const filter = {
+    predicate: (query: { queryKey: readonly unknown[] }) =>
+      (query.queryKey[0] === "account" && query.queryKey[1] !== "status") ||
+      query.queryKey[0] === remoteHostQueryKeys.all[0],
+  };
+  void queryClient.cancelQueries(filter);
+  queryClient.removeQueries(filter);
 }
 
 /**
@@ -103,21 +118,44 @@ export function removeAccountScopedQueries(queryClient: QueryClient): void {
  */
 export function watchAccountIdentityChanges(queryClient: QueryClient): () => void {
   const statusHash = hashKey(accountQueryKeys.status());
-  const userIdOf = (data: unknown): string | null => {
-    const status = data as AccountStatus | undefined;
-    return status?.state === "signed-in" ? status.me.id : null;
+  const initialStatus = queryClient.getQueryData<AccountStatus>(accountQueryKeys.status()) ?? {
+    state: "signed-out" as const,
   };
-  let knownUserId = userIdOf(queryClient.getQueryData(accountQueryKeys.status()));
+  adoptControlAccountScope(initialStatus);
+  let knownScope = accountStatusScope(initialStatus);
   return queryClient.getQueryCache().subscribe((event) => {
-    if (event.type !== "updated" || event.query.queryHash !== statusHash) {
+    if (
+      event.type !== "updated" ||
+      event.action.type !== "success" ||
+      hashKey(event.query.queryKey) !== statusHash
+    )
       return;
-    }
-    const nextUserId = userIdOf(event.query.state.data);
-    if (nextUserId === knownUserId) {
-      return;
-    }
-    knownUserId = nextUserId;
+    const status = event.query.state.data as AccountStatus | undefined;
+    if (!status) return;
+    const nextScope = accountStatusScope(status);
+    adoptControlAccountScope(status);
+    if (nextScope === knownScope) return;
+    knownScope = nextScope;
     removeAccountScopedQueries(queryClient);
+    const remote = readExecutionContext()?.remote;
+    if (
+      remote &&
+      (status.state !== "signed-in" ||
+        status.me.id !== remote.userId ||
+        status.me.organization.id !== remote.organizationId ||
+        status.accountAuthority !== remote.accountAuthority)
+    ) {
+      try {
+        deactivateHost();
+      } catch {
+        // Never leave the previous account's transcript visible to the new one
+        // if browser storage prevents draft recovery and the reload guard fails.
+        const message = document.createElement("main");
+        message.textContent =
+          "Account changed. Editor recovery could not be saved because browser storage is unavailable. Restore storage access, then reload to return to this computer.";
+        document.body.replaceChildren(message);
+      }
+    }
   });
 }
 

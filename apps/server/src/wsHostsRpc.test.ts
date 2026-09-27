@@ -21,6 +21,7 @@ import { provideWsConnectionSession } from "./wsConnectionSessions";
 import { makeHostsRpcHandlers } from "./wsHostsRpc";
 
 const SAMPLE_INPUTS: Record<string, unknown> = {
+  [WS_METHODS.hostsRemoteAccess]: { request: { operation: "list" } },
   [WS_METHODS.hostsList]: undefined,
   [WS_METHODS.hostsUpdate]: { hostId: "host_1", discoverable: false, name: "Ada's Mac" },
   [WS_METHODS.hostsDelete]: { hostId: "host_1" },
@@ -73,6 +74,10 @@ function spySession(): { session: HostsAccountSession; calls: () => string[] } {
     deleteHost: record("deleteHost", undefined),
     listDevices: record("listDevices", { devices: [] }),
     revokeDevice: record("revokeDevice", undefined),
+    revokeDeviceAccountSessions: record("revokeDeviceAccountSessions", {
+      confirmed: 1,
+      pending: 0,
+    }),
     approveDeviceLink: record("approveDeviceLink", undefined),
     requestGrant: record("requestGrant", { grant: "grant-token" }),
     enrollment: record("enrollment", {
@@ -147,6 +152,7 @@ afterEach(async () => {
 describe("hosts RPC owner boundary", () => {
   const methodNames = Object.keys(
     makeHostsRpcHandlers({
+      remoteAccess: vi.fn(async () => ({ kind: "done" as const })),
       accountSession: spySession().session,
       remoteSessions: remoteSessionsStub(),
       hostConnections: hostConnectionsStub(),
@@ -176,6 +182,7 @@ describe("hosts RPC owner boundary", () => {
       const remoteSessions = remoteSessionsStub();
       const hostConnections = hostConnectionsStub();
       const handlers = makeHostsRpcHandlers({
+        remoteAccess: vi.fn(async () => ({ kind: "done" as const })),
         accountSession: session,
         remoteSessions,
         hostConnections,
@@ -203,82 +210,33 @@ describe("hosts RPC owner boundary", () => {
     },
   );
 
-  it.each(methodNames)("admits an owner-role session on %s", async (method) => {
-    const { session, calls } = spySession();
-    const remoteSessions = remoteSessionsStub();
-    const hostConnections = hostConnectionsStub();
-    const handlers = makeHostsRpcHandlers({
-      accountSession: session,
-      remoteSessions,
-      hostConnections,
-    }) as unknown as Record<string, (input?: unknown) => Effect.Effect<unknown, unknown>>;
-    const handler = handlers[method];
-    if (!handler) throw new Error(`no handler for ${method}`);
-
-    await Effect.runPromise(
-      provideWsConnectionSession(handler(SAMPLE_INPUTS[method]), OWNER_SESSION),
-    );
-
-    if (method === WS_METHODS.hostsListSessions) {
-      expect(remoteSessions.list).toHaveBeenCalledOnce();
+  it.each(methodNames)(
+    "keeps %s inactive for owners while qualification is closed",
+    async (method) => {
+      const { session, calls } = spySession();
+      const remoteSessions = remoteSessionsStub();
+      const hostConnections = hostConnectionsStub();
+      const remoteAccess = vi.fn(async () => ({ kind: "done" as const }));
+      const handlers = makeHostsRpcHandlers({
+        remoteAccess,
+        accountSession: session,
+        remoteSessions,
+        hostConnections,
+      }) as unknown as Record<string, (input?: unknown) => Effect.Effect<unknown, unknown>>;
+      await expect(
+        Effect.runPromise(
+          provideWsConnectionSession(handlers[method]!(SAMPLE_INPUTS[method]), OWNER_SESSION),
+        ),
+      ).rejects.toThrow();
       expect(calls()).toEqual([]);
-    } else if (method === WS_METHODS.hostsEndSession) {
-      expect(remoteSessions.end).toHaveBeenCalledOnce();
-      expect(calls()).toEqual([]);
-    } else if (method === WS_METHODS.hostsConnect) {
-      expect(hostConnections.connect).toHaveBeenCalledOnce();
-      expect(calls()).toEqual([]);
-    } else if (method === WS_METHODS.hostsDisconnect) {
-      expect(hostConnections.disconnect).toHaveBeenCalledOnce();
-      expect(calls()).toEqual([]);
-    } else if (method === WS_METHODS.hostsListConnections) {
-      expect(hostConnections.list).toHaveBeenCalledOnce();
-      expect(calls()).toEqual([]);
-    } else {
-      expect(calls()).toHaveLength(1);
-    }
-  });
-
-  it("guards live-session reads and termination behind the owner role", async () => {
-    const list = vi.fn(() => [
-      {
-        id: "session-1",
-        userId: "user-1",
-        deviceJkt: "device-thumbprint",
-        transport: "relay" as const,
-        startedAt: "2026-08-14T10:00:00.000Z",
-      },
-    ]);
-    const end = vi.fn(() => true);
-    const handlers = makeHostsRpcHandlers({
-      accountSession: spySession().session,
-      remoteSessions: { list, end },
-    } as never) as unknown as Record<
-      string,
-      (input?: unknown) => Effect.Effect<unknown, { message: string }>
-    >;
-    const listHandler = handlers["hosts.listSessions"];
-    const endHandler = handlers["hosts.endSession"];
-    expect(listHandler, "hosts.listSessions handler").toBeTypeOf("function");
-    expect(endHandler, "hosts.endSession handler").toBeTypeOf("function");
-    if (!listHandler || !endHandler) return;
-
-    const refused = await Effect.runPromise(
-      provideWsConnectionSession(listHandler().pipe(Effect.flip), CLIENT_SESSION),
-    );
-    expect(refused.message).toMatch(/owner authorization/i);
-    expect(list).not.toHaveBeenCalled();
-
-    await expect(
-      Effect.runPromise(provideWsConnectionSession(listHandler(), OWNER_SESSION)),
-    ).resolves.toEqual({ sessions: list() });
-    await expect(
-      Effect.runPromise(
-        provideWsConnectionSession(endHandler({ sessionId: "session-1" }), OWNER_SESSION),
-      ),
-    ).resolves.toBeUndefined();
-    expect(end).toHaveBeenCalledWith("session-1");
-  });
+      expect(remoteAccess).not.toHaveBeenCalled();
+      expect(remoteSessions.list).not.toHaveBeenCalled();
+      expect(remoteSessions.end).not.toHaveBeenCalled();
+      expect(hostConnections.connect).not.toHaveBeenCalled();
+      expect(hostConnections.disconnect).not.toHaveBeenCalled();
+      expect(hostConnections.list).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("hosts enrollment", () => {
@@ -365,15 +323,7 @@ describe("hosts enrollment", () => {
       countOrganizationMembers,
     } as unknown as AccountClient;
     const accountSession = createAccountSession({ baseDir, client });
-    const handler = makeHostsRpcHandlers({
-      accountSession,
-      remoteSessions: remoteSessionsStub(),
-      hostConnections: hostConnectionsStub(),
-    })[WS_METHODS.hostsEnrollment];
-
-    const enrollment = await Effect.runPromise(
-      provideWsConnectionSession(handler(), OWNER_SESSION),
-    );
+    const enrollment = await accountSession.enrollment();
 
     expect(enrollment).toEqual({
       host,
@@ -422,15 +372,7 @@ describe("device-bound grants", () => {
     );
     const client = { registerDevice, requestGrant } as unknown as AccountClient;
     const accountSession = createAccountSession({ baseDir, client });
-    const handler = makeHostsRpcHandlers({
-      accountSession,
-      remoteSessions: remoteSessionsStub(),
-      hostConnections: hostConnectionsStub(),
-    })[WS_METHODS.hostsRequestGrant];
-
-    const result = await Effect.runPromise(
-      provideWsConnectionSession(handler({ hostId: "host_1" }), OWNER_SESSION),
-    );
+    const result = await accountSession.requestGrant({ hostId: "host_1" });
 
     expect(registerDevice).toHaveBeenCalledOnce();
     expect(registeredJkt).toBeDefined();
@@ -442,7 +384,7 @@ describe("device-bound grants", () => {
     });
   });
 
-  it("re-registers a revoked local device before retrying the grant", async () => {
+  it("does not re-register a revoked local device or replay its grant", async () => {
     const baseDir = await makeBaseDir();
     await writeAccountCredentials(baseDir, {
       accountUrl: "https://accounts.example.com",
@@ -495,24 +437,17 @@ describe("device-bound grants", () => {
       refreshAccessToken,
     } as unknown as AccountClient;
     const accountSession = createAccountSession({ baseDir, client });
-    const handler = makeHostsRpcHandlers({
-      accountSession,
-      remoteSessions: remoteSessionsStub(),
-      hostConnections: hostConnectionsStub(),
-    })[WS_METHODS.hostsRequestGrant];
-    const request = () =>
-      Effect.runPromise(provideWsConnectionSession(handler({ hostId: "host_1" }), OWNER_SESSION));
+    const request = () => accountSession.requestGrant({ hostId: "host_1" });
 
     const first = await request();
     expect(first).toEqual({ grant: `grant-for:${jkt}` });
     revoked = true;
-    const replacement = await request();
-    expect(replacement).toEqual({ grant: `grant-for:${jkt}` });
+    await expect(request()).rejects.toThrow("The device was revoked");
 
-    expect(registerDevice).toHaveBeenCalledTimes(2);
+    expect(registerDevice).toHaveBeenCalledTimes(1);
     expect(refreshAccessToken).not.toHaveBeenCalled();
     expect(await readAccountFile(baseDir)).toMatchObject({
-      deviceId: "00000000-0000-4000-8000-000000000002",
+      deviceId: "00000000-0000-4000-8000-000000000001",
       deviceJkt: jkt,
     });
   });

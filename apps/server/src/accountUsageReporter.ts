@@ -1,3 +1,4 @@
+import { accountStateDirectory } from "./accountAuth";
 /**
  * accountUsageReporter - event-driven sync of per-minute usage buckets to the
  * account service (`POST /api/v1/usage`).
@@ -801,6 +802,7 @@ export function collectUsageBuckets(
 
 export function createAccountUsageReporter(deps: AccountUsageReporterDeps): AccountUsageReporter {
   const { sql, baseDir } = deps;
+  const credentialDir = accountStateDirectory(baseDir, deps.devUrl);
   const debounceMs = deps.debounceMs ?? DEFAULT_DEBOUNCE_MS;
   const failureBackoffMs = deps.failureBackoffMs ?? DEFAULT_FAILURE_BACKOFF_MS;
   const backfillMs = (deps.backfillDays ?? DEFAULT_BACKFILL_DAYS) * 86_400_000;
@@ -812,7 +814,7 @@ export function createAccountUsageReporter(deps: AccountUsageReporterDeps): Acco
     });
 
   const isSignedIn =
-    deps.isSignedIn ?? (async () => (await readAccountCredentials(baseDir)) !== undefined);
+    deps.isSignedIn ?? (async () => (await readAccountCredentials(credentialDir)) !== undefined);
 
   const resolveEnvironment =
     deps.environmentId ?? (() => resolveEnvironmentId(baseDir, deps.devUrl));
@@ -833,7 +835,7 @@ export function createAccountUsageReporter(deps: AccountUsageReporterDeps): Acco
   const resolveAccountIdentity =
     deps.accountIdentity ??
     (async (): Promise<string | null> => {
-      const stored = await readAccountFile(baseDir);
+      const stored = await readAccountFile(credentialDir);
       if (!stored?.organizationId || !stored.userId) return null;
       return `${stored.accountUrl}#${stored.organizationId}#${stored.userId}`;
     });
@@ -844,10 +846,10 @@ export function createAccountUsageReporter(deps: AccountUsageReporterDeps): Acco
       // Same URL resolution as accountSession.ts: the URL stored at sign-in
       // wins so the reporter always talks to the account the session belongs
       // to, with the configured/default URL as the signed-out fallback.
-      const stored = await readAccountFile(baseDir);
+      const stored = await readAccountFile(credentialDir);
       const accountUrl = stored?.accountUrl ?? deps.accountUrl ?? resolveAccountUrl();
       const client = deps.client ?? createAccountClient({ baseUrl: accountUrl });
-      await withFreshAccessToken({ baseDir, client }, async (accessToken) => {
+      await withFreshAccessToken({ baseDir: credentialDir, client }, async (accessToken) => {
         await client.pushUsage(accessToken, request);
       });
     });

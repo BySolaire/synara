@@ -184,6 +184,7 @@ export type AccountIdentityVerifier = {
   /** Rejects on any invalid, expired, or unverifiable token; callers answer 401. */
   verifyAccessToken(token: string): Promise<VerifiedAccessToken>;
   getUser(userId: string): Promise<IdentityUser>;
+  revokeSession(sessionId: string): Promise<void>;
   /**
    * Builds the provider's authorization-code + PKCE authorize URL for the
    * desktop SSO path, deep-linked to `provider`. `redirectUri` must be a
@@ -367,7 +368,13 @@ export type HostKeyRegistry = {
 };
 
 export type DeviceRegistry = {
-  register(userId: string, proof: string): Promise<AccountDevice>;
+  register(userId: string, proof: string, verifiedSessionId: string): Promise<AccountDevice>;
+  isSessionRevoked(userId: string, sessionId: string): Promise<boolean>;
+  revokeSessions(
+    userId: string,
+    deviceId: string,
+    deliver: (sessionId: string) => Promise<void>,
+  ): Promise<{ confirmed: number; pending: number } | undefined>;
   list(userId: string): Promise<AccountDevice[]>;
   revoke(
     userId: string,

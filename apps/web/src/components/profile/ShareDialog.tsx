@@ -244,18 +244,18 @@ export function ShareDialog({
               <button
                 type="button"
                 onClick={() => void handleCopyProfileLink(publicUrl)}
-                className="flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                className="flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-ui-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               >
                 <LinkIcon className="size-3.5" />
                 {publicProfileDisplayUrl(accountProfile.handle)}
               </button>
             ) : (
-              <p className="text-center text-xs leading-snug text-muted-foreground">
+              <p className="text-center text-ui-xs leading-snug text-muted-foreground">
                 Your profile is private. Make it public in Edit profile to share a link to it.
               </p>
             ))}
 
-          <p className="min-h-4 text-center text-xs leading-snug text-muted-foreground">
+          <p className="min-h-4 text-center text-ui-xs leading-snug text-muted-foreground">
             {status ?? ""}
           </p>
         </div>
@@ -310,7 +310,7 @@ function ShareButton({ label, ariaLabel, busy, disabled, onClick, children }: Sh
       >
         {children}
       </button>
-      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="text-ui leading-snug text-muted-foreground">{label}</span>
     </div>
   );
 }

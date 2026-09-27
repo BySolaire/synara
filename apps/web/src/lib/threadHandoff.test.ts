@@ -1,4 +1,5 @@
 import {
+  DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS_VIEW,
   EventId,
   MessageId,
@@ -12,7 +13,6 @@ import {
   buildThreadHandoffImportedActivities,
   buildThreadHandoffImportedMessages,
   resolveAvailableHandoffTargetProviders,
-  resolveThreadHandoffTitle,
   resolveThreadHandoffModelSelection,
 } from "./threadHandoff";
 import { appendAssistantSelectionsToPrompt } from "./assistantSelections";
@@ -150,7 +150,6 @@ describe("threadHandoff", () => {
         enabled: false,
       },
     };
-
     expect(
       resolveAvailableHandoffTargetProviders({
         sourceProvider: "codex",
@@ -183,13 +182,6 @@ describe("threadHandoff", () => {
         ],
       }),
     ).toEqual([]);
-  });
-
-  it("preserves the source thread title for the created handoff thread", () => {
-    expect(resolveThreadHandoffTitle({ title: "General Greeting" })).toBe("General Greeting");
-    expect(resolveThreadHandoffTitle({ title: "  Debug   Grok handoff  " })).toBe(
-      "Debug Grok handoff",
-    );
   });
 
   it("prefers sticky model selection for the chosen handoff target", () => {
@@ -233,7 +225,7 @@ describe("threadHandoff", () => {
       }),
     ).toEqual({
       provider: "codex",
-      model: "gpt-5.5",
+      model: DEFAULT_MODEL_BY_PROVIDER.codex,
     });
   });
 });

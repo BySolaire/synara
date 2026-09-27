@@ -17,10 +17,10 @@ import type {
   ProviderKind,
   ResolvedKeybindingsConfig,
   ThreadId,
-  ThreadMarker,
-  ThreadMarkerId,
 } from "@synara/contracts";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import type { ReactNode } from "react";
 
 import { useAppSettings } from "~/appSettings";
 import { SETTINGS_TARGETS } from "~/settingsNavigation";
@@ -41,7 +41,15 @@ import type { RepoDiffTotals } from "~/hooks/useRepoDiffTotals";
 import { ArrowUpRightIcon, ChangesIcon, GitHubIcon, SettingsIcon } from "~/lib/icons";
 import { cn } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
+import { deleteActiveThreadFromClient } from "~/lib/activeThreadDelete";
+import { gitRemoveWorktreeMutationOptions } from "~/lib/gitReactQuery";
 import { waitForSidechatCreator } from "~/lib/sidechatCreatorRegistry";
+import { useComposerDraftStore } from "~/composerDraftStore";
+import { showConfirmDialogFallback } from "~/confirmDialogFallback";
+import { usePinnedThreadsStore } from "~/pinnedThreadsStore";
+import { useSplitViewStore } from "~/splitViewStore";
+import { useTerminalStateStore } from "~/terminalStateStore";
+import { useTemporaryThreadStore } from "~/temporaryThreadStore";
 import { useRightDockStore } from "~/rightDockStore";
 
 import { EnvironmentEditorSection } from "./EnvironmentEditorSection";
@@ -52,7 +60,6 @@ import {
 import { EnvironmentUsageSection } from "./EnvironmentUsageSection";
 import { EnvironmentLocalServersSection } from "./EnvironmentLocalServersSection";
 import { EnvironmentPullRequestSection } from "./EnvironmentPullRequestSection";
-import { EnvironmentMarkersSection } from "./EnvironmentMarkersSection";
 import { EnvironmentStudioOutputsSection } from "./EnvironmentStudioOutputsSection";
 import {
   EnvironmentSidechatsSection,
@@ -79,7 +86,7 @@ import {
 export const ENVIRONMENT_DOCKED_CONTENT_INSET_PX = 312;
 
 const ENVIRONMENT_PANEL_OVERLAY_WRAPPER_CLASS_NAME =
-  "pointer-events-none absolute inset-y-0 right-0 z-20 flex flex-col p-3";
+  "pointer-events-none absolute inset-y-0 right-0 z-20 flex flex-col items-end gap-3 overflow-y-auto p-3";
 
 export interface EnvironmentPanelProps {
   /** Drives the slide-in/out transition; the panel stays mounted so CSS can interpolate. */
@@ -131,14 +138,16 @@ export interface EnvironmentPanelProps {
     readonly status: "idle" | "pending" | "error";
     readonly updatedAt: string | null;
   } | null;
+  /**
+   * Rail content rendered below the env card inside the overlay wrapper
+   * (the ambient computer preview). The wrapper is a flex column, so this
+   * stacks under the card; see AmbientRailSlot for the closed-state slide.
+   */
+  railBottom?: ReactNode;
   /** Per-thread pinned-message checklist (server-synced). */
   pinnedMessages: readonly PinnedMessage[];
-  /** Per-thread text markers (server-synced). */
-  threadMarkers: readonly ThreadMarker[];
   /** Live text of pinned messages still present in the transcript (for labels/availability). */
   pinnedMessageTextById: ReadonlyMap<MessageId, string>;
-  /** Live text of marked messages still present in the transcript (for labels/availability). */
-  markerMessageTextById: ReadonlyMap<MessageId, string>;
   /** Per-thread freeform scratchpad notes (server-synced). */
   notes: string;
   /** Active project whose local instructions should be edited. */
@@ -165,14 +174,6 @@ export interface EnvironmentPanelProps {
   onUnpinMessage: (messageId: MessageId) => void;
   /** Set (`null` clears to auto) a pinned message's label. */
   onRenamePinnedMessage: (messageId: MessageId, label: string | null) => void;
-  /** Scroll the transcript to a text marker. */
-  onJumpToThreadMarker: (marker: ThreadMarker) => void;
-  /** Toggle a marker's done state. */
-  onToggleThreadMarkerDone: (markerId: ThreadMarkerId) => void;
-  /** Remove a text marker. */
-  onRemoveThreadMarker: (markerId: ThreadMarkerId) => void;
-  /** Set (`null` clears to auto) a marker label. */
-  onRenameThreadMarker: (markerId: ThreadMarkerId, label: string | null) => void;
   /** Persist updated notes for the given thread (bound per section instance, not the active thread). */
   onNotesChange: (threadId: ThreadId, notes: string) => Promise<void>;
   /** Open the in-app editor workspace view (the Editor section's default first row). */
@@ -236,9 +237,7 @@ export function EnvironmentPanel({
   branchToolbar,
   recap: recapProp,
   pinnedMessages,
-  threadMarkers,
   pinnedMessageTextById,
-  markerMessageTextById,
   notes,
   activeProjectId,
   projectInstructions,
@@ -252,14 +251,11 @@ export function EnvironmentPanel({
   onTogglePinnedMessageDone,
   onUnpinMessage,
   onRenamePinnedMessage,
-  onJumpToThreadMarker,
-  onToggleThreadMarkerDone,
-  onRemoveThreadMarker,
-  onRenameThreadMarker,
   onNotesChange,
   onOpenEditorView: onOpenEditorViewProp,
   onClose,
   onRegisterCommitAndPushTrigger,
+  railBottom,
 }: EnvironmentPanelProps) {
   const githubRepository = githubRepositoryProp ?? null;
   const githubRepositories = githubRepositoriesProp ?? [];
@@ -268,6 +264,8 @@ export function EnvironmentPanel({
   const recap = recapProp ?? null;
   const onOpenEditorView = onOpenEditorViewProp ?? null;
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const removeWorktreeMutation = useMutation(gitRemoveWorktreeMutationOptions({ queryClient }));
   const { settings } = useAppSettings();
   const openRightDockPane = useRightDockStore((store) => store.openPane);
   const { additions, deletions, hasChanges } = diffTotals;
@@ -414,6 +412,47 @@ export function EnvironmentPanel({
             });
             onClose();
           }}
+          onDelete={(sidechat) => {
+            void (async () => {
+              if (settings.confirmThreadDelete) {
+                const confirmationMessage = [
+                  `Delete side chat "${sidechat.title}"?`,
+                  "This permanently clears conversation history for this side chat and its subagents.",
+                ].join("\n");
+                const api = readNativeApi();
+                const confirmed = api
+                  ? await api.dialogs.confirm(confirmationMessage)
+                  : await showConfirmDialogFallback(confirmationMessage);
+                if (!confirmed) return;
+              }
+              // The host can change workspace after the side chat is created. The shared delete
+              // helper prompts only if this side chat is now the last owner of its worktree.
+              // An open dock pane is pruned once the thread disappears.
+              await deleteActiveThreadFromClient({
+                threadId: sidechat.id,
+                includeSubagentDescendants: true,
+                onDeleted: ({ thread }) => {
+                  usePinnedThreadsStore.getState().unpinThread(thread.id);
+                  const drafts = useComposerDraftStore.getState();
+                  drafts.clearDraftThread(thread.id);
+                  drafts.clearProjectDraftThreadById(thread.projectId, thread.id);
+                  useTerminalStateStore.getState().clearTerminalState(thread.id);
+                  useSplitViewStore.getState().removeThreadFromSplitViews(thread.id);
+                  useTemporaryThreadStore.getState().clearTemporaryThread(thread.id);
+                },
+                removeWorktree: (worktree) => removeWorktreeMutation.mutateAsync(worktree),
+              });
+            })().catch((error) => {
+              toastManager.add({
+                type: "error",
+                title: "Could not delete side chat",
+                description:
+                  error instanceof Error
+                    ? error.message
+                    : "An error occurred while deleting the side chat.",
+              });
+            });
+          }}
         />
       ) : null}
 
@@ -492,20 +531,6 @@ export function EnvironmentPanel({
         </>
       ) : null}
 
-      {settings.showEnvironmentMarkers && threadMarkers.length > 0 ? (
-        <>
-          <EnvironmentSectionDivider />
-          <EnvironmentMarkersSection
-            markers={threadMarkers}
-            messageTextById={markerMessageTextById}
-            onJump={onJumpToThreadMarker}
-            onToggleDone={onToggleThreadMarkerDone}
-            onRemove={onRemoveThreadMarker}
-            onRename={onRenameThreadMarker}
-          />
-        </>
-      ) : null}
-
       {settings.showEnvironmentInstructions && activeProjectId ? (
         <>
           <EnvironmentSectionDivider />
@@ -556,6 +581,7 @@ export function EnvironmentPanel({
       >
         <div className="min-h-0 overflow-y-auto">{content}</div>
       </div>
+      {railBottom}
     </div>
   );
 }

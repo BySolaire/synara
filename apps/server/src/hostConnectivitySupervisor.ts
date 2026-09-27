@@ -12,6 +12,7 @@
 // identity changes, so "signed in" and "reachable" happen in the same moment.
 
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 import { accountCredentialsPath, readAccountFile, type StoredAccountFile } from "./accountAuth";
@@ -32,6 +33,8 @@ export function hostLinkKey(file: StoredAccountFile | undefined): string | undef
 
 export interface HostConnectivitySupervisorOptions {
   readonly baseDir: string;
+  /** A new root restarts the listener; leaf renewal preserves existing streams. */
+  readonly tlsIdentityPath?: string;
   /** Starts connectivity for the link currently on disk; resolves to its stop. */
   readonly start: () => Promise<() => void>;
   readonly log?: (message: string, detail?: Record<string, unknown>) => void;
@@ -81,7 +84,19 @@ export async function superviseHostConnectivity(
   };
 
   const reconcileOnce = async () => {
-    const key = hostLinkKey(await readAccountFile(options.baseDir));
+    const linkKey = hostLinkKey(await readAccountFile(options.baseDir));
+    let rootKey = "";
+    if (options.tlsIdentityPath) {
+      try {
+        const identity = JSON.parse(
+          await fs.promises.readFile(options.tlsIdentityPath, "utf8"),
+        ) as { rootCertificate: string };
+        rootKey = createHash("sha256").update(identity.rootCertificate).digest("hex");
+      } catch {
+        rootKey = "unavailable";
+      }
+    }
+    const key = linkKey ? `${linkKey}:${rootKey}` : undefined;
     if (stopped || key === activeKey) return;
     if (activeStop) {
       log(
@@ -150,6 +165,25 @@ export async function superviseHostConnectivity(
   } catch (error) {
     log("Credentials watcher unavailable; falling back to polling.", { error: String(error) });
   }
+  let identityWatcher: fs.FSWatcher | undefined;
+  if (options.tlsIdentityPath) {
+    try {
+      const identityFile = path.basename(options.tlsIdentityPath);
+      identityWatcher = fs.watch(
+        path.dirname(options.tlsIdentityPath),
+        { persistent: false },
+        (_event, filename) => {
+          if (!filename || filename.toString() === identityFile) scheduleReconcile();
+        },
+      );
+      identityWatcher.on("error", () => {
+        identityWatcher?.close();
+        identityWatcher = undefined;
+      });
+    } catch {
+      /* Polling still observes root creation and loss. */
+    }
+  }
   const poll = setInterval(() => void reconcile(), pollIntervalMs);
   poll.unref();
 
@@ -162,6 +196,7 @@ export async function superviseHostConnectivity(
       if (debounce) clearTimeout(debounce);
       clearInterval(poll);
       watcher?.close();
+      identityWatcher?.close();
       stopActive();
     },
   };

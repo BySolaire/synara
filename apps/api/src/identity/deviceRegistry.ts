@@ -5,13 +5,12 @@ import {
   SYNARA_DEVICE_ISSUER,
   type AccountDevice,
 } from "@synara/contracts";
-import { and, desc, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Schema } from "effect";
 import { decodeJwt } from "jose";
 import type * as schema from "../db/schema";
-import { devices, hosts } from "../db/schema";
-import { isUniqueViolation } from "./hostRecords";
+import { devices, hosts, deviceAccountSessions, deviceRevocationDeliveries } from "../db/schema";
 import { HostAuthDomainError, type DeviceRegistry } from "./interfaces";
 import { publicJwkThumbprint, verifyJwtWithEmbeddedJwk } from "./signing";
 import { writeRevocationEvents } from "./revocationLog";
@@ -44,7 +43,7 @@ export function createDeviceRegistry(
   apiIssuer: string,
 ): DeviceRegistry {
   return {
-    async register(userId, proof) {
+    async register(userId, proof, verifiedSessionId) {
       let claims: typeof DeviceRegisterClaims.Type;
       let jkt: string;
       try {
@@ -65,54 +64,145 @@ export function createDeviceRegistry(
         throw new HostAuthDomainError(401, "bad_proof", "Device proof is invalid");
       }
 
-      const upsert = async (): Promise<DeviceRow> => {
-        const [active] = await db
+      return db.transaction(async (tx) => {
+        // Serialize first registration too; row locks alone cannot lock an absent key.
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([userId, jkt])}, 0))`,
+        );
+        const rows = await tx
           .select()
           .from(devices)
-          .where(and(eq(devices.userId, userId), eq(devices.jkt, jkt), isNull(devices.revokedAt)))
-          .limit(1);
-        if (active) {
-          const [updated] = await db
-            .update(devices)
-            .set({
-              publicKeyJwk: claims.publicKeyJwk,
-              displayName: claims.displayName,
-              platform: claims.platform,
-            })
-            .where(and(eq(devices.id, active.id), isNull(devices.revokedAt)))
-            .returning();
-          if (updated) return updated;
-          // It was revoked after the select. Fall through and create the new
-          // active row promised by the re-registration contract.
+          .where(and(eq(devices.userId, userId), eq(devices.jkt, jkt)))
+          .for("update");
+        if (rows.some((row) => row.revokedAt !== null)) {
+          throw new HostAuthDomainError(
+            403,
+            "device_not_registered",
+            "This device key was revoked. Create a new device identity and pair it explicitly.",
+          );
         }
-        const [inserted] = await db
-          .insert(devices)
-          .values({
-            userId,
-            publicKeyJwk: claims.publicKeyJwk,
-            jkt,
-            displayName: claims.displayName,
-            platform: claims.platform,
-          })
-          .returning();
-        if (!inserted) throw new Error("Device insert returned no row");
-        return inserted;
-      };
+        const [revokedSession] = await tx
+          .select()
+          .from(deviceAccountSessions)
+          .where(
+            and(
+              eq(deviceAccountSessions.userId, userId),
+              eq(deviceAccountSessions.sessionId, verifiedSessionId),
+              isNotNull(deviceAccountSessions.revokedAt),
+            ),
+          )
+          .limit(1);
+        if (revokedSession)
+          throw new HostAuthDomainError(401, "unauthorized", "Account session was revoked");
+        const active = rows[0];
+        const values = {
+          publicKeyJwk: claims.publicKeyJwk,
+          displayName: claims.displayName,
+          platform: claims.platform,
+        };
+        const [row] = active
+          ? await tx.update(devices).set(values).where(eq(devices.id, active.id)).returning()
+          : await tx
+              .insert(devices)
+              .values({ ...values, userId, jkt })
+              .returning();
+        if (!row) throw new Error("Device registration returned no row");
+        await tx
+          .insert(deviceAccountSessions)
+          .values({ deviceId: row.id, userId, sessionId: verifiedSessionId })
+          .onConflictDoNothing();
+        return toAccountDevice(row);
+      });
+    },
 
-      try {
-        return toAccountDevice(await upsert());
-      } catch (error) {
-        // Concurrent first registration: the active partial unique index is
-        // the reservation. Retry as the upsert's update branch.
-        if (isUniqueViolation(error)) return toAccountDevice(await upsert());
-        throw error;
+    async isSessionRevoked(userId, sessionId) {
+      const [row] = await db
+        .select({ sessionId: deviceAccountSessions.sessionId })
+        .from(deviceAccountSessions)
+        .where(
+          and(
+            eq(deviceAccountSessions.userId, userId),
+            eq(deviceAccountSessions.sessionId, sessionId),
+            isNotNull(deviceAccountSessions.revokedAt),
+          ),
+        )
+        .limit(1);
+      return row !== undefined;
+    },
+
+    async revokeSessions(userId, deviceId, deliver) {
+      const bindings = await db.transaction(async (tx) => {
+        const [device] = await tx
+          .select()
+          .from(devices)
+          .where(and(eq(devices.id, deviceId), eq(devices.userId, userId)))
+          .for("update");
+        if (!device) return undefined;
+        await tx
+          .update(deviceAccountSessions)
+          .set({ revokedAt: new Date() })
+          .where(
+            and(
+              eq(deviceAccountSessions.deviceId, deviceId),
+              isNull(deviceAccountSessions.revokedAt),
+            ),
+          );
+        return tx
+          .select()
+          .from(deviceAccountSessions)
+          .where(eq(deviceAccountSessions.deviceId, deviceId));
+      });
+      if (!bindings) return undefined;
+      let confirmed = 0;
+      let pending = 0;
+      for (const binding of bindings) {
+        if (binding.deliveredAt) {
+          confirmed++;
+          continue;
+        }
+        try {
+          await deliver(binding.sessionId);
+          await db
+            .update(deviceAccountSessions)
+            .set({ deliveredAt: new Date() })
+            .where(
+              and(
+                eq(deviceAccountSessions.userId, userId),
+                eq(deviceAccountSessions.sessionId, binding.sessionId),
+                isNotNull(deviceAccountSessions.revokedAt),
+              ),
+            );
+          confirmed++;
+        } catch {
+          pending++;
+        }
       }
+      return { confirmed, pending };
     },
 
     async list(userId) {
-      return (await db.select().from(devices).where(eq(devices.userId, userId))).map(
-        toAccountDevice,
-      );
+      const ownDevices = await db.select().from(devices).where(eq(devices.userId, userId));
+      const deliveries = await db
+        .select({
+          deviceId: deviceRevocationDeliveries.deviceId,
+          hostId: hosts.id,
+          hostName: hosts.name,
+          confirmedAt: deviceRevocationDeliveries.confirmedAt,
+        })
+        .from(deviceRevocationDeliveries)
+        .innerJoin(devices, eq(devices.id, deviceRevocationDeliveries.deviceId))
+        .innerJoin(hosts, eq(hosts.id, deviceRevocationDeliveries.hostId))
+        .where(and(eq(devices.userId, userId), eq(hosts.ownerUserId, userId)));
+      return ownDevices.map((row) => ({
+        ...toAccountDevice(row),
+        revocationDeliveries: deliveries
+          .filter((delivery) => delivery.deviceId === row.id)
+          .map(({ hostId, hostName, confirmedAt }) => ({
+            hostId,
+            hostName,
+            confirmedAt: confirmedAt?.toISOString() ?? null,
+          })),
+      }));
     },
 
     async revoke(userId, deviceId, affectedOrgIds) {
@@ -149,6 +239,16 @@ export function createDeviceRegistry(
                 .limit(DEVICE_REVOKE_FANOUT_LIMIT)
             : [];
         if (affectedHosts.length > 0) {
+          await tx
+            .insert(deviceRevocationDeliveries)
+            .values(
+              affectedHosts.map((host) => ({
+                deviceId: revoked.id,
+                hostId: host.id,
+                revokedAt: revoked.revokedAt!,
+              })),
+            )
+            .onConflictDoNothing();
           await writeRevocationEvents(
             tx,
             affectedHosts.map((host) => ({

@@ -29,8 +29,11 @@ export function startEndpointReporter(options: EndpointReporterOptions): () => v
   const fingerprint = options.fingerprint ?? networkFingerprint;
   let previous = fingerprint();
   let reporting = false;
+  let stopped = false;
+  let retry = false;
   let pending = true;
   const flush = async () => {
+    if (stopped) return;
     if (reporting) {
       pending = true;
       return;
@@ -39,8 +42,14 @@ export function startEndpointReporter(options: EndpointReporterOptions): () => v
     try {
       do {
         pending = false;
-        await options.report().catch(() => {});
-      } while (pending);
+        try {
+          await options.report();
+          retry = false;
+        } catch {
+          retry = true;
+          break;
+        }
+      } while (pending && !stopped);
     } finally {
       reporting = false;
     }
@@ -48,10 +57,13 @@ export function startEndpointReporter(options: EndpointReporterOptions): () => v
   void flush();
   const interval = (options.setIntervalFn ?? setInterval)(() => {
     const current = fingerprint();
-    if (current === previous) return;
+    if (stopped || (current === previous && !retry)) return;
     previous = current;
     void flush();
   }, options.intervalMs ?? 10_000);
   interval.unref?.();
-  return () => (options.clearIntervalFn ?? clearInterval)(interval);
+  return () => {
+    stopped = true;
+    (options.clearIntervalFn ?? clearInterval)(interval);
+  };
 }

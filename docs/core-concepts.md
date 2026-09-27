@@ -20,7 +20,10 @@ using separate worktrees also have separate working directories and branches.
 
 ## The main surfaces
 
-- **Sidebar** — projects, spaces, tasks, and activity requiring attention
+- **Sidebar** — projects, spaces, tasks, and activity requiring attention. Stable and Beta builds offer a
+  rail layout (Settings → General → Sidebar layout): a fixed column of icon tabs for Home, Spaces,
+  Kanban, Pull requests, Automations, Studio, and Settings, with the thread panel beside it and the
+  route shown as a card inset from the window.
 - **Conversation** — user messages, agent responses, plans, tools, approvals, and subagent activity
 - **Composer** — objectives, attachments, provider selection, model selection, and task controls
 - **Terminal** — a real shell opened in the task's working directory
@@ -73,6 +76,10 @@ the conversation or split from one exact turn. Use a
 [handoff](https://www.trysynara.com/docs/workflows/handoffs) when another provider should continue
 the same task and ownership boundary.
 
+Sidechats inherit the source chat's selected permissions, including Full access. Approve for me
+is preserved when the selected provider and model support it; otherwise the sidechat uses Ask for
+approval. You can change a sidechat's permissions independently after creating it.
+
 ## Environments
 
 A task runs in one of two common environments.
@@ -87,6 +94,21 @@ history while keeping files and branch state separate.
 
 Read the [Git worktrees guide](https://www.trysynara.com/docs/workflows/worktrees) before starting
 several tasks in the same repository.
+
+### Cleaning up worktrees
+
+Deleting a task offers to delete its worktree when no other task uses it. Turn on **Delete worktree
+on archive** in **Settings → General** to remove a finished task's clean checkout after its Undo
+period ends. If another task still refers to the checkout, the session has not stopped, or Git finds
+uncommitted changes, the checkout stays. Automatic archive cleanup preserves its branch so commits
+remain recoverable. Restoring an archived task later restores its conversation, but a removed
+checkout must be recreated from that branch before work resumes. **Settings → Managed worktrees**
+lists managed worktrees for explicit removal. Those removals also delete the temporary `synara/*`
+branch, its empty managed folder, and recovery
+snapshots cached for that path. Automatic retention keeps the 15 most recently archived worktrees
+and snapshots older ones before removing them; those snapshots expire after 30 days.
+
+![Delete worktree on archive setting](assets/worktree-cleanup/1-setting-delete-worktree-on-archive.png)
 
 ## Providers, models, and sessions
 
@@ -178,3 +200,29 @@ complete current list.
 
 > **The rule that matters most:** a task is complete only after you understand and verify its result
 > — not when the provider reports that it is finished.
+
+## File previews
+
+File and explorer panels can expand across the chat area. Restore returns to the
+split layout; closing the last maximized panel returns to the chat. Closing the
+last panel in the ordinary split layout keeps the panel launcher open.
+
+Editable workspace files autosave after a 400 ms pause in typing. Save or
+Cmd/Ctrl+S saves immediately. The file editor, diff editor, and explorer share
+the same buffer and writer for an open file. Successful saves update Unstaged
+changes; they do not stage the file. Switching files, navigating to another
+page, and sending a prompt wait for pending editor saves.
+
+If a write fails or the file has changed on disk, autosave stops and keeps the
+draft. Save errors stay visible until resolved. Retry Save after fixing the cause,
+or use Reload from disk and confirm discarding the draft before leaving or sending. Reload
+discards the draft; an explicit Overwrite action in the full editor bypasses the
+version check. Drafts retained after a panel closes live only in the current app
+session, so they are not crash recovery backups.
+
+Markdown previews support basic workspace Wiki links: `[[notes/design]]` opens
+`notes/design.md` from the workspace root, and `[[notes/design|Design notes]]`
+uses an alias. Include the extension for other files, such as `[[guide.pdf]]`.
+Regular Markdown links remain relative to the document directory. Code, escaped
+Wiki syntax, embeds, and heading/block links are left literal; this is basic file
+navigation rather than full Obsidian support.

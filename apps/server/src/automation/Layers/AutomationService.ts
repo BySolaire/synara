@@ -1809,13 +1809,33 @@ export const AutomationServiceLive = Layer.effect(
         }),
       );
 
-    const enqueueCompletionEvaluationForRun = (run: AutomationRun) => {
+    const enqueueCompletionEvaluationForRun = (
+      run: AutomationRun,
+      // Rescans list up to 100 runs that often share a few automations; a
+      // per-scan cache turns the per-run definition query into one per automation.
+      // Runs are processed sequentially, so a plain value cache needs no locking.
+      definitionCache?: Map<string, Option.Option<AutomationDefinition>>,
+    ) => {
       if (run.status !== "succeeded" || run.result?.completionEvaluation !== undefined) {
         return Effect.void;
       }
+      // Already queued runs are dropped as duplicates after the lookup below;
+      // checking first spares the query entirely on every worker-cycle rescan.
+      if (queuedCompletionEvaluationRunIds.has(run.id)) {
+        return Effect.void;
+      }
 
-      return automationRepository.getDefinitionById({ id: run.automationId }).pipe(
-        Effect.mapError(toServiceError("Failed to load automation.")),
+      const cachedDefinition = definitionCache?.get(run.automationId);
+      const loadDefinition = cachedDefinition
+        ? Effect.succeed(cachedDefinition)
+        : automationRepository.getDefinitionById({ id: run.automationId }).pipe(
+            Effect.mapError(toServiceError("Failed to load automation.")),
+            Effect.tap((definitionOption) =>
+              Effect.sync(() => definitionCache?.set(run.automationId, definitionOption)),
+            ),
+          );
+
+      return loadDefinition.pipe(
         Effect.flatMap((definitionOption) =>
           Option.match(definitionOption, {
             onNone: () => Effect.void,
@@ -1850,9 +1870,14 @@ export const AutomationServiceLive = Layer.effect(
     const enqueuePendingCompletionEvaluations = () =>
       automationRepository.listRunsNeedingCompletionEvaluation({ limit: 100 }).pipe(
         Effect.mapError(toServiceError("Failed to list pending stop evaluations.")),
-        Effect.flatMap((runs) =>
-          Effect.forEach(runs, enqueueCompletionEvaluationForRun, { concurrency: 1 }),
-        ),
+        Effect.flatMap((runs) => {
+          const definitionCache = new Map<string, Option.Option<AutomationDefinition>>();
+          return Effect.forEach(
+            runs,
+            (run) => enqueueCompletionEvaluationForRun(run, definitionCache),
+            { concurrency: 1 },
+          );
+        }),
         Effect.asVoid,
       );
 
@@ -2636,6 +2661,55 @@ export const AutomationServiceLive = Layer.effect(
         yield* validateHeartbeatTarget(definition);
       });
 
+    const validateDedicatedProviderUpdate = (
+      current: AutomationDefinition,
+      updated: AutomationDefinition,
+    ) =>
+      Effect.gen(function* () {
+        if (
+          !automationOwnsItsThread(current.mode) ||
+          !automationOwnsItsThread(updated.mode) ||
+          current.modelSelection.provider === updated.modelSelection.provider
+        ) {
+          return;
+        }
+        // The first run may already be opening its task before targetThreadId is
+        // attached. Do not change its provider while that dispatch is in flight.
+        const activeRuns = yield* automationRepository
+          .listActiveRunsForDefinition({ automationId: current.id })
+          .pipe(Effect.mapError(toServiceError("Failed to load active automation runs.")));
+        if (activeRuns.length > 0) {
+          return yield* Effect.fail(
+            new AutomationServiceError({
+              message: "A dedicated automation cannot change providers while a run is active.",
+            }),
+          );
+        }
+        if (current.targetThreadId === null) return;
+        const threadOption = yield* projectionSnapshotQuery
+          .getThreadShellById(current.targetThreadId)
+          .pipe(Effect.mapError(toServiceError("Failed to load the dedicated automation task.")));
+        if (Option.isNone(threadOption)) {
+          return yield* Effect.fail(
+            new AutomationServiceError({
+              message:
+                "The dedicated automation's task was not found. Create a new automation to use another provider.",
+            }),
+          );
+        }
+        const thread = threadOption.value;
+        const boundProvider =
+          thread.session?.providerName ??
+          (thread.latestTurn !== null ? thread.modelSelection.provider : undefined);
+        if (boundProvider !== undefined && boundProvider !== updated.modelSelection.provider) {
+          return yield* Effect.fail(
+            new AutomationServiceError({
+              message: `This dedicated automation continues a task bound to "${boundProvider}". Keep that provider or create a new automation.`,
+            }),
+          );
+        }
+      });
+
     const saveDefinitionUpdate = (
       input: AutomationUpdateInput,
       attempt: number,
@@ -2652,6 +2726,7 @@ export const AutomationServiceLive = Layer.effect(
         const now = nextDefinitionUpdatedAt(current.updatedAt);
         const updated = mergeDefinitionUpdate(current, input, now, jitterContextFor(current.id));
         yield* validateDefinitionUpdate(updated, now);
+        yield* validateDedicatedProviderUpdate(current, updated);
         const savedOption = yield* automationRepository
           .saveDefinition({ definition: updated, expectedUpdatedAt: current.updatedAt })
           .pipe(Effect.mapError(toServiceError("Failed to update automation.")));

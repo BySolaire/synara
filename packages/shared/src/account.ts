@@ -245,6 +245,10 @@ export interface AccountClient {
   registerDevice(token: string, proof: string): Promise<RegisterDeviceResponse>;
   listDevices(token: string): Promise<ListDevicesResponse>;
   revokeDevice(token: string, deviceId: string): Promise<void>;
+  revokeDeviceAccountSessions(
+    token: string,
+    deviceId: string,
+  ): Promise<{ confirmed: number; pending: number }>;
   startHostLink(token: string, request: LinkStartRequest): Promise<LinkStartResponse>;
   completeHostLink(request: LinkCompleteRequest): Promise<LinkCompleteResponse>;
   startDeviceHostLink(): Promise<LinkDeviceStartResponse>;
@@ -258,6 +262,11 @@ export interface AccountClient {
   ): Promise<AccountHost>;
   requestRelayTicket(hostProof: string, hostId: string): Promise<RelayTicketResponse>;
   getHostAuthorization(hostProof: string, hostId: string): Promise<HostAuthorizationSnapshot>;
+  acknowledgeDeviceRevocations(
+    hostProof: string,
+    hostId: string,
+    deviceJkts: readonly string[],
+  ): Promise<void>;
   unlinkHost(hostProof: string, hostId: string): Promise<AccountHost>;
   updateHost(token: string, hostId: string, request: UpdateHostRequest): Promise<AccountHost>;
   deleteHost(token: string, hostId: string): Promise<void>;
@@ -574,6 +583,17 @@ export function createAccountClient(options: CreateAccountClientOptions): Accoun
       );
     },
 
+    async revokeDeviceAccountSessions(token, deviceId) {
+      return requestJson(
+        `/api/v1/devices/${encodeURIComponent(deviceId)}/account-sessions`,
+        { method: "DELETE", headers: authHeaders(token) },
+        Schema.Struct({
+          confirmed: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+          pending: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+        }),
+      );
+    },
+
     async revokeDevice(token, deviceId) {
       await requestEmpty(`/api/v1/devices/${encodeURIComponent(deviceId)}`, {
         method: "DELETE",
@@ -656,6 +676,14 @@ export function createAccountClient(options: CreateAccountClientOptions): Accoun
         { method: "POST", headers: hostProofHeaders(hostProof) },
         RelayTicketResponseSchema,
       );
+    },
+
+    async acknowledgeDeviceRevocations(hostProof, hostId, deviceJkts) {
+      await requestEmpty(`/api/v1/hosts/${encodeURIComponent(hostId)}/device-revocations/ack`, {
+        method: "POST",
+        headers: { ...hostProofHeaders(hostProof), "content-type": "application/json" },
+        body: JSON.stringify({ deviceJkts }),
+      });
     },
 
     async getHostAuthorization(hostProof, hostId) {

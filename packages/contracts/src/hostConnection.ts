@@ -31,7 +31,31 @@ export type HostConnectionTransport = typeof HostConnectionTransport.Type;
  * handshake is the ordinary Synara WebSocket protocol, spoken to the remote
  * host as if it were local.
  */
+export const HostConnectionState = Schema.Literals([
+  "connecting",
+  "connected",
+  "idle",
+  "reconnecting",
+  "needs-sign-in",
+  "revoked",
+  "incompatible",
+  "stopped",
+]);
+export type HostConnectionState = typeof HostConnectionState.Type;
+
+export const RemoteExecutionScope = Schema.Struct({
+  environmentId: TrimmedNonEmptyString,
+  accountAuthority: TrimmedNonEmptyString,
+  userId: TrimmedNonEmptyString,
+  organizationId: TrimmedNonEmptyString,
+  channel: Schema.Literals(["stable", "beta", "canary", "dev"]),
+});
+export type RemoteExecutionScope = typeof RemoteExecutionScope.Type;
+
 export const HostConnection = Schema.Struct({
+  executionScope: Schema.optional(RemoteExecutionScope),
+  state: Schema.optional(HostConnectionState),
+  environmentId: Schema.optional(TrimmedNonEmptyString),
   hostId: TrimmedNonEmptyString,
   hostName: TrimmedNonEmptyString,
   transport: HostConnectionTransport,
@@ -53,7 +77,17 @@ export const HostsDisconnectInput = Schema.Struct({
 });
 export type HostsDisconnectInput = typeof HostsDisconnectInput.Type;
 
+export const DesiredHostConnection = Schema.Struct({
+  hostId: TrimmedNonEmptyString,
+  environmentId: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  state: Schema.optional(HostConnectionState),
+  nextRetryAt: Schema.optional(IsoDateTime),
+});
+export type DesiredHostConnection = typeof DesiredHostConnection.Type;
+
 export const ListHostConnectionsResponse = Schema.Struct({
+  desiredHosts: Schema.optional(Schema.Array(DesiredHostConnection)),
   connections: Schema.Array(HostConnection),
 });
 export type ListHostConnectionsResponse = typeof ListHostConnectionsResponse.Type;

@@ -20,9 +20,12 @@ import {
   WS_PROJECT_FILE_WATCH_CAPABILITY,
   DEVICE_WS_CHANNELS,
   DEVICE_WS_METHODS,
+  COMPUTER_WS_CHANNELS,
+  COMPUTER_WS_METHODS,
   WsBootstrapNegotiateResult,
   WsBootstrapRpcGroup,
   WsDeviceRpcGroup,
+  WsComputerRpcGroup,
   WS_METHODS,
   WsCompatibilityError,
   WsFeatureRpcGroup,
@@ -44,6 +47,7 @@ import {
   type ServerProviderStatusesUpdatedPayload,
   type ServerSettingsUpdatedPayload,
   type DeviceEvent,
+  type ComputerEvent,
   type TerminalEvent,
   type WsPush,
   type WsPushChannel,
@@ -66,7 +70,6 @@ import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import * as Socket from "effect/unstable/socket/Socket";
 
 import { APP_VERSION } from "./branding";
-import { useDeviceStateStore } from "./deviceStateStore";
 import {
   getUnaryRpcCapacityRetryDelayMs,
   MAX_UNARY_RPC_CAPACITY_RETRY_ATTEMPTS,
@@ -74,10 +77,8 @@ import {
 import {
   buildThreadSubscribeInput,
   clearThreadDetailResumeCursor,
-  resetThreadDetailResumeCursors,
 } from "./threadDetailResumeCursors";
 import type { WsTransportState } from "./wsTransportEvents";
-import { readActiveHostSocketPrefix } from "./lib/hosts/activeHost";
 
 type PushListener<C extends WsPushChannel> = (message: WsPushMessage<C>) => void;
 
@@ -212,7 +213,9 @@ function awaitWithAbort<A>(promise: Promise<A>, signal: AbortSignal | undefined)
 // server is the authority that refuses them off darwin, and the pane needs a
 // real RPC error (or an `unsupported-platform` availability) to render its
 // blocked state. Merging here keeps one socket and one client.
-const makeRpcClient = RpcClient.make(WsFeatureRpcGroup.merge(WsDeviceRpcGroup));
+const makeRpcClient = RpcClient.make(
+  WsFeatureRpcGroup.merge(WsDeviceRpcGroup).merge(WsComputerRpcGroup),
+);
 const makeBootstrapRpcClient = RpcClient.make(WsBootstrapRpcGroup);
 const REQUEST_TIMEOUT_MS = 60_000;
 const FEATURE_CONNECTION_PROBE_TIMEOUT_MS = 10_000;
@@ -253,14 +256,16 @@ function delayMs(ms: number, signal: AbortSignal | undefined): Promise<void> {
 
 function resolveRpcUrl(rawUrl: string, path: string): string {
   const url = new URL(rawUrl);
-  // A window working on another host speaks to the shell's bridge for that
-  // host, which mounts the ordinary socket paths under a per-host prefix.
-  const prefix = readActiveHostSocketPrefix();
-  url.pathname = prefix ? `${prefix}${path}` : path;
+  // The endpoint is captured at construction. No mutable window selection is
+  // consulted here, so controller requests can never inherit a remote prefix.
+  const prefix = url.pathname.endsWith(WS_FEATURE_PATH)
+    ? url.pathname.slice(0, -WS_FEATURE_PATH.length)
+    : url.pathname.replace(/\/$/, "");
+  url.pathname = `${prefix}${path}`;
   return url.toString();
 }
 
-function rawSocketUrl(explicitUrl: string | null): string {
+export function rawSocketUrl(explicitUrl: string | null): string {
   if (explicitUrl) return explicitUrl;
   const bridgeUrl = window.desktopBridge?.getWsUrl();
   const envUrl = import.meta.env.VITE_WS_URL as string | undefined;
@@ -287,6 +292,8 @@ export function makeFeatureSocketUrl(
     String(compatibility.negotiatedRevision),
   );
   url.searchParams.set(WS_COMPATIBILITY_QUERY.serverInstanceId, compatibility.serverInstanceId);
+  if (compatibility.remoteAttachmentId)
+    url.searchParams.set("remoteAttachment", compatibility.remoteAttachmentId);
   return url.toString();
 }
 
@@ -323,7 +330,8 @@ export async function negotiateOverHttp(
   // never runs and the transport wedges; the legacy socket path got that
   // backstop for free from the browser's WS handshake timeout. The caller's
   // lifetime signal is composed in so disposal aborts the request too.
-  const deadline = AbortSignal.timeout(NEGOTIATE_HTTP_TIMEOUT_MS);
+  const remote = new URL(rawSocketUrl(explicitUrl)).pathname.startsWith("/ws/remote/");
+  const deadline = AbortSignal.timeout(remote ? 60_000 : NEGOTIATE_HTTP_TIMEOUT_MS);
   const signal = lifetimeSignal ? AbortSignal.any([lifetimeSignal, deadline]) : deadline;
   let response: Response;
   try {
@@ -677,7 +685,7 @@ export function resolveStreamAdmissionRetry(
   };
 }
 
-export function getStreamFailureCode(cause: Cause.Cause<unknown>): string | null {
+function getStreamFailureCode(cause: Cause.Cause<unknown>): string | null {
   for (const reason of cause.reasons) {
     if (!Cause.isFailReason(reason)) continue;
     const error = reason.error;
@@ -797,8 +805,11 @@ export class WsTransport {
   // cache was cleared by an intervening failure.
   private lastServerInstanceId: string | null = null;
 
-  constructor(url?: string) {
-    this.explicitUrl = url ?? null;
+  constructor(
+    url?: string,
+    private readonly options: { onGenerationChanged?: () => void } = {},
+  ) {
+    this.explicitUrl = rawSocketUrl(url ?? null);
     this.clientPromise = this.createSession().clientPromise;
     void this.clientPromise.catch((error) => {
       if (this.disposed || isTerminalCompatibilityFailure(error)) return;
@@ -1089,6 +1100,8 @@ export class WsTransport {
   private async negotiateCompatibility(): Promise<WsBootstrapNegotiateResult> {
     const httpResult = await negotiateOverHttp(this.explicitUrl, this.lifetime.signal);
     if (httpResult) return httpResult;
+    if (new URL(this.explicitUrl!).pathname.startsWith("/ws/remote/"))
+      throw new Error("Remote host negotiation unavailable");
     // dispose() may have run while the request was in flight; it captured a
     // null runtime and returned, so building one here would strand it.
     if (this.disposed) {
@@ -1128,20 +1141,7 @@ export class WsTransport {
     if (serverIdentityChanged(this.lastServerInstanceId, compatibility.serverInstanceId)) {
       this.latestPushByChannel.clear();
       this.sequence = 0;
-      // A resume cursor is only valid against the journal that issued its
-      // sequences. A new server instance may serve a different journal (fresh
-      // install, restored backup), so every cursor must reset to force full
-      // snapshots. `lastServerInstanceId` survives failed reconnects, unlike
-      // `compatibility`, so an outage longer than the first retry still
-      // detects the change. Interim tradeoff: this also drops resume across
-      // plain restarts of the same journal, acceptable until the protocol
-      // carries a durable journal epoch.
-      resetThreadDetailResumeCursors();
-      // Device thread state is gated on a per-thread version that the server
-      // restarts at 0. A stale higher version would reject the new instance's
-      // snapshots as stragglers and leave the pane showing pre-restart devices
-      // and attachments forever, so the cache is dropped with the cursors.
-      useDeviceStateStore.getState().clear();
+      this.options.onGenerationChanged?.();
     }
     this.lastServerInstanceId = compatibility.serverInstanceId;
     this.setCompatibility(compatibility);
@@ -1177,7 +1177,7 @@ export class WsTransport {
     const sessionVersion = ++this.sessionVersion;
     // Reconnects reuse the cached negotiation while the server generation is
     // unchanged, so a reconnect costs exactly one WebSocket handshake.
-    const cachedCompatibility = this.compatibility;
+    const cachedCompatibility = this.compatibility?.remoteAttachmentId ? null : this.compatibility;
     const clientPromise = (async () => {
       const compatibility = cachedCompatibility ?? (await this.negotiateCompatibility());
       if (this.disposed || this.sessionVersion !== sessionVersion) {
@@ -1561,6 +1561,14 @@ export class WsTransport {
             (event: DeviceEvent) => this.emit(DEVICE_WS_CHANNELS.event, event),
             restartChannel,
           );
+        } else if (channel === COMPUTER_WS_CHANNELS.event) {
+          this.startStream(
+            client,
+            "computer.events",
+            client[COMPUTER_WS_METHODS.subscribeEvents]({}),
+            (event: ComputerEvent) => this.emit(COMPUTER_WS_CHANNELS.event, event),
+            restartChannel,
+          );
         } else if (channel === ORCHESTRATION_WS_CHANNELS.domainEvent) {
           this.startStream(
             client,
@@ -1595,6 +1603,7 @@ export class WsTransport {
     else if (channel === WS_CHANNELS.projectDevServerEvent) this.stopStream("project.devServers");
     else if (channel === WS_CHANNELS.automationEvent) this.stopStream("automation.events");
     else if (channel === DEVICE_WS_CHANNELS.event) this.stopStream("device.events");
+    else if (channel === COMPUTER_WS_CHANNELS.event) this.stopStream("computer.events");
     else if (channel === ORCHESTRATION_WS_CHANNELS.domainEvent)
       this.stopStream("orchestration.domain");
   }

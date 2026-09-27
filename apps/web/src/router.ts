@@ -1,5 +1,13 @@
+import { windowQueryNamespace } from "./lib/hosts/controlQueryScope";
+import { registerExecutionSwitchGuard } from "./lib/hosts/executionSwitch";
+import {
+  flushWorkspaceEditors,
+  recoverWorkspaceEditors,
+  readWorkspaceEditorDrafts,
+} from "./lib/workspaceEditorSession";
+import { flushDeferredStorage } from "./lib/storage";
 import { createElement } from "react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, hashKey } from "@tanstack/react-query";
 import { createRouter } from "@tanstack/react-router";
 
 import { watchAccountIdentityChanges } from "./lib/accountReactQuery";
@@ -9,12 +17,26 @@ import { StoreProvider } from "./store";
 type RouterHistory = NonNullable<Parameters<typeof createRouter>[0]["history"]>;
 
 export function getRouter(history: RouterHistory) {
-  const queryClient = new QueryClient();
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { queryKeyHashFn: (key) => hashKey(windowQueryNamespace(key)) } },
+  });
   // Evicts account-scoped caches whenever the signed-in identity changes —
   // including switches this client only observes through a status refetch
   // (an account switch performed by another renderer against the shared
   // server). Lives as long as the QueryClient, so never unsubscribed.
   watchAccountIdentityChanges(queryClient);
+  registerExecutionSwitchGuard({
+    flush: async () => {
+      const saved = await flushWorkspaceEditors(queryClient);
+      if (saved) flushDeferredStorage();
+      return saved;
+    },
+    recover: () => {
+      recoverWorkspaceEditors(queryClient);
+      flushDeferredStorage();
+    },
+    drafts: () => readWorkspaceEditorDrafts(queryClient),
+  });
 
   return createRouter({
     routeTree,

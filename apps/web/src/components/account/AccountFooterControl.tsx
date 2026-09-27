@@ -99,7 +99,7 @@ function SignedInFooter() {
           color={avatarColor}
           image={avatarImage}
           className="size-5 shrink-0"
-          textClassName="text-[10px]"
+          textClassName="text-ui-xs"
         />
         <span className="min-w-0 flex-1 truncate">{accountFirstName(me)}</span>
         <ChevronUpIcon className="size-3.5 shrink-0 text-muted-foreground" />
@@ -107,10 +107,8 @@ function SignedInFooter() {
       <ComposerPickerMenuPopup side="top" align="start" className="w-60 min-w-60">
         <MenuGroup>
           <div className="flex flex-col gap-0.5 px-2 py-1.5">
-            <span className="truncate text-[length:var(--app-font-size-ui,12px)] font-medium text-foreground">
-              {displayName}
-            </span>
-            <span className="truncate text-[length:var(--app-font-size-ui-sm,11px)] text-muted-foreground">
+            <span className="truncate text-ui font-medium text-foreground">{displayName}</span>
+            <span className="truncate text-ui-sm text-muted-foreground">
               {profile ? `@${profile.handle} · ${me.email}` : me.email}
             </span>
           </div>
@@ -200,7 +198,7 @@ function SignedOutFooter() {
       >
         <span
           aria-hidden="true"
-          className="flex size-5 shrink-0 items-center justify-center rounded-full border border-dashed border-muted-foreground/48 text-[10px] text-muted-foreground"
+          className="flex size-5 shrink-0 items-center justify-center rounded-full border border-dashed border-muted-foreground/48 text-ui-xs text-muted-foreground"
         >
           ?
         </span>
@@ -210,10 +208,8 @@ function SignedOutFooter() {
       <ComposerPickerMenuPopup side="top" align="start" className="w-60 min-w-60">
         <MenuGroup>
           <div className="flex flex-col gap-0.5 px-2 py-1.5">
-            <span className="text-[length:var(--app-font-size-ui,12px)] font-medium text-foreground">
-              You&rsquo;re in local mode
-            </span>
-            <span className="text-[length:var(--app-font-size-ui-sm,11px)] leading-snug text-muted-foreground">
+            <span className="text-ui font-medium text-foreground">You&rsquo;re in local mode</span>
+            <span className="text-ui-sm leading-snug text-muted-foreground">
               Sign in to sync your profile and workspace across devices.
             </span>
           </div>

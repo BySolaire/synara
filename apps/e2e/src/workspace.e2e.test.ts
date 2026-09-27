@@ -1,0 +1,407 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { createHash, randomUUID } from "node:crypto";
+import type { HostConnection, OrchestrationThreadDetailSnapshot } from "@synara/contracts";
+import { workspaceRpc } from "./harness/rpc";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { chromium } from "playwright";
+import { expect, it } from "vitest";
+import { createE2eFixture } from "./harness/fixture";
+import { startWorkspace } from "./harness/workspace";
+import { requestLocalRemoteAccess } from "../../server/src/remotePairing/cli";
+
+// Explicit build-dependent qualification; the ordinary transport suite remains build-independent.
+it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
+  "switches a real browser between complete controller and execution servers",
+  async () => {
+    if (!process.env.TEST_DATABASE_URL)
+      throw new Error("An isolated TEST_DATABASE_URL is required");
+    await using fixture = await createE2eFixture(process.env.TEST_DATABASE_URL);
+    await fixture.linkHost();
+    const controllerDir = path.join(fixture.baseDir, "controller");
+    await fixture.prepareController(controllerDir);
+    await fs.mkdir(path.join(fixture.baseDir, "bin"));
+    const fixtureBinary = path.join(fixture.baseDir, "bin", "codex");
+    await fs.copyFile(path.join(import.meta.dirname, "harness/codexFixture.mjs"), fixtureBinary);
+    await fs.chmod(fixtureBinary, 0o755);
+    await fs.mkdir(path.join(fixture.baseDir, "userdata"), { recursive: true });
+    await fs.writeFile(
+      path.join(fixture.baseDir, "userdata/settings.json"),
+      JSON.stringify({
+        providers: {
+          codex: { binaryPath: fixtureBinary, homePath: path.join(fixture.baseDir, "codex-home") },
+        },
+      }),
+    );
+    await using host = await startWorkspace(fixture.baseDir, fixture.relayOrigin);
+    await using controller = await startWorkspace(controllerDir, fixture.relayOrigin);
+    const projectId = randomUUID();
+    const roots = [path.join(host.baseDir, "project"), path.join(controller.baseDir, "project")];
+    for (const [index, root] of roots.entries()) {
+      await fs.mkdir(root, { recursive: true });
+      await promisify(execFile)("git", [
+        "init",
+        "--initial-branch",
+        index === 0 ? "fixture-remote" : "fixture-local",
+        root,
+      ]);
+      await fs.writeFile(
+        path.join(root, "same.txt"),
+        index === 0 ? "REMOTE original" : "LOCAL original",
+      );
+      await promisify(execFile)("git", ["-C", root, "add", "same.txt"]);
+      await promisify(execFile)("git", [
+        "-C",
+        root,
+        "-c",
+        "user.name=Synara fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "-m",
+        "Initial isolated fixture",
+      ]);
+      await using rpc = await workspaceRpc(index === 0 ? host.origin : controller.origin);
+      await rpc.request("orchestration.dispatchCommand", {
+        type: "project.create",
+        commandId: randomUUID(),
+        projectId,
+        title: index === 0 ? "REMOTE checkout" : "LOCAL checkout",
+        workspaceRoot: root,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    const invitation = await requestLocalRemoteAccess(host.baseDir, {
+      operation: "create-invitation",
+    });
+    expect(invitation.kind).toBe("invitation");
+    if (invitation.kind !== "invitation") throw new Error("Missing invitation");
+    await expect
+      .poll(
+        async () => {
+          const response = await fetch(
+            `${fixture.relayOrigin}/healthz/host/${invitation.bundle.hostId}`,
+          );
+          return ((await response.json()) as { ready: boolean }).ready;
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(true);
+    const device = await requestLocalRemoteAccess(controller.baseDir, { operation: "device-info" });
+    if (device.kind !== "device-info") throw new Error("Missing device");
+    const pairing = requestLocalRemoteAccess(controller.baseDir, {
+      operation: "pair",
+      bundle: invitation.bundle,
+    });
+    // Install the rejection handler immediately while the independent owner polls.
+    const paired = pairing.then(
+      (value) => ({ value }),
+      (error) => {
+        console.error("Pair failed", error);
+        return { error };
+      },
+    );
+    await expect
+      .poll(
+        async () => {
+          const state = await requestLocalRemoteAccess(host.baseDir, { operation: "list" });
+          return (
+            state.kind === "host-state" &&
+            state.invitations.some((item) => item.pendingDevice?.deviceJkt === device.deviceJkt)
+          );
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(true);
+    await requestLocalRemoteAccess(host.baseDir, {
+      operation: "approve",
+      inviteId: invitation.bundle.inviteId,
+      deviceJkt: device.deviceJkt,
+    });
+    expect(await paired).toMatchObject({ value: { kind: "paired" } });
+    const browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({
+      reducedMotion: "reduce",
+      viewport: { width: 1440, height: 1000 },
+    });
+    await page.addLocatorHandler(
+      page.getByRole("button", { name: "Skip setup", exact: true }),
+      async (button) => {
+        await button.click();
+      },
+    );
+    await page.addLocatorHandler(
+      page.getByRole("button", { name: "Not now", exact: true }),
+      async (button) => {
+        await button.click();
+      },
+    );
+    try {
+      await page.goto(controller.origin);
+      await page
+        .getByRole("button", { name: /This computer.*Connected/ })
+        .first()
+        .waitFor();
+      await page
+        .getByRole("button", { name: /This computer.*Connected/ })
+        .first()
+        .click();
+      await page.getByRole("menuitem", { name: "Manage connections", exact: true }).click();
+      await page.getByRole("button", { name: "Connect", exact: true }).first().click();
+      await page
+        .getByRole("button", { name: new RegExp(`${invitation.bundle.label}.*Connected`) })
+        .first()
+        .waitFor();
+      await page.getByText("REMOTE checkout", { exact: true }).first().waitFor();
+      expect(await page.getByText("LOCAL checkout", { exact: true }).count()).toBe(0);
+      await using localRpc = await workspaceRpc(controller.origin);
+      const connection = await localRpc.request<HostConnection>("hosts.connect", {
+        hostId: invitation.bundle.hostId,
+      });
+      await using remoteRpc = await workspaceRpc(controller.origin, connection.wsPath);
+      expect(
+        await remoteRpc.request("projects.readFile", { cwd: roots[0], relativePath: "same.txt" }),
+      ).toMatchObject({ contents: "REMOTE original" });
+      await remoteRpc.request("projects.writeFile", {
+        cwd: roots[0],
+        relativePath: "same.txt",
+        contents: "REMOTE changed",
+      });
+      expect(await fs.readFile(path.join(roots[0]!, "same.txt"), "utf8")).toBe("REMOTE changed");
+      expect(await fs.readFile(path.join(roots[1]!, "same.txt"), "utf8")).toBe("LOCAL original");
+      await page.reload();
+      await page
+        .getByRole("button", { name: new RegExp(`${invitation.bundle.label}.*Connected`) })
+        .first()
+        .waitFor();
+      expect(await remoteRpc.request("git.status", { cwd: roots[0] })).toMatchObject({
+        branch: "fixture-remote",
+      });
+      const threadId = randomUUID();
+      const modelSelection = { provider: "codex", model: "gpt-6-astra" };
+      await remoteRpc.request("orchestration.dispatchCommand", {
+        type: "thread.create",
+        commandId: randomUUID(),
+        threadId,
+        projectId,
+        title: "Remote continuity fixture",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        envMode: "local",
+        branch: null,
+        worktreePath: null,
+        createdAt: new Date().toISOString(),
+      });
+      await remoteRpc.request("terminal.open", { threadId, terminalId: "fixture", cwd: roots[0] });
+      await remoteRpc.request("terminal.write", {
+        threadId,
+        terminalId: "fixture",
+        data: "printf REMOTE_TERMINAL > terminal-proof.txt\r",
+      });
+      await expect
+        .poll(() => fs.readFile(path.join(roots[0]!, "terminal-proof.txt"), "utf8"))
+        .toBe("REMOTE_TERMINAL");
+      expect(
+        await fs.stat(path.join(roots[1]!, "terminal-proof.txt")).then(
+          () => true,
+          () => false,
+        ),
+      ).toBe(false);
+      const bytes = new Uint8Array(512 * 1024).fill(91);
+      const resourceUrl = (resource: object) =>
+        `${controller.origin}/api/remote/resource/${invitation.bundle.hostId}?${new URLSearchParams({ reference: JSON.stringify({ environmentId: invitation.bundle.environmentId, resource }) })}`;
+      const uploaded = await fetch(
+        resourceUrl({
+          kind: "attachment-upload",
+          threadId,
+          type: "file",
+          name: "fixture.bin",
+          mimeType: "application/octet-stream",
+        }),
+        {
+          method: "POST",
+          headers: { origin: controller.origin, "content-type": "application/octet-stream" },
+          body: bytes,
+        },
+      );
+      expect(uploaded.status, await uploaded.clone().text()).toBe(201);
+      const attachment = (await uploaded.json()) as { id: string };
+      await remoteRpc.request("orchestration.dispatchCommand", {
+        type: "thread.turn.start",
+        commandId: randomUUID(),
+        threadId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        envMode: "local",
+        message: {
+          messageId: randomUUID(),
+          role: "user",
+          text: "Run the isolated continuity fixture",
+          attachments: [attachment],
+        },
+        createdAt: new Date().toISOString(),
+      });
+      await expect
+        .poll(
+          async () => {
+            const snapshot = await remoteRpc.request<OrchestrationThreadDetailSnapshot>(
+              "orchestration.getThreadDetailSnapshot",
+              { threadId },
+            );
+            return JSON.stringify(snapshot).includes("REMOTE STREAM STARTED");
+          },
+          { timeout: 20_000 },
+        )
+        .toBe(true);
+      await page.getByText("Remote continuity fixture", { exact: true }).first().click();
+      await page.getByText("REMOTE STREAM STARTED", { exact: true }).waitFor();
+      await controller.stop();
+      await fs.writeFile(path.join(host.baseDir, "finish-fixture-turn"), "finish");
+      await expect
+        .poll(async () =>
+          (await fs.readFile(path.join(host.baseDir, "fixture-provider.jsonl"), "utf8")).includes(
+            '"completed"',
+          ),
+        )
+        .toBe(true);
+      await using restartedController = await startWorkspace(
+        controllerDir,
+        fixture.relayOrigin,
+        controller.origin,
+      );
+      await page.reload();
+      await page
+        .getByText("REMOTE STREAM STARTED — COMPLETED WHILE CONTROLLER WAS STOPPED", {
+          exact: true,
+        })
+        .waitFor();
+      const providerEvents = (
+        await fs.readFile(path.join(host.baseDir, "fixture-provider.jsonl"), "utf8")
+      )
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(providerEvents.filter((event) => event.kind === "turn")).toHaveLength(1);
+      expect(providerEvents.find((event) => event.kind === "completed").pid).toBe(
+        providerEvents.find((event) => event.kind === "turn").pid,
+      );
+      const downloaded = await fetch(
+        resourceUrl({ kind: "attachment", attachmentId: attachment.id }),
+      );
+      expect(downloaded.status).toBe(200);
+      const received = new Uint8Array(await downloaded.arrayBuffer());
+      expect(received.byteLength).toBe(bytes.byteLength);
+      expect(createHash("sha256").update(received).digest("hex")).toBe(
+        createHash("sha256").update(bytes).digest("hex"),
+      );
+      const range = await fetch(resourceUrl({ kind: "attachment", attachmentId: attachment.id }), {
+        headers: { range: "bytes=7-38" },
+      });
+      expect(range.status).toBe(206);
+      expect(new Uint8Array(await range.arrayBuffer())).toEqual(bytes.slice(7, 39));
+      await using recoveredLocal = await workspaceRpc(controller.origin);
+      const recoveredConnection = await recoveredLocal.request<HostConnection>("hosts.connect", {
+        hostId: invitation.bundle.hostId,
+      });
+      await using recoveredRemote = await workspaceRpc(
+        controller.origin,
+        recoveredConnection.wsPath,
+      );
+      await recoveredRemote.request("orchestration.dispatchCommand", {
+        type: "thread.turn.start",
+        commandId: randomUUID(),
+        threadId,
+        modelSelection,
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        message: {
+          messageId: randomUUID(),
+          role: "user",
+          text: "APPROVAL FIXTURE",
+          attachments: [],
+        },
+        createdAt: new Date().toISOString(),
+      });
+      await page.getByRole("button", { name: /Approve once/ }).click();
+      await expect
+        .poll(async () =>
+          (await fs.readFile(path.join(host.baseDir, "fixture-provider.jsonl"), "utf8")).includes(
+            '"decision":"accept"',
+          ),
+        )
+        .toBe(true);
+      await recoveredRemote.request("orchestration.dispatchCommand", {
+        type: "thread.turn.interrupt",
+        commandId: randomUUID(),
+        threadId,
+        createdAt: new Date().toISOString(),
+      });
+      await expect
+        .poll(async () =>
+          (await fs.readFile(path.join(host.baseDir, "fixture-provider.jsonl"), "utf8")).includes(
+            '"interrupted"',
+          ),
+        )
+        .toBe(true);
+      const evidenceDir = process.env.SYNARA_E2E_EVIDENCE;
+      if (evidenceDir) {
+        await fs.mkdir(evidenceDir, { recursive: true });
+        await page.screenshot({ path: path.join(evidenceDir, "workspace-remote.png") });
+      }
+      await requestLocalRemoteAccess(host.baseDir, {
+        operation: "revoke-device",
+        deviceJkt: device.deviceJkt,
+      });
+      await expect
+        .poll(async () => {
+          try {
+            await recoveredRemote.request("server.getEnvironment");
+            return false;
+          } catch {
+            return true;
+          }
+        })
+        .toBe(true);
+      const refused = await fetch(resourceUrl({ kind: "attachment", attachmentId: attachment.id }));
+      expect(refused.ok).toBe(false);
+      await host.stop();
+      const taskPid = providerEvents.find((event) => event.kind === "turn").pid as number;
+      await expect
+        .poll(() => {
+          try {
+            process.kill(taskPid, 0);
+            return false;
+          } catch {
+            return true;
+          }
+        })
+        .toBe(true);
+      await page.reload();
+      await page
+        .getByRole("button", { name: /Back to this computer|Return to this computer/ })
+        .first()
+        .click({ timeout: 40_000 });
+      await page
+        .getByRole("button", { name: /This computer.*Connected/ })
+        .first()
+        .waitFor();
+      await page.getByText("LOCAL checkout", { exact: true }).first().waitFor();
+      expect(await page.getByText("REMOTE checkout", { exact: true }).count()).toBe(0);
+      if (evidenceDir)
+        await page.screenshot({ path: path.join(evidenceDir, "workspace-local-recovery.png") });
+    } catch (error) {
+      console.error(await page.locator("body").innerText());
+      throw error;
+    } finally {
+      await browser.close();
+    }
+  },
+  120_000,
+);

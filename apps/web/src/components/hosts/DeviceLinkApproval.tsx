@@ -104,18 +104,14 @@ export function DeviceLinkApproval() {
           )}
         >
           <SidebarHeaderNavigationControls />
-          <span className="text-[length:var(--app-font-size-ui-lg,13px)] font-medium text-foreground">
-            Link a machine
-          </span>
+          <span className="text-ui-lg font-medium text-foreground">Link a machine</span>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-8 sm:px-6">
           <div className="mx-auto w-full max-w-lg space-y-4">
             <div className="space-y-1">
-              <h1 className="font-display text-[length:var(--app-font-size-title,20px)] text-foreground">
-                Approve a device code
-              </h1>
-              <p className="text-[length:var(--app-font-size-ui,12px)] text-muted-foreground">
+              <h1 className="font-display text-ui-lg text-foreground">Approve a device code</h1>
+              <p className="text-ui text-muted-foreground">
                 A machine without a browser prints a short code when it asks to join your account.
                 Enter it here to link it. Codes never contain I, O, 0 or 1.
               </p>
@@ -123,10 +119,7 @@ export function DeviceLinkApproval() {
 
             <div className={cn(SETTINGS_CARD_CLASS_NAME, "space-y-4 p-4")}>
               {signedIn ? null : (
-                <p
-                  className="text-[length:var(--app-font-size-ui,12px)] text-muted-foreground"
-                  role="status"
-                >
+                <p className="text-ui text-muted-foreground" role="status">
                   Sign in to approve a device code.
                 </p>
               )}
@@ -152,7 +145,7 @@ export function DeviceLinkApproval() {
                   role="status"
                   aria-live="polite"
                   className={cn(
-                    "text-[length:var(--app-font-size-ui-sm,11px)]",
+                    "text-ui-sm",
                     state.status === "failed" ? "text-destructive" : "text-muted-foreground",
                   )}
                 >

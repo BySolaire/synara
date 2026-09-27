@@ -1,3 +1,4 @@
+import { executionStorage } from "./lib/hosts/executionStorage";
 // FILE: confirmedCustomBinaryPathStore.ts
 // Purpose: Persist which custom provider binary paths a successful session has
 //   already confirmed, so the "uses a custom local binary path" warning does not
@@ -25,7 +26,7 @@ export function loadConfirmedCustomBinaryPaths(): Partial<Record<ProviderKind, s
   }
   let raw: string | null = null;
   try {
-    raw = window.localStorage.getItem(STORAGE_KEY);
+    raw = executionStorage.getItem(STORAGE_KEY);
   } catch {
     return {};
   }
@@ -61,7 +62,7 @@ export function saveConfirmedCustomBinaryPaths(paths: Partial<Record<ProviderKin
     return;
   }
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(paths));
+    executionStorage.setItem(STORAGE_KEY, JSON.stringify(paths));
   } catch {
     // Best-effort persistence; ignore quota/availability errors.
   }

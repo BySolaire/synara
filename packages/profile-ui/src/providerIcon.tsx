@@ -240,6 +240,23 @@ export const AntigravityIcon: ProviderGlyph = (props) => (
  * wrapper spreads this map and overrides `opencode` with its Central-asset dark-mode
  * variant.
  */
+export const OmpIcon: ProviderGlyph = (props) => {
+  const gradientId = "synara-omp-logo";
+
+  return (
+    <svg {...props} viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#ed4abf" />
+          <stop offset=".5" stopColor="#9b4dff" />
+          <stop offset="1" stopColor="#5ad8e6" />
+        </linearGradient>
+      </defs>
+      <path fill={`url(#${gradientId})`} d="M14 16h36v8H40v32h-8V24h-6v22h-8V24h-4z" />
+    </svg>
+  );
+};
+
 export const PROVIDER_GLYPHS = {
   codex: OpenAIIcon,
   claudeAgent: ClaudeIcon,
@@ -250,6 +267,7 @@ export const PROVIDER_GLYPHS = {
   droid: DroidIcon,
   opencode: OpenCodeIcon,
   pi: PiIcon,
+  omp: OmpIcon,
 } satisfies Record<string, ProviderGlyph>;
 
 export type ProviderGlyphKey = keyof typeof PROVIDER_GLYPHS;
@@ -265,6 +283,7 @@ export const PROVIDER_LABELS: Record<ProviderGlyphKey, string> = {
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  omp: "Oh My Pi",
 };
 
 export function providerLabel(provider: string): string {

@@ -52,6 +52,7 @@ function postJson(app: Hono, path: string, body: unknown, clientIp: string) {
 
 describe.skipIf(!TEST_DATABASE_URL)("createV1Routes", () => {
   const databaseUrl = TEST_DATABASE_URL as string;
+  let database: ReturnType<typeof createDb>;
   let pool: Awaited<ReturnType<typeof createDb>>["pool"];
   let workos: FakeWorkos;
   let config: WorkosApiConfig;
@@ -153,7 +154,7 @@ describe.skipIf(!TEST_DATABASE_URL)("createV1Routes", () => {
   }
 
   function buildApp(options: BuildAppOptions = {}) {
-    const { db } = createDb(databaseUrl);
+    const { db } = database;
     const app = new Hono();
     app.route("/api/v1", routesFor(db, config, options));
     return { app, db };
@@ -167,12 +168,13 @@ describe.skipIf(!TEST_DATABASE_URL)("createV1Routes", () => {
       issuer: config.apiPublicUrl,
       seed: config.apiSigningKey,
     });
-    pool = createDb(databaseUrl).pool;
+    database = createDb(databaseUrl);
+    pool = database.pool;
   });
 
   afterAll(async () => {
-    await pool.end();
-    await workos.close();
+    await pool?.end();
+    await workos?.close();
   });
 
   // The membership cache is process-global and outlives a single request, so a
@@ -190,6 +192,17 @@ describe.skipIf(!TEST_DATABASE_URL)("createV1Routes", () => {
 
     const hostsRes = await app.request("/api/v1/hosts");
     expect(hostsRes.status).toBe(401);
+  });
+
+  it("reports a session-store outage as a server failure, not invalid credentials", async () => {
+    const session = await signIn();
+    const unavailable = createDb(databaseUrl);
+    await unavailable.pool.end();
+    const app = new Hono();
+    app.onError(() => new Response("Session store unavailable", { status: 500 }));
+    app.route("/api/v1", routesFor(unavailable.db, config));
+    const response = await app.request("/api/v1/me", { headers: authHeaders(session.token) });
+    expect(response.status).toBe(500);
   });
 
   it("rejects an expired access token", async () => {
@@ -2430,7 +2443,7 @@ describe.skipIf(!TEST_DATABASE_URL)("createV1Routes", () => {
     // membership was revoked between requireOrgSession's fresh check and the
     // count — fail closed, never rename on behalf of nobody.
     it("refuses to rename when the member count comes back zero", async () => {
-      const { db } = createDb(databaseUrl);
+      const { db } = database;
       const { verifier, grants } = createWorkosIdentityProvider(config);
       const renameOrganization = vi.fn();
       const app = new Hono();

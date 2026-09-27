@@ -14,11 +14,8 @@ import {
   type ProviderKind,
   type UploadChatAttachment,
 } from "@synara/contracts";
-import {
-  ATTACHMENT_CANCEL_ROUTE_PATH,
-  ATTACHMENT_UPLOAD_ROUTE_PATH,
-} from "@synara/shared/binaryTransfer";
 import { applyClaudePromptEffortPrefix, getModelCapabilities } from "@synara/shared/model";
+import { parseComputerInvocation } from "@synara/shared/computerInvocation";
 
 import {
   cloneComposerImageAttachment,
@@ -31,10 +28,11 @@ import { readComposerImageBlob } from "./composerImageBlobStore";
 import {
   ComposerImagePreparationError,
   prepareComposerImageFile,
+  prepareModelScreenImage,
 } from "./composerImagePreparation";
-import { normalizeComposerImageSource } from "./composerImageSource";
+import { appSnapUploadName, normalizeComposerImageSource } from "./composerImageSource";
 import { randomUUID } from "./utils";
-import { resolveWsHttpUrl } from "./wsHttpUrl";
+import { resolveExecutionResource } from "./wsHttpUrl";
 
 const ATTACHMENT_CANCEL_CONCURRENCY = 2;
 const ATTACHMENT_CANCEL_BODY_MAX_BYTES = 512;
@@ -202,6 +200,14 @@ export function formatOutgoingComposerPrompt(params: {
 }): string {
   const caps = getModelCapabilities(params.provider, params.model);
   if (params.effort && caps.promptInjectedEffortLevels.includes(params.effort)) {
+    const computerInvocation = parseComputerInvocation(params.text);
+    if (computerInvocation) {
+      const prompt = applyClaudePromptEffortPrefix(
+        computerInvocation.prompt,
+        params.effort as ClaudeCodeEffort | null,
+      );
+      return `/computer-use ${prompt}`;
+    }
     return applyClaudePromptEffortPrefix(params.text, params.effort as ClaudeCodeEffort | null);
   }
   return params.text;
@@ -223,6 +229,7 @@ export function resolvePromptEffortFromModelSelection(
     case "droid":
       return modelSelection.options?.reasoningEffort ?? null;
     case "pi":
+    case "omp":
       return modelSelection.options?.thinkingLevel ?? null;
     case "devin":
       return (
@@ -265,7 +272,7 @@ async function cancelManagedAttachments(attachmentIds: readonly string[]): Promi
       const body = JSON.stringify({ attachmentId });
       if (new TextEncoder().encode(body).byteLength > ATTACHMENT_CANCEL_BODY_MAX_BYTES) continue;
       try {
-        await fetch(resolveWsHttpUrl(ATTACHMENT_CANCEL_ROUTE_PATH), {
+        await fetch(resolveExecutionResource({ kind: "attachment-cancel" }), {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
@@ -302,18 +309,24 @@ export async function stageUploadComposerAttachments(input: {
   const managedAttachmentIds: string[] = [];
   try {
     for (const attachment of [...input.images, ...(input.files ?? [])]) {
-      const params = new URLSearchParams({
-        threadId: input.threadId,
-        type: attachment.type,
-        name: attachment.name,
-        mimeType: attachment.mimeType,
-      });
+      const appSnapSource =
+        attachment.type === "image" ? normalizeComposerImageSource(attachment.source) : null;
+      const uploadFile = appSnapSource
+        ? await prepareModelScreenImage(attachment.file)
+        : attachment.file;
       const response = await fetch(
-        resolveWsHttpUrl(`${ATTACHMENT_UPLOAD_ROUTE_PATH}?${params.toString()}`),
+        resolveExecutionResource({
+          kind: "attachment-upload",
+          threadId: input.threadId,
+          type: attachment.type,
+          name: appSnapSource ? appSnapUploadName(appSnapSource, uploadFile.name) : attachment.name,
+          mimeType: appSnapSource ? uploadFile.type : attachment.mimeType,
+        }),
         {
           method: "POST",
           credentials: "include",
-          body: attachment.file,
+          headers: { "Content-Type": uploadFile.type || "application/octet-stream" },
+          body: uploadFile,
         },
       );
       const payload = (await response.json().catch(() => null)) as

@@ -72,6 +72,41 @@ export const devices = pgTable(
   ],
 );
 
+/** Verified provider sessions bound to a device; never populated from client claims. */
+export const deviceAccountSessions = pgTable(
+  "device_account_sessions",
+  {
+    deviceId: uuid("device_id")
+      .notNull()
+      .references(() => devices.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("device_account_sessions_binding_unique").on(table.deviceId, table.sessionId),
+    index("device_account_sessions_session_idx").on(table.userId, table.sessionId),
+  ],
+);
+
+/** Durable host acknowledgements outlive the short-lived relay event feed. */
+export const deviceRevocationDeliveries = pgTable(
+  "device_revocation_deliveries",
+  {
+    deviceId: uuid("device_id")
+      .notNull()
+      .references(() => devices.id, { onDelete: "cascade" }),
+    hostId: uuid("host_id").notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }).notNull(),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("device_revocation_deliveries_unique").on(table.deviceId, table.hostId),
+    index("device_revocation_deliveries_host_idx").on(table.hostId),
+  ],
+);
+
 export const linkChallenges = pgTable(
   "link_challenges",
   {

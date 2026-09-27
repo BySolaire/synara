@@ -22,4 +22,4 @@ echo "[pinhole] egress rules:" >&2
 iptables -S OUTPUT | sed 's/^/[pinhole]   /' >&2
 
 cd /app
-exec setpriv --reuid=bun --regid=bun --init-groups bun run apps/e2e/docker/client.ts
+exec setpriv --reuid=node --regid=node --init-groups node /app/client.mjs

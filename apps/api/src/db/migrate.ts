@@ -6,8 +6,11 @@ import { createDb } from "./index";
 export async function runMigrations(databaseUrl: string): Promise<void> {
   const { db, pool } = createDb(databaseUrl);
   const migrationsFolder = fileURLToPath(new URL("../../drizzle", import.meta.url));
-  await migrate(db, { migrationsFolder });
-  await pool.end();
+  try {
+    await migrate(db, { migrationsFolder });
+  } finally {
+    await pool.end();
+  }
 }
 
 // `db:migrate` runs this file directly. Without the entrypoint below it

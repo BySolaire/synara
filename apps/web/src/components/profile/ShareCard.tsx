@@ -1,3 +1,4 @@
+import { ProfileUsageCoverage } from "./ProfileUsageCoverage";
 // FILE: ShareCard.tsx
 // Purpose: Fixed-size, theme-independent "virality" card rendered to PNG via html-to-image.
 // Uses explicit colors (not theme tokens) so the exported image looks identical in light
@@ -10,7 +11,7 @@ import { ProviderIcon } from "~/components/ProviderIcon";
 import { SynaraLogo } from "@synara/profile-ui/logo";
 import { ActivityHeatmap, CARD_HEATMAP_INTENSITY_CLASSES } from "@synara/profile-ui/heatmap";
 import { ProfileAvatar } from "@synara/profile-ui/avatar";
-import { formatCompact, formatDays } from "@synara/profile-ui/formatting";
+import { formatCompact, formatDays, formatProfileUsageBasis } from "@synara/profile-ui/formatting";
 import type { ShareCardStats } from "./profileSelectors";
 
 export const SHARE_CARD_WIDTH = 860;
@@ -82,7 +83,7 @@ export const ShareCard = forwardRef<HTMLDivElement, ShareCardProps>(function Sha
       ) : (
         <span className={VALUE_CLASS}>—</span>
       ),
-      label: "top provider",
+      label: `top provider · ${formatProfileUsageBasis(cardStats.topProvider.metric ?? "tokens")}`,
     },
   ];
 
@@ -136,6 +137,10 @@ export const ShareCard = forwardRef<HTMLDivElement, ShareCardProps>(function Sha
           </div>
         ))}
       </div>
+      <ProfileUsageCoverage
+        unavailableProviders={cardStats.topProvider.unavailableProviders ?? []}
+        className="text-xs leading-4 text-slate-500"
+      />
     </div>
   );
 });

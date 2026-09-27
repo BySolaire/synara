@@ -175,6 +175,29 @@ describe("localImageEffectRouteLayer", () => {
       expect(previewResponse.status).toBe(200);
       expect(previewResponse.headers.get("content-type")).toContain("image/png");
       expect(previewResponse.headers.get("content-disposition")).toBeNull();
+      expect(Buffer.from(await previewResponse.arrayBuffer())).toEqual(
+        Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      );
+      for (const [range, bytes] of [
+        ["bytes=1-2", [0x50, 0x4e]],
+        ["bytes=-2", [0x4e, 0x47]],
+        ["bytes=2-", [0x4e, 0x47]],
+      ] as const) {
+        const part = await fetch(`${origin}/api/local-image?${params}`, {
+          headers: { Range: range },
+        });
+        expect(part.status).toBe(206);
+        expect(part.headers.get("accept-ranges")).toBe("bytes");
+        expect(part.headers.get("content-length")).toBe("2");
+        expect(Buffer.from(await part.arrayBuffer())).toEqual(Buffer.from(bytes));
+      }
+      for (const range of ["bytes=10-20", "bytes=3-1", "bytes=-0", "bytes=0-1,2-3", "bytes=a-b"]) {
+        const invalid = await fetch(`${origin}/api/local-image?${params}`, {
+          headers: { Range: range },
+        });
+        expect(invalid.status).toBe(416);
+        expect(invalid.headers.get("content-range")).toBe("bytes */4");
+      }
 
       params.set("download", "1");
       const downloadResponse = await fetch(`${origin}/api/local-image?${params}`);
@@ -202,6 +225,43 @@ describe("localImageEffectRouteLayer", () => {
       params.delete("grant");
       const ungrantedResponse = await fetch(`${origin}/api/local-image?${params}`);
       expect(ungrantedResponse.status).toBe(404);
+    });
+  });
+
+  it("previews and downloads a simulator PNG outside the allowed roots only with its own grant", async () => {
+    // Keep this outside os.tmpdir(): temporary images are already allowlisted.
+    const externalRoot = mkdtempSync(path.join(process.cwd(), ".simulator-preview-"));
+    tempDirs.push(externalRoot);
+    const desktop = path.join(externalRoot, "Desktop");
+    mkdirSync(desktop);
+    const imagePath = path.join(desktop, "simulator-iPhone.png");
+    const otherPath = path.join(desktop, "unrelated.png");
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    writeFileSync(imagePath, bytes);
+    writeFileSync(otherPath, bytes);
+    const config = makeServerConfig();
+
+    await withEffectServer(config, localImageEffectRouteLayer, async (origin) => {
+      const params = new URLSearchParams({ path: imagePath, cwd: config.cwd });
+      expect((await fetch(`${origin}/api/local-image?${params}`)).status).toBe(404);
+      params.set("download", "1");
+      expect((await fetch(`${origin}/api/local-image?${params}`)).status).toBe(404);
+
+      const grant = await createLocalPreviewGrant({ requestedPath: imagePath });
+      params.set("grant", grant.grant);
+      for (const download of [false, true]) {
+        if (download) params.set("download", "1");
+        else params.delete("download");
+        const response = await fetch(`${origin}/api/local-image?${params}`);
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toContain("image/png");
+        expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+        if (download)
+          expect(response.headers.get("content-disposition")).toContain("simulator-iPhone.png");
+      }
+
+      params.set("path", otherPath);
+      expect((await fetch(`${origin}/api/local-image?${params}`)).status).toBe(404);
     });
   });
 
@@ -271,6 +331,24 @@ describe("localImageEffectRouteLayer", () => {
       expect(response.status).toBe(200);
       expect(response.headers.get("access-control-allow-origin")).toBeNull();
       expect(response.headers.get("vary")).toBeNull();
+    });
+  });
+
+  it("exposes missing-file errors to desktop downloads without allowing untrusted origins", async () => {
+    const workspace = makeTempDir("synara-effect-missing-image-");
+    const config = makeServerConfig({ cwd: workspace });
+    await withEffectServer(config, localImageEffectRouteLayer, async (origin) => {
+      const params = new URLSearchParams({ path: "missing.png", cwd: workspace, download: "1" });
+      for (const requestOrigin of ["synara://app", "https://example.test"]) {
+        const response = await fetch(`${origin}/api/local-image?${params}`, {
+          headers: { Origin: requestOrigin },
+        });
+        expect(response.status).toBe(404);
+        expect(await response.text()).toBe("Not Found");
+        expect(response.headers.get("access-control-allow-origin")).toBe(
+          requestOrigin === "synara://app" ? requestOrigin : null,
+        );
+      }
     });
   });
 

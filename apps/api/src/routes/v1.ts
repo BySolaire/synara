@@ -70,6 +70,7 @@ import {
 } from "../clientIp";
 import type * as schema from "../db/schema";
 import {
+  deviceRevocationDeliveries,
   devices as deviceRows,
   hosts as hostRows,
   profiles,
@@ -489,9 +490,8 @@ export function createV1Routes(deps: {
 
   /**
    * Resolves the caller from an access token. Verification is stateless
-   * (JWKS signature + expiry), so a revoked session stays valid until its short
-   * token lifetime runs out; the client refreshes against the identity
-   * provider, which is where revocation takes effect.
+   * (JWKS signature + expiry), followed by our durable session tombstone.
+   * Provider revocation independently prevents subsequent token refresh.
    */
   async function getDeviceSession(
     c: Context,
@@ -500,11 +500,15 @@ export function createV1Routes(deps: {
     const match = authorization ? /^Bearer\s+(.+)$/i.exec(authorization) : null;
     const token = match?.[1];
     if (!token) return null;
+    let verified: Awaited<ReturnType<typeof verifier.verifyAccessToken>>;
     try {
-      return await verifier.verifyAccessToken(token);
+      verified = await verifier.verifyAccessToken(token);
     } catch {
       return null;
     }
+    // A database outage must fail closed as a server failure, without telling
+    // clients to discard a valid sign-in session.
+    return (await devices.isSessionRevoked(verified.userId, verified.sessionId)) ? null : verified;
   }
 
   /**
@@ -591,10 +595,12 @@ export function createV1Routes(deps: {
   }
 
   /** Per-user session gate for account entities that are not org-scoped. */
-  async function requireUserSession(c: Context): Promise<{ userId: string } | Response> {
+  async function requireUserSession(
+    c: Context,
+  ): Promise<{ userId: string; sessionId: string } | Response> {
     const session = await getDeviceSession(c);
     if (!session) return errorResponse(c, 401, "unauthorized", "Not authenticated");
-    return { userId: session.userId };
+    return { userId: session.userId, sessionId: session.sessionId };
   }
 
   function hostDomainError(c: Context, error: unknown): Response {
@@ -1223,7 +1229,7 @@ export function createV1Routes(deps: {
     }
     try {
       const body: RegisterDeviceResponse = {
-        device: await devices.register(session.userId, parsed.proof),
+        device: await devices.register(session.userId, parsed.proof, session.sessionId),
       };
       return c.json(body, 201);
     } catch (error) {
@@ -1265,6 +1271,23 @@ export function createV1Routes(deps: {
       return errorResponse(c, 404, "device_not_registered", "Device not found or already revoked");
     }
     return c.body(null, 204);
+  });
+
+  // Explicitly separate from revoking the Synara device key. A failed provider
+  // delivery stays durable and can be retried by another signed-in device.
+  v1.delete("/devices/:id/account-sessions", async (c) => {
+    const session = await requireUserSession(c);
+    if (session instanceof Response) return session;
+    if (!deviceMutationRateLimiter.tryConsume(`user:${session.userId}`)) {
+      return errorResponse(c, 429, "rate_limited", "Too many device changes — slow down");
+    }
+    if (!isUuid(c.req.param("id")))
+      return errorResponse(c, 404, "device_not_registered", "Device not found");
+    const result = await devices.revokeSessions(session.userId, c.req.param("id"), (id) =>
+      verifier.revokeSession(id),
+    );
+    if (!result) return errorResponse(c, 404, "device_not_registered", "Device not found");
+    return c.json(result, result.pending > 0 ? 202 : 200);
   });
 
   v1.get("/hosts", async (c) => {
@@ -1387,6 +1410,57 @@ export function createV1Routes(deps: {
     }
   });
 
+  v1.post("/hosts/:id/device-revocations/ack", async (c) => {
+    try {
+      const body = await c.req.json().catch(() => null);
+      if (
+        !body ||
+        !Array.isArray(body.deviceJkts) ||
+        body.deviceJkts.length > 256 ||
+        body.deviceJkts.some((key: unknown) => typeof key !== "string" || key.length > 128)
+      )
+        return errorResponse(
+          c,
+          400,
+          "validation_failed",
+          "Invalid device revocation acknowledgement",
+        );
+      await hostKeys.withAuthenticatedHost(
+        c.req.header("authorization"),
+        c.req.param("id"),
+        async (host) => {
+          const own = await db
+            .select({ id: deviceRows.id })
+            .from(deviceRows)
+            .where(
+              and(
+                eq(deviceRows.userId, host.ownerUserId),
+                inArray(deviceRows.jkt, body.deviceJkts),
+                isNotNull(deviceRows.revokedAt),
+              ),
+            );
+          if (own.length)
+            await db
+              .update(deviceRevocationDeliveries)
+              .set({ confirmedAt: new Date() })
+              .where(
+                and(
+                  eq(deviceRevocationDeliveries.hostId, host.id),
+                  inArray(
+                    deviceRevocationDeliveries.deviceId,
+                    own.map((device) => device.id),
+                  ),
+                  isNull(deviceRevocationDeliveries.confirmedAt),
+                ),
+              );
+        },
+      );
+      return c.body(null, 204);
+    } catch (error) {
+      return hostDomainError(c, error);
+    }
+  });
+
   v1.get("/hosts/:id/authorization", async (c) => {
     try {
       // The host row lock is released before the provider call: a WorkOS
@@ -1446,6 +1520,19 @@ export function createV1Routes(deps: {
           .orderBy(desc(sql`max(${revocationEvents.createdAt})`))
           .limit(REVOKED_DEVICE_SNAPSHOT_LIMIT),
       ]);
+      const pendingDeliveries = await db
+        .select({ jkt: deviceRows.jkt, revokedAt: deviceRevocationDeliveries.revokedAt })
+        .from(deviceRevocationDeliveries)
+        .innerJoin(deviceRows, eq(deviceRows.id, deviceRevocationDeliveries.deviceId))
+        .where(
+          and(
+            eq(deviceRevocationDeliveries.hostId, host.id),
+            eq(deviceRows.userId, host.ownerUserId),
+            isNull(deviceRevocationDeliveries.confirmedAt),
+          ),
+        )
+        .orderBy(desc(deviceRevocationDeliveries.revokedAt))
+        .limit(REVOKED_DEVICE_SNAPSHOT_LIMIT);
       const revokedDeviceJkts: string[] = [];
       const seenRevokedDevices = new Set<string>();
       // The two branches disagree on shape: drizzle hydrates the column read
@@ -1460,9 +1547,11 @@ export function createV1Routes(deps: {
         }
         return 0;
       };
-      for (const revoked of [...revokedOwnerDevices, ...revokedMemberDevices].toSorted(
-        (left, right) => revokedAtMs(right.revokedAt) - revokedAtMs(left.revokedAt),
-      )) {
+      for (const revoked of [
+        ...pendingDeliveries,
+        ...revokedOwnerDevices,
+        ...revokedMemberDevices,
+      ].toSorted((left, right) => revokedAtMs(right.revokedAt) - revokedAtMs(left.revokedAt))) {
         if (revoked.jkt === null || seenRevokedDevices.has(revoked.jkt)) continue;
         seenRevokedDevices.add(revoked.jkt);
         revokedDeviceJkts.push(revoked.jkt);
@@ -1470,6 +1559,9 @@ export function createV1Routes(deps: {
       }
       const body: HostAuthorizationSnapshot = {
         revokedDeviceJkts,
+        pendingRevocationDeviceJkts: pendingDeliveries
+          .map((entry) => entry.jkt)
+          .filter((jkt) => seenRevokedDevices.has(jkt)),
         discoverable: host.discoverable,
         ownerUserId: host.ownerUserId,
         orgId: host.ownerOrgId,
@@ -1533,39 +1625,13 @@ export function createV1Routes(deps: {
     if (!candidateHost.publicKeyJwk) {
       return errorResponse(c, 409, "host_not_linked", "Host is not linked");
     }
-    let ownerInOrg = true;
     if (candidateHost.ownerUserId !== session.userId) {
-      let ownerOrganizations: OrganizationRef[];
-      try {
-        ownerOrganizations = await grants.listUserOrganizations(candidateHost.ownerUserId);
-      } catch (error) {
-        console.error("[api] host owner membership lookup failed:", error);
-        return errorResponse(c, 502, "internal_error", "Identity provider is unavailable");
-      }
-      ownerInOrg = ownerOrganizations.some((org) => org.orgId === candidateHost.ownerOrgId);
-      if (!ownerInOrg) {
-        // A departed owner's host leaves the org's directory (ADR 0002), so
-        // the refusal is also the moment the listing stops advertising it.
-        // The event is emitted only alongside a real state change: repeated
-        // probes must not append duplicate rows to the relay's feed.
-        await db.transaction(async (tx) => {
-          const flipped = await tx
-            .update(hostRows)
-            .set({ discoverable: false })
-            .where(and(eq(hostRows.id, candidateHost.id), eq(hostRows.discoverable, true)))
-            .returning({ id: hostRows.id });
-          if (flipped.length > 0) {
-            await writeRevocationEvents(tx, [
-              {
-                hostId: candidateHost.id,
-                kind: "org_departure",
-                subject: candidateHost.ownerUserId,
-              },
-            ]);
-          }
-        });
-        return errorResponse(c, 403, "not_host_owner", "The host owner left this workspace");
-      }
+      return errorResponse(
+        c,
+        403,
+        "not_host_owner",
+        "Remote access is available only to the host owner",
+      );
     }
     try {
       const grant = await db.transaction(async (tx) => {
@@ -1601,10 +1667,7 @@ export function createV1Routes(deps: {
         if (!row?.publicKeyJwk) {
           throw new HostAuthDomainError(409, "host_not_linked", "Host is not linked");
         }
-        if (
-          row.ownerUserId !== session.userId &&
-          (!row.discoverable || row.ownerOrgId !== session.orgId || !ownerInOrg)
-        ) {
+        if (row.ownerUserId !== session.userId) {
           throw new HostAuthDomainError(
             403,
             "not_host_owner",

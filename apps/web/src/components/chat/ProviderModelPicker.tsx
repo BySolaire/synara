@@ -3,7 +3,12 @@
 // Layer: Chat composer presentation
 // Depends on: provider availability metadata, shared menu primitives, and picker trigger styling.
 
-import { type ModelSlug, type ProviderKind, type ServerProviderStatus } from "@synara/contracts";
+import {
+  type ModelSlug,
+  type OmpModelOptions,
+  type ProviderKind,
+  type ServerProviderStatus,
+} from "@synara/contracts";
 import { resolveSelectableModel } from "@synara/shared/model";
 import * as Schema from "effect/Schema";
 import { useDeferredValue, useEffect, useRef, useState } from "react";
@@ -22,6 +27,7 @@ import {
 } from "../ui/menu";
 import { PROVIDER_ICON_COMPONENT_BY_PROVIDER } from "../ProviderIcon";
 import { cn } from "~/lib/utils";
+import { TriangleAlertIcon } from "~/lib/icons";
 import { PickerPanelShell } from "./PickerPanelShell";
 import { PickerTriggerButton } from "./PickerTriggerButton";
 import { ProviderModelOptionGroupList } from "./ProviderModelOptionGroupList";
@@ -56,7 +62,7 @@ function isAvailableProviderOption(option: (typeof PROVIDER_OPTIONS)[number]): o
   return option.available;
 }
 
-function resolveLiveProviderAvailability(provider: ServerProviderStatus | undefined): {
+export function resolveLiveProviderAvailability(provider: ServerProviderStatus | undefined): {
   disabled: boolean;
   label: string | null;
 } {
@@ -107,11 +113,38 @@ function filterProviderOptionsByVisibility<T extends { value: ProviderKind }>(
   );
 }
 
+// Providers the picker may offer: installed ones in the user's order, minus hidden
+// providers, always keeping the active/locked provider reachable.
+export function resolveVisibleProviderOptions(input: {
+  provider: ProviderKind;
+  lockedProvider: ProviderKind | null;
+  providers: ReadonlyArray<ServerProviderStatus> | undefined;
+  hiddenProviders: ReadonlyArray<ProviderKind> | undefined;
+  providerOrder: ReadonlyArray<ProviderKind> | undefined;
+}) {
+  const protectedProviderSet = new Set<ProviderKind>([input.provider]);
+  if (input.lockedProvider !== null) {
+    protectedProviderSet.add(input.lockedProvider);
+  }
+  return filterProviderOptionsByVisibility(
+    AVAILABLE_PROVIDER_OPTIONS.toSorted((left, right) =>
+      compareProvidersByOrder(input.providerOrder ?? [], left.value, right.value),
+    ).filter((option) =>
+      input.providers?.some((provider) => provider.provider === option.value && provider.available),
+    ),
+    new Set<ProviderKind>(input.hiddenProviders ?? []),
+    protectedProviderSet,
+  );
+}
+
 function providerIconClassName(
   provider: ProviderKind | ProviderPickerKind,
   fallbackClassName: string,
 ): string {
-  return provider === "claudeAgent" || provider === "antigravity" || provider === "pi"
+  return provider === "claudeAgent" ||
+    provider === "antigravity" ||
+    provider === "pi" ||
+    provider === "omp"
     ? "text-foreground"
     : fallbackClassName;
 }
@@ -184,6 +217,7 @@ type ProviderModelMenuItemsProps = {
   providerOrder?: ReadonlyArray<ProviderKind>;
   disabled?: boolean;
   onProviderModelChange: (provider: ProviderKind, model: ModelSlug) => void;
+  onProviderModelRoleSelect?: (model: ModelSlug, options: OmpModelOptions) => void;
   // Invoked after a model selection commits so callers can close ancestor
   // menus and refocus the composer.
   onAfterSelection?: () => void;
@@ -214,22 +248,13 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
   );
   const deferredModelSearchQuery = useDeferredValue(modelSearchQuery);
   const activeProvider = props.lockedProvider ?? props.provider;
-  const hiddenProviders = props.hiddenProviders;
-  const providerOrder = props.providerOrder;
-  const hiddenProviderSet = new Set<ProviderKind>(hiddenProviders ?? []);
-  const protectedProviderSet = new Set<ProviderKind>([props.provider]);
-  if (props.lockedProvider !== null) {
-    protectedProviderSet.add(props.lockedProvider);
-  }
-  const visibleAvailableProviderOptions = filterProviderOptionsByVisibility(
-    AVAILABLE_PROVIDER_OPTIONS.toSorted((left, right) =>
-      compareProvidersByOrder(providerOrder ?? [], left.value, right.value),
-    ).filter((option) =>
-      props.providers?.some((provider) => provider.provider === option.value && provider.available),
-    ),
-    hiddenProviderSet,
-    protectedProviderSet,
-  );
+  const visibleAvailableProviderOptions = resolveVisibleProviderOptions({
+    provider: props.provider,
+    lockedProvider: props.lockedProvider,
+    providers: props.providers,
+    hiddenProviders: props.hiddenProviders,
+    providerOrder: props.providerOrder,
+  });
   const openCodeFavoriteModelSlugSet = new Set(openCodeFavoriteModelSlugs);
   const cursorFavoriteModelSlugSet = new Set(cursorFavoriteModelSlugs);
   const piFavoriteModelSlugSet = new Set(piFavoriteModelSlugs);
@@ -241,6 +266,25 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
   const handleModelChange = (provider: ProviderKind, value: string) => {
     if (props.disabled) return;
     if (!value) return;
+    const selectedOption = props.modelOptionsByProvider[provider].find(
+      (option) => option.slug === value,
+    );
+    if (selectedOption?.role) {
+      if (props.onProviderModelRoleSelect) {
+        props.onProviderModelRoleSelect(
+          selectedOption.role.model,
+          selectedOption.role.thinkingLevel
+            ? { thinkingLevel: selectedOption.role.thinkingLevel }
+            : {},
+        );
+      } else {
+        // Surfaces without the role callback still commit the role's model so
+        // picking a role can never close the menu with a silent no-op.
+        props.onProviderModelChange(provider, selectedOption.role.model);
+      }
+      onAfterSelection?.();
+      return;
+    }
     const resolvedModel = resolveSelectableModel(
       provider,
       value,
@@ -279,7 +323,8 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
       (provider === "opencode" ||
         provider === "cursor" ||
         provider === "devin" ||
-        provider === "pi") &&
+        provider === "pi" ||
+        provider === "omp") &&
       providerOptions.length >= SEARCHABLE_MODEL_PICKER_THRESHOLD;
     const normalizedModelSearchQuery = deferredModelSearchQuery.trim().toLowerCase();
     const filteredOptions =
@@ -301,19 +346,24 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
 
     const discoveryError = props.discoveryErrorsByProvider?.[provider];
     const discoveryErrorElement = discoveryError ? (
-      <div className="px-2 py-1.5 text-xs text-destructive">{discoveryError}</div>
+      <div className="px-2 py-1.5 text-ui leading-snug text-destructive">{discoveryError}</div>
     ) : null;
+
+    const activeModelSlug =
+      activeProvider === provider
+        ? (resolveSelectableModel(provider, props.model, providerOptions) ?? props.model)
+        : props.model;
 
     const content =
       groupedOptions.length > 0 ? (
         <MenuRadioGroup
-          value={activeProvider === provider ? props.model : ""}
+          value={activeProvider === provider ? activeModelSlug : ""}
           onValueChange={(value) => handleModelChange(provider, value)}
         >
           <ProviderModelOptionGroupList
             groupedOptions={groupedOptions}
             provider={provider}
-            activeModel={props.model}
+            activeModel={activeModelSlug}
             isSearching={normalizedModelSearchQuery.length > 0}
             favoriteProvider={favoriteProvider}
             favoriteModelSlugSet={favoriteModelSlugSet}
@@ -321,8 +371,19 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
             {...(onAfterSelection ? { onAfterSelection } : {})}
           />
         </MenuRadioGroup>
+      ) : provider === "omp" && normalizedModelSearchQuery.length === 0 ? (
+        <div
+          role="status"
+          aria-live="polite"
+          aria-label="Couldn’t load OMP models. Check that omp is installed and authenticated."
+          tabIndex={-1}
+          className="text-ui-sm flex items-start gap-1.5 px-2 py-2 text-amber-600 dark:text-amber-300/90"
+        >
+          <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          <span>Couldn’t load OMP models — check that omp is installed and authenticated</span>
+        </div>
       ) : (
-        <div className="px-2 py-2 text-muted-foreground text-sm">
+        <div className="px-2 py-2 text-muted-foreground text-ui leading-snug">
           {provider === "pi" && normalizedModelSearchQuery.length === 0
             ? "No Pi models found"
             : "No matches"}
@@ -395,7 +456,7 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
                 )}
               />
               <span>{option.label}</span>
-              <span className="ms-auto text-[11px] text-muted-foreground/80">
+              <span className="ms-auto text-ui-sm text-muted-foreground/80">
                 {availability.label}
               </span>
             </MenuItem>
@@ -472,6 +533,7 @@ type ProviderModelPickerProps = {
   onSelectionCommitted?: () => void;
   shortcutLabel?: string | null;
   onProviderModelChange: (provider: ProviderKind, model: ModelSlug) => void;
+  onProviderModelRoleSelect?: (model: ModelSlug, options: OmpModelOptions) => void;
 };
 
 export const ProviderModelPicker = function ProviderModelPicker(props: ProviderModelPickerProps) {
@@ -561,7 +623,7 @@ export const ProviderModelPicker = function ProviderModelPicker(props: ProviderM
                 <span>Change model</span>
                 <ShortcutKbd
                   shortcutLabel={props.shortcutLabel}
-                  className="h-4 min-w-4 px-1 text-[length:var(--app-font-size-ui-2xs,9px)] text-muted-foreground"
+                  className="h-4 min-w-4 px-1 text-ui-2xs text-muted-foreground"
                 />
               </span>
             </TooltipPopup>
@@ -589,6 +651,9 @@ export const ProviderModelPicker = function ProviderModelPicker(props: ProviderM
           {...(props.providerOrder ? { providerOrder: props.providerOrder } : {})}
           {...(props.disabled !== undefined ? { disabled: props.disabled } : {})}
           onProviderModelChange={props.onProviderModelChange}
+          {...(props.onProviderModelRoleSelect
+            ? { onProviderModelRoleSelect: props.onProviderModelRoleSelect }
+            : {})}
           onAfterSelection={handleAfterSelection}
         />
       </ComposerPickerMenuPopup>

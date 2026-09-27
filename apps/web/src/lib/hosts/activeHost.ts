@@ -1,22 +1,12 @@
-// FILE: activeHost.ts
-// Purpose: Which host this window is currently working on. The local shell is
-//          the default; choosing another host reloads the window onto the
-//          shell's bridged socket for that host.
-// Layer: Web remote-access feature state.
-// Exports: read/set/clear the active host, and the socket URL override the
-//          transport honours.
-//
-// Why a reload rather than a live transport swap: every store in the app —
-// projects, threads, terminals, device panes, keybindings — is keyed to one
-// server and assumes it does not change underneath them mid-session. The
-// transport already treats a changed server instance id as "reset your resume
-// cursors", but the stores above it have no such notion. A reload is the one
-// boundary that is guaranteed to clear all of them at once, and it costs the
-// same as a server restart, which the app already handles cleanly.
+import { executionKey } from "./executionContext";
+import { flushBeforeExecutionSwitch, recoverBeforeLocalEscape } from "./executionSwitch";
+// Window selection contains only controller-verified identity metadata.
+import type { RemoteExecutionScope } from "@synara/contracts";
 
 const ACTIVE_HOST_STORAGE_KEY = "synara:active-host:v1";
 
 export interface ActiveHost {
+  readonly executionScope?: RemoteExecutionScope;
   readonly hostId: string;
   readonly hostName: string;
   /** The shell's local upgrade path for this host's bridged session. */
@@ -42,7 +32,12 @@ export function readActiveHost(): ActiveHost | null {
       typeof parsed.wsPath === "string" &&
       parsed.wsPath.startsWith("/")
     ) {
-      return { hostId: parsed.hostId, hostName: parsed.hostName, wsPath: parsed.wsPath };
+      return {
+        hostId: parsed.hostId,
+        hostName: parsed.hostName,
+        wsPath: parsed.wsPath,
+        ...(parsed.executionScope ? { executionScope: parsed.executionScope } : {}),
+      };
     }
   } catch {
     // Fall through: a corrupt value is the same as none.
@@ -52,13 +47,17 @@ export function readActiveHost(): ActiveHost | null {
 }
 
 /** Persists the choice for this window and reloads onto the bridged socket. */
-export function activateHost(host: ActiveHost): void {
+export async function activateHost(host: ActiveHost): Promise<void> {
+  await flushBeforeExecutionSwitch();
+  prepareReload();
   storage()?.setItem(ACTIVE_HOST_STORAGE_KEY, JSON.stringify(host));
   window.location.reload();
 }
 
 /** Back to the local shell. */
 export function deactivateHost(): void {
+  recoverBeforeLocalEscape();
+  prepareReload();
   storage()?.removeItem(ACTIVE_HOST_STORAGE_KEY);
   window.location.reload();
 }
@@ -73,4 +72,16 @@ export function deactivateHost(): void {
 export function readActiveHostSocketPrefix(): string | null {
   const active = readActiveHost();
   return active ? active.wsPath.replace(/\/+$/, "") : null;
+}
+
+function prepareReload(): void {
+  const location = window.location;
+  const hashRouting = location.protocol !== "http:" && location.protocol !== "https:";
+  const route = hashRouting ? location.hash.slice(1) || "/" : location.pathname + location.search;
+  storage()?.setItem(executionKey("last-route:v1"), route);
+  window.history.replaceState(
+    {},
+    "",
+    hashRouting ? `${location.pathname}${location.search}#/` : "/",
+  );
 }

@@ -1,3 +1,4 @@
+import { executionStorage } from "./lib/hosts/executionStorage";
 // FILE: rightDockStore.ts
 // Purpose: Persist the tabbed right-dock state (open panes + active tab) per host thread.
 // Layer: UI state store
@@ -116,7 +117,7 @@ export const useRightDockStore = create<RightDockStore>()(
     }),
     {
       name: RIGHT_DOCK_STORAGE_KEY,
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(() => executionStorage),
       // Validate persisted panes on rehydrate so a stale/unknown pane kind from
       // an older app version can never crash the dock during render.
       merge: (persisted, current) => ({

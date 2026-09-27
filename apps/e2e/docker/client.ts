@@ -8,6 +8,8 @@
 // the exit code is non-zero if any step failed.
 // Layer: E2E tooling (container driver)
 
+import { RemotePairingBundle } from "@synara/contracts";
+import { Schema } from "effect";
 import { HOST_SESSION_CLOSE_REVOKED, RELAY_CLOSE_GRANT_REPLAY } from "@synara/relay-protocol";
 import { createAccountClient } from "@synara/shared/account";
 
@@ -429,6 +431,11 @@ async function runAgentTurn(session: HeadlessClientSession): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
+  const invitation = Schema.decodeUnknownSync(RemotePairingBundle)(
+    JSON.parse(Buffer.concat(chunks).toString("utf8")),
+  );
   const account = createAccountClient({ baseUrl: env.apiUrl });
   const client = new HeadlessClient({
     apiOrigin: env.apiUrl,
@@ -490,11 +497,13 @@ async function main(): Promise<void> {
     const registered = await client.register();
     return {
       ok: registered.jkt.length > 0,
-      detail: { deviceId: registered.id, jkt: registered.jkt },
+      detail: { deviceId: registered.id, pairingDeviceJkt: registered.jkt },
       value: registered,
     };
   });
   if (!device) return finish();
+  await client.pair(invitation, undefined, env.relayUrl);
+  report("TLS pairing approved by the host owner for this exact key", true);
 
   const grant = await step("single-use grant issued for this device + host", async () => {
     const issued = await client.requestGrant(env.hostId);

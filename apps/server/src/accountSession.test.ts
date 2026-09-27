@@ -4,14 +4,12 @@ import path from "node:path";
 
 import { afterAll, describe, expect, it, vi } from "vitest";
 
-import { EnvironmentId, type AccountMe, type DevicePublicKeyJwk } from "@synara/contracts";
+import { EnvironmentId, type AccountMe } from "@synara/contracts";
 import {
   AccountApiError,
   OrganizationRequiredError,
   type AccountClient,
 } from "@synara/shared/account";
-import { deviceThumbprint } from "@synara/shared/deviceKey";
-import { decodeJwt } from "jose";
 
 import { accountCredentialsPath, readAccountFile, writeAccountCredentials } from "./accountAuth.ts";
 import { createAccountSession } from "./accountSession.ts";
@@ -137,7 +135,11 @@ describe("status", () => {
     await writeAccountCredentials(baseDir, credentials());
     const session = sessionFor(baseDir, makeClient({ me: () => Promise.resolve(meResponse()) }));
 
-    expect(await session.status()).toEqual({ state: "signed-in", me: meResponse() });
+    expect(await session.status()).toEqual({
+      state: "signed-in",
+      me: meResponse(),
+      accountAuthority: `${ACCOUNT_URL}/api/v1`,
+    });
   });
 
   // The access token outlives `synara auth` by about five minutes, so the
@@ -163,7 +165,11 @@ describe("status", () => {
       }),
     );
 
-    expect(await session.status()).toEqual({ state: "signed-in", me: meResponse() });
+    expect(await session.status()).toEqual({
+      state: "signed-in",
+      me: meResponse(),
+      accountAuthority: `${ACCOUNT_URL}/api/v1`,
+    });
     expect(await readAccountFile(baseDir)).toMatchObject({
       accessToken: "access-2",
       refreshToken: "refresh-2",
@@ -209,6 +215,32 @@ describe("status", () => {
 });
 
 describe("OTP sign-in", () => {
+  it("isolates dev sign-in, status, refresh and logout from the normal installation", async () => {
+    const baseDir = makeBaseDir();
+    await writeAccountCredentials(
+      baseDir,
+      credentials({ userId: "production-user", ...linkedHostFields }),
+    );
+    const productionBytes = fs.readFileSync(accountCredentialsPath(baseDir));
+    const client = otpClient();
+    const dev = createAccountSession({
+      baseDir,
+      devUrl: new URL("http://127.0.0.1:59999"),
+      accountUrl: ACCOUNT_URL,
+      client,
+    });
+    expect(await dev.status()).toEqual({ state: "signed-out" });
+    await dev.authenticateOtp(OTP_INPUT);
+    expect(await readAccountFile(path.join(baseDir, "dev"))).toMatchObject({
+      userId: "user_1",
+      organizationId: ORGANIZATION.id,
+    });
+    expect(await dev.status()).toMatchObject({ state: "signed-in", me: { id: "user_1" } });
+    await dev.signOut();
+    expect(await readAccountFile(path.join(baseDir, "dev"))).toBeUndefined();
+    expect(fs.readFileSync(accountCredentialsPath(baseDir))).toEqual(productionBytes);
+    expect(fs.existsSync(path.join(baseDir, "dev", "dev"))).toBe(false);
+  });
   const OTP_INPUT = { email: "ada@example.com", code: "654321" } as const;
 
   /**
@@ -270,6 +302,7 @@ describe("OTP sign-in", () => {
 
     expect(await session.authenticateOtp(OTP_INPUT)).toEqual({
       state: "signed-in",
+      accountAuthority: `${ACCOUNT_URL}/api/v1`,
       me: meResponse(),
     });
     expect(await readAccountFile(baseDir)).toMatchObject({
@@ -282,60 +315,20 @@ describe("OTP sign-in", () => {
     });
   });
 
-  it("automatically registers the device and links the bundled local host after sign-in", async () => {
+  it("keeps remote enrollment inert while the remote qualification gate is closed", async () => {
     const baseDir = makeBaseDir();
-    const registerDevice = vi.fn(async (_token: string, proof: string) => {
-      const claims = decodeJwt(proof) as {
-        publicKeyJwk: DevicePublicKeyJwk;
-        displayName: string;
-        platform: "darwin" | "linux" | "windows";
-      };
-      return {
-        device: {
-          id: "00000000-0000-4000-8000-000000000001",
-          publicKeyJwk: claims.publicKeyJwk,
-          jkt: await deviceThumbprint(claims.publicKeyJwk),
-          displayName: claims.displayName,
-          platform: claims.platform,
-          createdAt: "2026-08-14T12:00:00.000Z",
-          lastUsedAt: null,
-          revokedAt: null,
-        },
-      };
-    });
-    const startHostLink = vi.fn(() =>
-      Promise.resolve({
-        challengeId: "2f1f9dd7-56a5-45cf-b847-12e6658f3720",
-        nonce: "bm9uY2U",
-        expiresAt: "2026-08-14T12:05:00.000Z",
-      }),
-    );
-    const completeHostLink = vi.fn(() => Promise.resolve({ host: linkedHost }));
+    const registerDevice = vi.fn();
+    const startHostLink = vi.fn();
+    const completeHostLink = vi.fn();
     const session = sessionFor(
       baseDir,
-      otpClient({
-        registerDevice,
-        startHostLink,
-        completeHostLink,
-      }),
+      otpClient({ registerDevice, startHostLink, completeHostLink }),
     );
-
     await session.authenticateOtp(OTP_INPUT);
-
-    expect(registerDevice).toHaveBeenCalledWith("access-1", expect.stringMatching(/^eyJ/));
-    expect(startHostLink).toHaveBeenCalledWith(
-      "access-1",
-      expect.objectContaining({ kind: "local" }),
-    );
-    expect(completeHostLink).toHaveBeenCalledWith({
-      challengeId: "2f1f9dd7-56a5-45cf-b847-12e6658f3720",
-      proof: expect.stringMatching(/^eyJ/),
-    });
-    expect(await readAccountFile(baseDir)).toMatchObject({
-      ...linkedHostFields,
-      deviceId: "00000000-0000-4000-8000-000000000001",
-      deviceJkt: expect.any(String),
-    });
+    expect(registerDevice).not.toHaveBeenCalled();
+    expect(startHostLink).not.toHaveBeenCalled();
+    expect(completeHostLink).not.toHaveBeenCalled();
+    expect(await readAccountFile(baseDir)).not.toHaveProperty("hostId");
   });
 
   // e.g. the file an expired session left behind: same account, same
@@ -480,7 +473,11 @@ describe("OTP sign-in", () => {
       accessToken: "access-1",
       refreshToken: "refresh-1",
     });
-    expect(await session.status()).toEqual({ state: "signed-in", me: meResponse() });
+    expect(await session.status()).toEqual({
+      state: "signed-in",
+      me: meResponse(),
+      accountAuthority: `${ACCOUNT_URL}/api/v1`,
+    });
   });
 });
 
@@ -577,7 +574,11 @@ describe("PKCE SSO sign-in", () => {
     });
     expect(delivered.status).toBe(200);
 
-    expect(await completion).toEqual({ state: "signed-in", me: meResponse() });
+    expect(await completion).toEqual({
+      state: "signed-in",
+      me: meResponse(),
+      accountAuthority: `${ACCOUNT_URL}/api/v1`,
+    });
     // The exchange went through the account client — never the provider
     // directly — and carried the verifier matching the challenge.
     expect(exchangeInputs).toHaveLength(1);
@@ -667,6 +668,7 @@ describe("transient sign-in recovery", () => {
 
     expect(await session.authenticateOtp(OTP_INPUT)).toEqual({
       state: "signed-in",
+      accountAuthority: `${ACCOUNT_URL}/api/v1`,
       me: meResponse(),
     });
   });
@@ -716,138 +718,32 @@ describe("transient sign-in recovery", () => {
   });
 });
 
-describe("updateProfile", () => {
-  it("writes the profile without touching the workspace when no name is given", async () => {
+describe("excluded profile sync", () => {
+  it("refuses profile and avatar mutations before contacting the account service", async () => {
     const baseDir = makeBaseDir();
     await writeAccountCredentials(baseDir, credentials());
-    const profile = { handle: "ada", displayName: "Ada", avatarColor: "#22c55e" } as const;
+    const updateProfile = vi.fn();
+    const updateOrganization = vi.fn();
+    const uploadAvatar = vi.fn();
+    const deleteAvatar = vi.fn();
     const session = sessionFor(
       baseDir,
-      makeClient({
-        updateProfile: (_token, request) =>
-          Promise.resolve(meResponse({ profile: request as AccountMe["profile"] })),
-      }),
+      makeClient({ updateProfile, updateOrganization, uploadAvatar, deleteAvatar }),
     );
-
-    expect(await session.updateProfile(profile)).toMatchObject({ profile });
-  });
-
-  // The profile is written FIRST: it is where the user-recoverable
-  // `handle_taken` conflict surfaces, and a rename that ran before it would
-  // turn that conflict into a permanent partial rename.
-  it("writes the profile before renaming the workspace when the name differs", async () => {
-    const baseDir = makeBaseDir();
-    await writeAccountCredentials(baseDir, credentials());
-    const calls: string[] = [];
-    const profile = { handle: "ada", displayName: "Ada", avatarColor: "#22c55e" } as const;
-    const session = sessionFor(
-      baseDir,
-      makeClient({
-        updateOrganization: (_token, request) => {
-          calls.push(`rename:${request.name}`);
-          return Promise.resolve(meResponse({ organization: { id: ORGANIZATION.id, ...request } }));
-        },
-        updateProfile: (_token, request) => {
-          calls.push("profile");
-          return Promise.resolve(meResponse({ profile: request as AccountMe["profile"] }));
-        },
-      }),
-    );
-
-    const result = await session.updateProfile({ ...profile, workspaceName: "Analytical Engines" });
-    expect(calls).toEqual(["profile", "rename:Analytical Engines"]);
-    expect(result.organization.name).toBe("Analytical Engines");
-  });
-
-  // M8: a handle conflict during onboarding must change NOTHING — no partial
-  // rename left behind for the user to discover after picking another handle.
-  it("leaves the workspace name untouched when the handle is taken", async () => {
-    const baseDir = makeBaseDir();
-    await writeAccountCredentials(baseDir, credentials());
-    let renamed = false;
-    const session = sessionFor(
-      baseDir,
-      makeClient({
-        updateOrganization: () => {
-          renamed = true;
-          return Promise.resolve(meResponse());
-        },
-        updateProfile: () =>
-          Promise.reject(
-            new AccountApiError({
-              code: "handle_taken",
-              status: 409,
-              message: "That handle is already taken",
-            }),
-          ),
-      }),
-    );
-
     await expect(
       session.updateProfile({
         handle: "ada",
         displayName: "Ada",
         avatarColor: "#22c55e",
-        workspaceName: "Analytical Engines",
+        workspaceName: "Unchanged",
       }),
-    ).rejects.toMatchObject({ code: "handle_taken" });
-    expect(renamed).toBe(false);
-  });
-
-  // Renaming to the name it already has is a no-op, not a WorkOS round trip:
-  // onboarding sends the workspace name on every save.
-  it("skips the rename when the workspace name is unchanged", async () => {
-    const baseDir = makeBaseDir();
-    await writeAccountCredentials(baseDir, credentials());
-    const session = sessionFor(
-      baseDir,
-      makeClient({
-        me: () => Promise.resolve(meResponse()),
-        updateProfile: () => Promise.resolve(meResponse()),
-      }),
-    );
-
+    ).rejects.toThrow("profile sync is unavailable");
     await expect(
-      session.updateProfile({
-        handle: "ada",
-        displayName: "Ada",
-        avatarColor: "#22c55e",
-        workspaceName: ORGANIZATION.name,
-      }),
-    ).resolves.toBeDefined();
-  });
-});
-
-describe("avatar", () => {
-  it("decodes the base64 payload and forwards raw bytes with the content type", async () => {
-    const baseDir = makeBaseDir();
-    await writeAccountCredentials(baseDir, credentials());
-    let received: { bytes: Uint8Array; contentType: string } | null = null;
-    const session = sessionFor(
-      baseDir,
-      makeClient({
-        uploadAvatar: (_token, bytes, contentType) => {
-          received = { bytes, contentType };
-          return Promise.resolve(meResponse());
-        },
-      }),
-    );
-
-    // "hello" as the stand-in image body; the session must not reinterpret it.
-    await session.uploadAvatar({ bytes: "aGVsbG8=", contentType: "image/webp" });
-
-    expect(received).not.toBeNull();
-    expect(new TextDecoder().decode(received!.bytes)).toBe("hello");
-    expect(received!.contentType).toBe("image/webp");
-  });
-
-  it("deletes the avatar through the stored session", async () => {
-    const baseDir = makeBaseDir();
-    await writeAccountCredentials(baseDir, credentials());
-    const me = meResponse();
-    const session = sessionFor(baseDir, makeClient({ deleteAvatar: () => Promise.resolve(me) }));
-
-    expect(await session.deleteAvatar()).toEqual(me);
+      session.uploadAvatar({ bytes: "aGVsbG8=", contentType: "image/webp" }),
+    ).rejects.toThrow("profile sync is unavailable");
+    await expect(session.deleteAvatar()).rejects.toThrow("profile sync is unavailable");
+    for (const call of [updateProfile, updateOrganization, uploadAvatar, deleteAvatar])
+      expect(call).not.toHaveBeenCalled();
   });
 });
 

@@ -1,3 +1,4 @@
+import { snapshotProviderTurns } from "../snapshotProviderTurns.ts";
 /**
  * CursorAdapterLive — Cursor CLI (`cursor-agent acp`) via ACP.
  *
@@ -199,6 +200,7 @@ interface PendingUserInput {
 
 interface CursorSessionContext {
   harnessPolicyDelivered?: boolean;
+  readonly enableComputerControl?: boolean;
   readonly gatewaySessionLease?: AgentGatewaySessionLease;
   readonly threadId: ThreadId;
   readonly lifecycleGeneration?: string;
@@ -720,6 +722,7 @@ export function makeCursorAdapter(
             agentGatewayCredentials,
             input.threadId,
             PROVIDER,
+            input,
           );
           yield* Effect.addFinalizer(() =>
             sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
@@ -901,6 +904,9 @@ export function makeCursorAdapter(
                   runtimeMode: input.runtimeMode,
                   interactionMode: ctx?.activeInteractionMode,
                   options: params.options,
+                  computerControlEnabled: ctx?.enableComputerControl === true,
+                  activeTurn: ctx?.activeTurnId !== undefined,
+                  toolCall: params.toolCall,
                 });
                 if (policyOutcome !== undefined) {
                   return { outcome: policyOutcome };
@@ -996,6 +1002,7 @@ export function makeCursorAdapter(
           };
 
           ctx = {
+            enableComputerControl: input.enableComputerControl === true,
             threadId: input.threadId,
             ...(gatewaySessionLease ? { gatewaySessionLease } : {}),
             ...(input.lifecycleGeneration !== undefined
@@ -1551,7 +1558,7 @@ export function makeCursorAdapter(
     const readThread: CursorAdapterShape["readThread"] = (threadId) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(threadId);
-        return { threadId, turns: ctx.turns };
+        return { threadId, turns: snapshotProviderTurns(ctx.turns) };
       });
 
     const rollbackThread: CursorAdapterShape["rollbackThread"] = (threadId, numTurns) =>
@@ -1566,7 +1573,7 @@ export function makeCursorAdapter(
         }
         const nextLength = Math.max(0, ctx.turns.length - numTurns);
         ctx.turns.splice(nextLength);
-        return { threadId, turns: ctx.turns };
+        return { threadId, turns: snapshotProviderTurns(ctx.turns) };
       });
 
     const stopSession: CursorAdapterShape["stopSession"] = (threadId) =>

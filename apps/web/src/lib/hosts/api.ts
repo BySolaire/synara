@@ -5,6 +5,8 @@
 // Exports: HostsApi and the capability probe that produces one.
 
 import type {
+  RemoteAccessRequest,
+  RemoteAccessResult,
   AccountDevice,
   AccountHost,
   AccountHostPlatform,
@@ -49,6 +51,7 @@ export interface HostEnrollment {
  * account service directly.
  */
 export interface HostsApi {
+  remoteAccess?: (input: RemoteAccessRequest) => Promise<RemoteAccessResult>;
   /** Owner rows plus discoverable rows of the active workspace. */
   listHosts: () => Promise<{ readonly hosts: readonly AccountHost[] }>;
   /** Owner-only. Rejects for a host the caller does not own. */

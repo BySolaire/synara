@@ -10,6 +10,10 @@ export interface RelaySocket {
   on(event: "message", listener: (data: RawData, binary: boolean) => void): this;
   on(event: "close", listener: (code: number, reason: Buffer) => void): this;
   on(event: "error", listener: (error: Error) => void): this;
+  off(event: "open", listener: () => void): this;
+  off(event: "message", listener: (data: RawData, binary: boolean) => void): this;
+  off(event: "close", listener: (code: number, reason: Buffer) => void): this;
+  off(event: "error", listener: (error: Error) => void): this;
   removeAllListeners(event?: "open" | "message" | "close" | "error"): this;
 }
 
@@ -46,15 +50,16 @@ function websocketBase(relayUrl: string): URL {
 
 function defaultSleep(milliseconds: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(resolve, milliseconds);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timeout);
-        reject(signal.reason ?? new Error("aborted"));
-      },
-      { once: true },
-    );
+    const abort = () => {
+      clearTimeout(timeout);
+      reject(signal.reason ?? new Error("aborted"));
+    };
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, milliseconds);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
   });
 }
 
@@ -65,45 +70,68 @@ function openSocket(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
-    const fail = (error: unknown) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      socket.off("open", opened);
+      socket.off("close", closed);
+    };
+    const finish = (error?: unknown) => {
       if (settled) return;
       settled = true;
-      reject(error);
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+    const fail = (error: unknown) => finish(error);
+    // Closing a CONNECTING native ws emits an error on a later tick. Keep its
+    // observer through close, including after an abort or opening timeout.
+    const releaseErrorObserver = () => {
+      socket.off("error", fail);
+      socket.off("close", releaseErrorObserver);
     };
     const abort = () => {
-      if (settled) return;
-      settled = true;
+      finish(signal.reason ?? new Error("aborted"));
       socket.close();
-      reject(signal.reason ?? new Error("aborted"));
     };
-    signal.addEventListener("abort", abort, { once: true });
-    socket.on("open", () => {
-      if (settled) return;
-      signal.removeEventListener("abort", abort);
+    const closed = () => finish(new Error("socket closed while opening"));
+    const opened = () => {
       try {
-        const opened = onOpen?.();
-        Promise.resolve(opened).then(() => {
-          if (settled) return;
-          settled = true;
-          resolve();
-        }, fail);
+        Promise.resolve(onOpen?.()).then(() => finish(), fail);
       } catch (error) {
         fail(error);
       }
-    });
+    };
+    const timer = setTimeout(() => {
+      finish(new Error("relay opening timed out"));
+      socket.close();
+    }, 15_000);
+    socket.on("open", opened);
+    socket.on("close", closed);
     socket.on("error", fail);
+    socket.on("close", releaseErrorObserver);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
   });
 }
 
 function socketLifetime(socket: RelaySocket, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const abort = () => socket.close();
-    signal.addEventListener("abort", abort, { once: true });
-    socket.on("close", () => {
+  return new Promise((resolve) => {
+    const finish = () => {
       signal.removeEventListener("abort", abort);
+      socket.off("close", finish);
+      socket.off("error", finish);
       resolve();
-    });
-    socket.on("error", reject);
+    };
+    const abort = () => {
+      finish();
+      socket.close();
+    };
+    socket.on("close", finish);
+    socket.on("error", finish);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    else if (socket.readyState >= 2) finish();
   });
 }
 
@@ -135,40 +163,57 @@ export class RelayDialSupervisor {
   }
 
   private async connectOnce(signal: AbortSignal): Promise<void> {
-    const ticket = await this.options.requestTicket();
+    // Bound even a ticket provider which never settles. Observe abort before
+    // invoking it; a late answer cannot create a control socket after stop.
+    const ticket = await new Promise<string>((resolve, reject) => {
+      const finish = (error?: unknown, value?: string) => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", abort);
+        if (error) reject(error);
+        else resolve(value!);
+      };
+      const abort = () => finish(signal.reason ?? new Error("aborted"));
+      const timer = setTimeout(() => finish(new Error("relay ticket timed out")), 15_000);
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) {
+        abort();
+        return;
+      }
+      Promise.resolve()
+        .then(() => this.options.requestTicket())
+        .then((value) => finish(undefined, value), finish);
+    });
     if (signal.aborted) return;
     const control = this.#socketFactory(this.controlUrl(ticket));
-    await openSocket(control, signal);
-    // Attach BEFORE any await. The relay adds a host to its delivery map the
-    // moment its ticket verifies — readiness is not a gate on revocation — so
-    // frames can arrive during the reverify round trip below, and `ws` drops
-    // frames nobody is listening for. A dropped frame here is a revocation
-    // that silently never happens.
+    // Close/abort observation precedes opening and every authorization await.
+    let ended = false;
+    const lifetime = socketLifetime(control, signal).then(() => {
+      ended = true;
+    });
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     control.on("message", (raw) => {
-      void this.handleControlMessage(control, raw).catch(() => {
-        control.close(1002, "invalid control message");
-      });
+      void this.handleControlMessage(control, raw).catch(() =>
+        control.close(1002, "invalid control message"),
+      );
     });
     try {
-      // Best-effort: reverification needs the account API, which needs the
-      // identity provider. Letting it throw here would abandon a control
-      // socket that is otherwise fine — and because it throws AFTER the
-      // connection is established, every attempt would look healthy, reset
-      // the backoff, and turn a provider outage into a fleet-wide dial storm.
-      await this.options.reverifySessions();
-    } catch (error) {
-      this.options.onReverifyFailed?.(error);
-    }
-    // Only now is the connection genuinely healthy: socket open and the
-    // supervisor committed to running it. Backoff resets on this signal.
-    this.#connected = true;
-    control.send(JSON.stringify({ v: 1, type: "ready" }));
-    try {
-      await socketLifetime(control, signal);
+      await openSocket(control, signal);
+      if (ended || signal.aborted) return;
+      await Promise.race([
+        this.options.reverifySessions().catch((error) => this.options.onReverifyFailed?.(error)),
+        lifetime,
+        new Promise<void>((resolve) => {
+          refreshTimer = setTimeout(resolve, 15_000);
+        }),
+      ]);
+      if (ended || signal.aborted || control.readyState !== 1) return;
+      this.#connected = true;
+      control.send(JSON.stringify({ v: 1, type: "ready" }));
+      await lifetime;
     } finally {
-      // Splices signaled on a socket that is going away must not land after
-      // teardown: the in-flight dial is aborted and the handler detached.
+      clearTimeout(refreshTimer);
       control.removeAllListeners("message");
+      control.close();
       this.#spliceDials.abort();
       this.#spliceDials = new AbortController();
     }
@@ -208,9 +253,11 @@ export class RelayDialSupervisor {
         }
         return this.options.acceptSplice(data, message);
       });
-    } catch (error) {
+    } catch {
       data.close(1001, "splice dial aborted");
-      throw error;
+      // A cancelled client or refused data upgrade is local to this splice.
+      // Closing control here would disconnect every established host session.
+      return;
     }
     // The control socket may have died while the data socket was opening.
     // Accepting now would create a remote session nothing is supervising.

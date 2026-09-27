@@ -15,6 +15,10 @@
 // desktop apps connecting to each other over the relay.
 // Layer: E2E tooling (orchestrator, runs on the developer machine)
 
+import { RemoteAccessResult } from "@synara/contracts";
+import { readAccountFile, writeAccountCredentials } from "../../server/src/accountAuth";
+import { workspaceRpc } from "../src/harness/rpc";
+import { bindEphemeralHttpServer } from "../src/harness/network";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
@@ -24,24 +28,39 @@ import path from "node:path";
 import { createAccountClient, OrganizationRequiredError } from "@synara/shared/account";
 
 const REPO = path.resolve(import.meta.dirname, "../../..");
-const SCRATCH = "/tmp/synara-e2e";
+const SCRATCH = await fs.mkdtemp(
+  path.join(process.env.SYNARA_E2E_PARENT_DIR ?? os.tmpdir(), "synara-e2e-"),
+);
+const RUN_NAME = `synara-e2e-${randomBytes(4).toString("hex")}`;
+async function fixturePort(variable: string): Promise<number> {
+  const configured = process.env[variable];
+  if (configured !== undefined) {
+    const port = Number(configured);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`Invalid ${variable}`);
+    return port;
+  }
+  const reservation = await bindEphemeralHttpServer();
+  const port = Number(new URL(reservation.origin).port);
+  await reservation.close();
+  return port;
+}
 const LOGS = path.join(SCRATCH, "logs");
-const HOME = path.join(SCRATCH, "home");
+const HOST_HOME = path.join(SCRATCH, "home");
 const PROJECT = path.join(SCRATCH, "project");
 
-const API_PORT = 8788;
-const RELAY_PORT = 8789;
-const HOST_PORT = 3899;
+const API_PORT = await fixturePort("SYNARA_E2E_API_PORT");
+const RELAY_PORT = await fixturePort("SYNARA_E2E_RELAY_PORT");
+const HOST_PORT = await fixturePort("SYNARA_E2E_HOST_PORT");
 const OWNER_EMAIL = "owner@e2e.local";
 
-const NET_SERVICES = "synara-e2e-services"; // API + relay + Postgres
-const NET_CLIENT = "synara-e2e-client"; // the isolated client, alone
+const NET_SERVICES = `${RUN_NAME}-services`; // API + relay + Postgres
+const NET_CLIENT = `${RUN_NAME}-client`; // the isolated client, alone
 const CONTAINERS = {
-  db: "synara-e2e-db",
-  api: "synara-e2e-api",
-  relay: "synara-e2e-relay",
-  client: "synara-e2e-client",
-  control: "synara-e2e-control",
+  db: `${RUN_NAME}-db`,
+  api: `${RUN_NAME}-api`,
+  relay: `${RUN_NAME}-relay`,
+  client: `${RUN_NAME}-client`,
+  control: `${RUN_NAME}-control`,
 };
 
 const stackOnly = process.env.SYNARA_E2E_STACK_ONLY === "1";
@@ -62,6 +81,23 @@ const RELAY_URL = `http://${lanIp}:${RELAY_PORT}`;
 type Row = { step: string; ok: boolean; ms?: number; detail: string };
 const rows: Row[] = [];
 let hostProcess: ChildProcess | undefined;
+let hostSessionToken: string | undefined;
+async function hostRpc() {
+  const origin = `http://127.0.0.1:${HOST_PORT}`;
+  if (!hostSessionToken) {
+    const response = await fetch(`${origin}/api/auth/bootstrap/bearer`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ credential: hostAuthToken }),
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (!response.ok) throw new Error(`Host bootstrap refused: ${response.status}`);
+    const result = (await response.json()) as { sessionToken?: string; role?: string };
+    if (!result.sessionToken || result.role !== "owner") throw new Error("Owner session required");
+    hostSessionToken = result.sessionToken;
+  }
+  return workspaceRpc(origin, "", hostSessionToken);
+}
 
 function detectLanIp(): string {
   const address = Object.values(os.networkInterfaces())
@@ -176,9 +212,9 @@ async function captureContainerLogs(): Promise<void> {
 
 async function startInfrastructure(): Promise<void> {
   await removeEverything();
-  await fs.rm(HOME, { recursive: true, force: true });
+  await fs.rm(HOST_HOME, { recursive: true, force: true });
   await fs.mkdir(LOGS, { recursive: true });
-  await fs.mkdir(HOME, { recursive: true });
+  await fs.mkdir(HOST_HOME, { recursive: true });
   await fs.mkdir(PROJECT, { recursive: true });
   // A real project is a git repo; the host's checkpoint/diff paths key on it.
   if (!(await fs.stat(path.join(PROJECT, ".git")).catch(() => undefined))) {
@@ -353,8 +389,12 @@ async function signInOwner(): Promise<{ userId: string; accessToken: string; org
 
 function hostEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
-    ...process.env,
-    SYNARA_HOME: HOME,
+    ...(process.env.SYNARA_E2E_AGENT === "1"
+      ? process.env
+      : { PATH: process.env.PATH, HOME: HOST_HOME, TMPDIR: process.env.TMPDIR }),
+    SYNARA_REMOTE_CONNECTIONS: "1",
+    SYNARA_DESKTOP_BUNDLE_ID: "",
+    SYNARA_HOME: HOST_HOME,
     SYNARA_ACCOUNT_URL: API_URL,
     SYNARA_NO_BROWSER: "1",
     ...extra,
@@ -365,8 +405,8 @@ async function enrollHostHeadlessly(owner: { accessToken: string }): Promise<{ h
   const startedAt = Date.now();
   const account = createAccountClient({ baseUrl: API_URL });
   const child = spawn(
-    "bun",
-    [path.join(REPO, "apps/server/src/index.ts"), "auth", "--device-code"],
+    "node",
+    [path.join(REPO, "apps/server/dist/index.mjs"), "auth", "--device-code"],
     {
       cwd: PROJECT,
       env: hostEnv(),
@@ -398,7 +438,7 @@ async function enrollHostHeadlessly(owner: { accessToken: string }): Promise<{ h
     throw new Error(`headless host link failed (exit ${code}):\n${output}`);
   }
   const stored = JSON.parse(
-    await fs.readFile(path.join(HOME, "account-credentials.json"), "utf8"),
+    await fs.readFile(path.join(HOST_HOME, "account-credentials.json"), "utf8"),
   ) as { hostId?: string; hostKeyGeneration?: number; accessToken?: string };
   if (!stored.hostId) throw new Error("device-code link did not persist a host id");
   record(
@@ -421,7 +461,7 @@ async function startHost(hostId: string): Promise<void> {
   // LAN IP — the isolated client's failure to reach it then proves the packet
   // filter, not a loopback bind. A non-loopback bind requires the auth token
   // and the explicit plaintext acknowledgement.
-  hostProcess = spawn("bun", [path.join(REPO, "apps/server/src/index.ts")], {
+  hostProcess = spawn("node", [path.join(REPO, "apps/server/dist/index.mjs")], {
     cwd: PROJECT,
     env: hostEnv({
       SYNARA_MODE: "web",
@@ -437,6 +477,19 @@ async function startHost(hostId: string): Promise<void> {
   hostProcess.stderr?.on("data", (chunk) => void hostLog.write(chunk));
   hostProcess.on("close", (code) => log(`host process exited ${code}`));
   try {
+    await waitFor(
+      "host owner RPC",
+      async () => {
+        try {
+          await using rpc = await hostRpc();
+          await rpc.request("hosts.remoteAccess", { request: { operation: "create-invitation" } });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      30_000,
+    );
     const ms = await waitFor(
       "the host's relay control socket",
       () => relayReportsHost(hostId),
@@ -504,6 +557,12 @@ async function runIsolatedClient(input: {
   hostId: string;
   phase: "full" | "reconnect" | "agent";
 }): Promise<boolean> {
+  await using ownerRpc = await hostRpc();
+  const invitation = await ownerRpc.request<RemoteAccessResult>("hosts.remoteAccess", {
+    request: { operation: "create-invitation" },
+  });
+  if (invitation.kind !== "invitation") throw new Error("Host did not issue an invitation");
+  let approval: Promise<void> | undefined;
   const forbidden = [
     `http://${lanIp}:${HOST_PORT}/`, // the host, same IP the API/relay are allowed on
     `http://host.docker.internal:${HOST_PORT}/`, // the host by Docker's name for this machine
@@ -515,6 +574,7 @@ async function runIsolatedClient(input: {
     "docker",
     [
       "run",
+      "-i",
       "--rm",
       "--name",
       CONTAINERS.client,
@@ -546,8 +606,9 @@ async function runIsolatedClient(input: {
       `SYNARA_E2E_FORBIDDEN_URLS=${forbidden.join(",")}`,
       "synara-e2e/client:local",
     ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    { stdio: ["pipe", "pipe", "pipe"] },
   );
+  child.stdin.end(JSON.stringify(invitation.bundle));
   const clientLog = await fs.open(path.join(LOGS, `client-${input.phase}.log`), "w");
   let buffer = "";
   let stderr = "";
@@ -566,6 +627,33 @@ async function runIsolatedClient(input: {
           ms?: number;
           summary?: boolean;
         } & Record<string, unknown>;
+        if (typeof parsed.pairingDeviceJkt === "string" && !approval) {
+          const deviceJkt = parsed.pairingDeviceJkt;
+          approval = (async () => {
+            await waitFor(
+              "exact-key pairing request",
+              async () => {
+                const state = await ownerRpc.request<RemoteAccessResult>("hosts.remoteAccess", {
+                  request: { operation: "list" },
+                });
+                return (
+                  state.kind === "host-state" &&
+                  state.invitations.some(
+                    (item) =>
+                      item.inviteId === invitation.bundle.inviteId &&
+                      item.pendingDevice?.deviceJkt === deviceJkt,
+                  )
+                );
+              },
+              30_000,
+              100,
+            );
+            await ownerRpc.request("hosts.remoteAccess", {
+              request: { operation: "approve", inviteId: invitation.bundle.inviteId, deviceJkt },
+            });
+          })();
+          void approval.catch(() => child.kill("SIGTERM"));
+        }
         if (parsed.summary) continue;
         const { step, ok, ms, ...detail } = parsed;
         record(`[isolated client · ${input.phase}] ${step}`, Boolean(ok), detail, ms);
@@ -581,6 +669,7 @@ async function runIsolatedClient(input: {
   const code = await new Promise<number>((resolve) =>
     child.on("close", (exitCode) => resolve(exitCode ?? 1)),
   );
+  await approval;
   await clientLog.close();
   if (code !== 0) {
     log(
@@ -594,6 +683,7 @@ async function runIsolatedClient(input: {
 
 async function main(): Promise<void> {
   const startedAt = Date.now();
+  log(`isolated run: ${RUN_NAME}; files: ${SCRATCH}`);
   log(`this machine: ${lanIp}  api: ${API_URL}  relay: ${RELAY_URL}  host: 0.0.0.0:${HOST_PORT}`);
   let ok = true;
   try {
@@ -609,6 +699,16 @@ async function main(): Promise<void> {
     }
     const owner = await signInOwner();
     const { hostId } = await enrollHostHeadlessly(owner);
+    const stored = await readAccountFile(HOST_HOME);
+    if (!stored) throw new Error("Headless link credentials are missing");
+    await writeAccountCredentials(HOST_HOME, {
+      ...stored,
+      accountUrl: API_URL,
+      userId: owner.userId,
+      organizationId: owner.orgId,
+      accessToken: owner.accessToken,
+      refreshToken: "unused-fixture-refresh",
+    });
     await startHost(hostId);
     await positiveControl();
 
@@ -631,7 +731,7 @@ async function main(): Promise<void> {
     // Claude credential THIS machine has; the isolated client only ever sees
     // orchestration commands and the thread event stream. Opt-in: it spends
     // provider quota and needs a working Claude login here.
-    if (process.env.SYNARA_E2E_AGENT !== "0") {
+    if (process.env.SYNARA_E2E_AGENT === "1") {
       ok = (await runIsolatedClient({ owner, hostId, phase: "agent" })) && ok;
     }
   } catch (error) {

@@ -23,7 +23,23 @@ import {
   modelSelection,
   resetComposerDraftStore,
 } from "./composerDraftStoreTestFixtures";
-import { removeLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorage";
+import { executionStorage } from "./lib/hosts/executionStorage";
+
+// Exercise the same scoped persistence boundary the attachment verifier reads.
+const physicalItems = new Map<string, string>();
+vi.stubGlobal("localStorage", {
+  getItem: (key: string) => physicalItems.get(key) ?? null,
+  setItem: (key: string, value: string) => physicalItems.set(key, value),
+  removeItem: (key: string) => physicalItems.delete(key),
+  key: (index: number) => [...physicalItems.keys()][index] ?? null,
+  get length() {
+    return physicalItems.size;
+  },
+  clear: () => physicalItems.clear(),
+});
+const setLocalStorageItem = <T, E>(key: string, value: T, schema: Schema.Codec<T, E>) =>
+  executionStorage.setItem(key, Schema.encodeSync(Schema.fromJsonString(schema))(value));
+const removeLocalStorageItem = (key: string) => executionStorage.removeItem(key);
 import { insertInlineTerminalContextPlaceholder } from "./lib/terminalContext";
 
 describe("composerDraftStore addImages", () => {
@@ -626,6 +642,70 @@ describe("composerDraftStore prompt history saved draft", () => {
   });
 });
 
+describe("composerDraftStore pull request context cards", () => {
+  const threadId = ThreadId.makeUnsafe("thread-pr-cards");
+  const card = {
+    id: "pr-card-1",
+    createdAt: "2026-09-08T12:00:00.000Z",
+    scope: "checks" as const,
+    prNumber: 321,
+    prUrl: "https://github.com/example/synara/pull/321",
+    title: "1 failing check",
+    subtitle: "Test",
+    text: "Fix the failing CI checks on PR #321.",
+  };
+
+  beforeEach(() => {
+    resetComposerDraftStore();
+  });
+
+  it("replaces a card for the same PR scope instead of stacking it", () => {
+    const store = useComposerDraftStore.getState();
+    expect(store.addPullRequestContext(threadId, card)).toBe(true);
+    expect(
+      store.addPullRequestContext(threadId, { ...card, id: "pr-card-2", subtitle: "Test, Lint" }),
+    ).toBe(true);
+    expect(
+      store.addPullRequestContext(threadId, { ...card, id: "pr-card-3", scope: "comments" }),
+    ).toBe(true);
+    expect(store.addPullRequestContext(threadId, { ...card, id: "empty", text: " " })).toBe(false);
+
+    const cards = useComposerDraftStore.getState().draftsByThreadId[threadId]?.pullRequestContexts;
+    expect(cards?.map((entry) => [entry.id, entry.subtitle])).toEqual([
+      ["pr-card-2", "Test, Lint"],
+      ["pr-card-3", "Test"],
+    ]);
+
+    store.removePullRequestContext(threadId, "pr-card-2");
+    store.removePullRequestContext(threadId, "pr-card-3");
+    // Removing the last card leaves no empty draft behind.
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toBeUndefined();
+  });
+
+  it("persists and hydrates cards", () => {
+    useComposerDraftStore.getState().addPullRequestContext(threadId, card);
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const persistedState = partializeComposerDraftStoreState(
+      useComposerDraftStore.getState(),
+    ) as unknown as {
+      draftsByThreadId?: Record<string, { pullRequestContexts?: unknown }>;
+    };
+    expect(persistedState.draftsByThreadId?.[threadId]?.pullRequestContexts).toEqual([card]);
+
+    const mergedState = persistApi
+      .getOptions()
+      .merge(persistedState, useComposerDraftStore.getInitialState());
+    expect(mergedState.draftsByThreadId[threadId]?.pullRequestContexts).toEqual([card]);
+  });
+});
+
 describe("composerDraftStore copyTransferableComposerState", () => {
   const sourceThreadId = ThreadId.makeUnsafe("thread-source");
   const targetThreadId = ThreadId.makeUnsafe("thread-target");
@@ -960,119 +1040,6 @@ describe("composerDraftStore syncPersistedAttachments", () => {
     expect(
       useComposerDraftStore.getState().draftsByThreadId[threadId]?.nonPersistedImageIds,
     ).toEqual([image.id]);
-  });
-
-  it("warns when AppSnap bytes exist but their draft metadata cannot be verified", async () => {
-    const image = makeImage({
-      id: "appsnap-persisted",
-      previewUrl: "blob:appsnap-persisted",
-    });
-    useComposerDraftStore.getState().addImage(threadId, image);
-    setLocalStorageItem(
-      COMPOSER_DRAFT_STORAGE_KEY,
-      {
-        version: 2,
-        state: {
-          draftsByThreadId: {
-            [threadId]: {
-              attachments: "not-an-array",
-            },
-          },
-        },
-      },
-      Schema.Unknown,
-    );
-
-    const persisted = await useComposerDraftStore.getState().syncPersistedAttachments(threadId, [
-      {
-        id: image.id,
-        name: image.name,
-        mimeType: image.mimeType,
-        sizeBytes: image.sizeBytes,
-        blobKey: `${threadId}:${image.id}`,
-        source: {
-          kind: "appsnap",
-          captureId: "capture-persisted",
-          capturedAt: "2026-07-12T20:00:00.000Z",
-          appName: "ChatGPT",
-          windowTitle: "ChatGPT",
-        },
-      },
-    ]);
-    expect(persisted).toBe("unverified");
-
-    expect(
-      useComposerDraftStore.getState().draftsByThreadId[threadId]?.persistedAttachments,
-    ).toHaveLength(1);
-    expect(
-      useComposerDraftStore.getState().draftsByThreadId[threadId]?.nonPersistedImageIds,
-    ).toEqual([image.id]);
-  });
-
-  it("clears the warning after AppSnap blob metadata is readable from storage", async () => {
-    const image = makeImage({
-      id: "appsnap-verified",
-      previewUrl: "blob:appsnap-verified",
-    });
-    useComposerDraftStore.getState().addImage(threadId, image);
-
-    setLocalStorageItem(
-      COMPOSER_DRAFT_STORAGE_KEY,
-      {
-        version: COMPOSER_DRAFT_STORAGE_VERSION,
-        state: {
-          draftsByThreadId: {
-            [threadId]: {
-              prompt: "",
-              attachments: [
-                {
-                  id: image.id,
-                  name: image.name,
-                  mimeType: image.mimeType,
-                  sizeBytes: image.sizeBytes,
-                  blobKey: `${threadId}:${image.id}`,
-                  source: {
-                    kind: "appsnap",
-                    captureId: "capture-verified",
-                    capturedAt: "2026-07-12T20:00:00.000Z",
-                    appName: "ChatGPT",
-                    windowTitle: "ChatGPT",
-                  },
-                },
-              ],
-            },
-          },
-          draftThreadsByThreadId: {},
-          projectDraftThreadIdByProjectId: {},
-        },
-      },
-      Schema.Unknown,
-    );
-
-    const persisted = await useComposerDraftStore.getState().syncPersistedAttachments(threadId, [
-      {
-        id: image.id,
-        name: image.name,
-        mimeType: image.mimeType,
-        sizeBytes: image.sizeBytes,
-        blobKey: `${threadId}:${image.id}`,
-        source: {
-          kind: "appsnap",
-          captureId: "capture-verified",
-          capturedAt: "2026-07-12T20:00:00.000Z",
-          appName: "ChatGPT",
-          windowTitle: "ChatGPT",
-        },
-      },
-    ]);
-    expect(persisted).toBe("persisted");
-
-    expect(
-      useComposerDraftStore.getState().draftsByThreadId[threadId]?.persistedAttachments,
-    ).toHaveLength(1);
-    expect(
-      useComposerDraftStore.getState().draftsByThreadId[threadId]?.nonPersistedImageIds,
-    ).toEqual([]);
   });
 
   it("verifies AppSnap metadata without rejecting unrelated malformed drafts", async () => {

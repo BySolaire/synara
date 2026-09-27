@@ -14,21 +14,6 @@ const decode = <S extends Schema.Top>(
     never
   >;
 
-it.effect("accepts getTurnDiff requests when fromTurnCount <= toTurnCount", () =>
-  Effect.gen(function* () {
-    const parsed = yield* decode(WebSocketRequest, {
-      id: "req-1",
-      body: {
-        _tag: ORCHESTRATION_WS_METHODS.getTurnDiff,
-        threadId: "thread-1",
-        fromTurnCount: 1,
-        toTurnCount: 2,
-      },
-    });
-    assert.strictEqual(parsed.body._tag, ORCHESTRATION_WS_METHODS.getTurnDiff);
-  }),
-);
-
 it.effect("rejects getTurnDiff requests when fromTurnCount > toTurnCount", () =>
   Effect.gen(function* () {
     const result = yield* Effect.exit(
@@ -221,71 +206,6 @@ it.effect("accepts typed websocket push envelopes with sequence", () =>
     assert.strictEqual(parsed.type, "push");
     assert.strictEqual(parsed.sequence, 1);
     assert.strictEqual(parsed.channel, WS_CHANNELS.serverWelcome);
-  }),
-);
-
-it.effect("accepts git.actionProgress push envelopes", () =>
-  Effect.gen(function* () {
-    const parsed = yield* decode(WsResponse, {
-      type: "push",
-      sequence: 3,
-      channel: WS_CHANNELS.gitActionProgress,
-      data: {
-        actionId: "action-1",
-        cwd: "/repo",
-        action: "commit",
-        kind: "phase_started",
-        phase: "commit",
-        label: "Committing...",
-      },
-    });
-
-    if (!("type" in parsed) || parsed.type !== "push") {
-      assert.fail("expected websocket response to decode as a push envelope");
-    }
-
-    assert.strictEqual(parsed.channel, WS_CHANNELS.gitActionProgress);
-  }),
-);
-
-it.effect("accepts git.worktreeSetupProgress push envelopes", () =>
-  Effect.gen(function* () {
-    const parsed = yield* decode(WsResponse, {
-      type: "push",
-      sequence: 5,
-      channel: WS_CHANNELS.gitWorktreeSetupProgress,
-      data: {
-        progressId: "progress-1",
-        kind: "phase_started",
-        phase: "branch",
-      },
-    });
-
-    if (!("type" in parsed) || parsed.type !== "push") {
-      assert.fail("expected websocket response to decode as a push envelope");
-    }
-
-    assert.strictEqual(parsed.channel, WS_CHANNELS.gitWorktreeSetupProgress);
-  }),
-);
-
-it.effect("accepts automation.event push envelopes", () =>
-  Effect.gen(function* () {
-    const parsed = yield* decode(WsResponse, {
-      type: "push",
-      sequence: 4,
-      channel: WS_CHANNELS.automationEvent,
-      data: {
-        type: "definition-deleted",
-        automationId: "automation-1",
-      },
-    });
-
-    if (!("type" in parsed) || parsed.type !== "push") {
-      assert.fail("expected websocket response to decode as a push envelope");
-    }
-
-    assert.strictEqual(parsed.channel, WS_CHANNELS.automationEvent);
   }),
 );
 

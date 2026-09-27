@@ -3,6 +3,8 @@
 // and the public profile page (no I/O, safe to use during html-to-image render).
 // Layer: profile-ui shared utilities.
 
+import type { ProviderGlyphKey as ProviderKind } from "./providerIcon";
+
 // Compact token/count formatting matching the reference card ("17bn", "538m", "1.2k").
 export function formatCompact(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) {
@@ -82,6 +84,35 @@ export function formatHourLabel(hour: number): string {
   if (normalized === 0) return "12 AM";
   if (normalized === 12) return "12 PM";
   return normalized < 12 ? `${normalized} AM` : `${normalized - 12} PM`;
+}
+
+export function formatProviderLabel(provider: ProviderKind): string {
+  switch (provider) {
+    case "codex":
+      return "Codex";
+    case "claudeAgent":
+      return "Claude";
+    case "cursor":
+      return "Cursor";
+    case "devin":
+      return "Devin";
+    case "antigravity":
+      return "Antigravity";
+    case "grok":
+      return "Grok";
+    case "droid":
+      return "Droid";
+    case "opencode":
+      return "OpenCode";
+    case "pi":
+      return "Pi";
+    case "omp":
+      return "Oh My Pi";
+  }
+}
+
+export function formatProfileUsageBasis(metric: "tokens" | "turns"): string {
+  return metric === "tokens" ? "tracked tokens" : "turns";
 }
 
 const WHOLE_NUMBER_FORMATTER = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });

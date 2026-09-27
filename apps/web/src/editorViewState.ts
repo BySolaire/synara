@@ -1,3 +1,4 @@
+import { executionStorage } from "./lib/hosts/executionStorage";
 // FILE: editorViewState.ts
 // Purpose: Persists per-thread editor workspace view state (expanded explorer
 //          directories, center mode) so re-entering the editor view restores it.
@@ -35,7 +36,7 @@ function readPersistedMap(): PersistedEditorViewStateMap {
     return {};
   }
   try {
-    const raw = window.localStorage.getItem(EDITOR_VIEW_STATE_STORAGE_KEY);
+    const raw = executionStorage.getItem(EDITOR_VIEW_STATE_STORAGE_KEY);
     const parsed: unknown = raw === null ? null : JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       return {};
@@ -75,7 +76,7 @@ export function storeEditorViewState(threadId: string, snapshot: EditorViewState
           delete map[staleThreadId];
         });
     }
-    window.localStorage.setItem(EDITOR_VIEW_STATE_STORAGE_KEY, JSON.stringify(map));
+    executionStorage.setItem(EDITOR_VIEW_STATE_STORAGE_KEY, JSON.stringify(map));
   } catch {
     // Best-effort preference persistence only.
   }
@@ -108,7 +109,7 @@ function readEditorRailChatTabsMap(): PersistedEditorRailChatTabsMap {
     return {};
   }
   try {
-    const raw = window.localStorage.getItem(EDITOR_RAIL_CHAT_TABS_STORAGE_KEY);
+    const raw = executionStorage.getItem(EDITOR_RAIL_CHAT_TABS_STORAGE_KEY);
     const parsed: unknown = raw === null ? null : JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       return {};
@@ -175,7 +176,7 @@ export function storeEditorRailChatTabs(
     } else {
       map[projectId] = normalizedTabs;
     }
-    window.localStorage.setItem(EDITOR_RAIL_CHAT_TABS_STORAGE_KEY, JSON.stringify(map));
+    executionStorage.setItem(EDITOR_RAIL_CHAT_TABS_STORAGE_KEY, JSON.stringify(map));
   } catch {
     // Best-effort preference persistence only.
   }

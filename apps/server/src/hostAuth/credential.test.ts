@@ -114,6 +114,7 @@ describe("verifySessionCredential", () => {
   /** A real host-signed credential, produced by the shipping mint path. */
   async function mint() {
     return new HostMintService({
+      authorizeDevice: async () => 1,
       identity: hostIdentity,
       apiIssuer: API_ISSUER,
       environmentId: ENVIRONMENT_ID,
@@ -183,6 +184,7 @@ describe("verifySessionCredential", () => {
     // Anchors the builders: every rejection case below differs from this one
     // in exactly one respect, so only the checked guard can explain it.
     await expect(verify({ dpop: await dpopProof() })).resolves.toEqual({
+      trustGeneration: 1,
       userId: USER_ID,
       deviceJkt,
       expiresAtSeconds: NOW + 3600,

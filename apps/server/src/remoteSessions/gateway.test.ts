@@ -1,3 +1,4 @@
+import { controllerProtocol } from "../hostConnections/dialer";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
@@ -65,23 +66,6 @@ class TestSocket extends EventEmitter implements RelaySocket {
   }
 }
 
-class ObservedSessionRegistry extends RemoteSessionRegistry {
-  readonly verificationFinished: Promise<void>;
-  #markVerificationFinished: (() => void) | undefined;
-
-  constructor() {
-    super();
-    this.verificationFinished = new Promise((resolve) => {
-      this.#markVerificationFinished = resolve;
-    });
-  }
-
-  override isDeviceRevoked(deviceJkt: string, nowMs?: number): boolean {
-    this.#markVerificationFinished?.();
-    return super.isDeviceRevoked(deviceJkt, nowMs);
-  }
-}
-
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
@@ -106,6 +90,7 @@ async function devicePeer(identity: HostIdentity, environmentId: string, userId:
   const now = Math.floor(Date.now() / 1_000);
   const credential = await new SignJWT({
     cnf: { jkt: deviceJkt },
+    trustGeneration: 1,
     keyGeneration: 1,
     scope: [HOST_CONNECT_SCOPE],
   })
@@ -145,6 +130,7 @@ async function mintFixture(identity: HostIdentity, environmentId: string, userId
     ],
   };
   const mintService = new HostMintService({
+    authorizeDevice: async () => 1,
     identity,
     apiIssuer: API_ISSUER,
     environmentId,
@@ -194,13 +180,17 @@ async function mintFixture(identity: HostIdentity, environmentId: string, userId
 }
 
 describe("RemoteConnectionGateway", () => {
-  it("does not register a peer that closed while its credential was being verified", async () => {
+  it("does not register a peer that closes at the final authorization boundary", async () => {
     const identity = await hostIdentity("race");
     const environmentId = "gateway-race-environment";
     const peer = await devicePeer(identity, environmentId, "user-1");
-    const sessions = new ObservedSessionRegistry();
+    const socket = new TestSocket();
+    const sessions = new RemoteSessionRegistry();
     const bridgeToLocal = vi.fn(async () => {});
     const gateway = new RemoteConnectionGateway({
+      authorizeDevice: async () => {
+        socket.close(1000, "peer left");
+      },
       mintService: {} as HostMintService,
       identity,
       environmentId,
@@ -208,17 +198,16 @@ describe("RemoteConnectionGateway", () => {
       sessions,
       bridgeToLocal,
     });
-    const socket = new TestSocket();
     await gateway.accept(socket);
 
     socket.receive({
       v: 1,
       type: "session_authorize",
+      client: controllerProtocol,
       credential: peer.credential,
       dpop: await peer.dpop(),
     });
-    socket.close(1000, "peer left");
-    await sessions.verificationFinished;
+    await vi.waitFor(() => expect(socket.closes).toHaveLength(1));
 
     expect(sessions.size).toBe(0);
     expect(bridgeToLocal).not.toHaveBeenCalled();
@@ -233,6 +222,7 @@ describe("RemoteConnectionGateway", () => {
     const fixture = await mintFixture(identity, environmentId, "minted-user");
     const sessions = new RemoteSessionRegistry();
     const gateway = new RemoteConnectionGateway({
+      authorizeDevice: async () => {},
       mintService: fixture.mintService,
       identity,
       environmentId,
@@ -261,6 +251,7 @@ describe("RemoteConnectionGateway", () => {
     const sessions = new RemoteSessionRegistry();
     const bridgeToLocal = vi.fn(async () => {});
     const gateway = new RemoteConnectionGateway({
+      authorizeDevice: async () => {},
       mintService: {} as HostMintService,
       identity,
       environmentId,
@@ -274,6 +265,7 @@ describe("RemoteConnectionGateway", () => {
     socket.receive({
       v: 1,
       type: "session_authorize",
+      client: controllerProtocol,
       credential: peer.credential,
       dpop: await peer.dpop(),
     });
@@ -297,6 +289,7 @@ describe("RemoteConnectionGateway", () => {
     const sessions = new RemoteSessionRegistry();
     const bridgeToLocal = vi.fn(async () => {});
     const gateway = new RemoteConnectionGateway({
+      authorizeDevice: async () => {},
       mintService: {} as HostMintService,
       identity,
       environmentId,
@@ -310,8 +303,20 @@ describe("RemoteConnectionGateway", () => {
     const second = await peer.dpop();
     expect(first).not.toBe(second);
 
-    socket.receive({ v: 1, type: "session_authorize", credential: peer.credential, dpop: first });
-    socket.receive({ v: 1, type: "session_authorize", credential: peer.credential, dpop: second });
+    socket.receive({
+      v: 1,
+      type: "session_authorize",
+      client: controllerProtocol,
+      credential: peer.credential,
+      dpop: first,
+    });
+    socket.receive({
+      v: 1,
+      type: "session_authorize",
+      client: controllerProtocol,
+      credential: peer.credential,
+      dpop: second,
+    });
     await vi.waitFor(() => expect(socket.frames("session_ready").length).toBeGreaterThan(0));
     // Let a concurrent second handshake finish before asserting it never ran.
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -330,6 +335,7 @@ describe("RemoteConnectionGateway", () => {
     const fixture = await mintFixture(identity, environmentId, "minted-user");
     const sessions = new RemoteSessionRegistry();
     const gateway = new RemoteConnectionGateway({
+      authorizeDevice: async () => {},
       mintService: fixture.mintService,
       identity,
       environmentId,

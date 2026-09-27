@@ -26,3 +26,24 @@ describe("startEndpointReporter", () => {
     stop();
   });
 });
+
+it("retries a failed report without a network change and stops after teardown", async () => {
+  let tick: (() => void) | undefined;
+  const report = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
+  const stop = startEndpointReporter({
+    report,
+    fingerprint: () => "same-network",
+    setIntervalFn: ((callback: () => void) => {
+      tick = callback;
+      return { unref() {} };
+    }) as unknown as typeof setInterval,
+    clearIntervalFn: vi.fn() as unknown as typeof clearInterval,
+  });
+  await vi.waitFor(() => expect(report).toHaveBeenCalledTimes(1));
+  tick?.();
+  await vi.waitFor(() => expect(report).toHaveBeenCalledTimes(2));
+  stop();
+  tick?.();
+  await Promise.resolve();
+  expect(report).toHaveBeenCalledTimes(2);
+});

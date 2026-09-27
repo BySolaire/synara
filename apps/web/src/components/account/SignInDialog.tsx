@@ -232,18 +232,18 @@ function SignInDialogContent({ onOpenChange, onSignedIn }: Omit<SignInDialogProp
         <DialogTitle className="font-system-ui text-lg font-semibold">
           Welcome to Synara
         </DialogTitle>
-        <p className="text-[length:var(--app-font-size-ui,12px)] leading-snug text-muted-foreground">
+        <p className="text-ui leading-snug text-muted-foreground">
           Sign in or create your account to sync your profile and workspace across devices.
         </p>
       </div>
 
       {ssoWait ? (
         <div className="flex flex-col items-center gap-3 py-2 text-center">
-          <div className="flex items-center gap-2 text-[length:var(--app-font-size-ui,12px)] text-muted-foreground">
+          <div className="flex items-center gap-2 text-ui text-muted-foreground">
             <Spinner className="size-3.5" />
             <span>Waiting for your browser…</span>
           </div>
-          <p className="text-[length:var(--app-font-size-ui-sm,11px)] text-muted-foreground">
+          <p className="text-ui-sm text-muted-foreground">
             Finish signing in with your provider, then return here.
           </p>
           <Button
@@ -260,7 +260,7 @@ function SignInDialogContent({ onOpenChange, onSignedIn }: Omit<SignInDialogProp
           >
             Stop waiting
           </Button>
-          <p className="text-[length:var(--app-font-size-ui-sm,11px)] text-muted-foreground">
+          <p className="text-ui-sm text-muted-foreground">
             A page you already approved may still finish signing in.
           </p>
         </div>
@@ -302,9 +302,7 @@ function SignInDialogContent({ onOpenChange, onSignedIn }: Omit<SignInDialogProp
 
           <div className="flex items-center gap-3" role="separator" aria-orientation="horizontal">
             <span className="h-px flex-1 bg-border" />
-            <span className="text-[length:var(--app-font-size-ui-sm,11px)] text-muted-foreground">
-              or
-            </span>
+            <span className="text-ui-sm text-muted-foreground">or</span>
             <span className="h-px flex-1 bg-border" />
           </div>
 
@@ -329,7 +327,7 @@ function SignInDialogContent({ onOpenChange, onSignedIn }: Omit<SignInDialogProp
               <p
                 id={emailErrorId}
                 role="alert"
-                className="text-[length:var(--app-font-size-ui-sm,11px)] leading-snug text-destructive"
+                className="text-ui-sm leading-snug text-destructive"
               >
                 {error}
               </p>
@@ -344,7 +342,7 @@ function SignInDialogContent({ onOpenChange, onSignedIn }: Omit<SignInDialogProp
 
       <button
         type="button"
-        className="self-center text-[length:var(--app-font-size-ui-sm,11px)] text-muted-foreground hover:text-foreground"
+        className="self-center text-ui-sm text-muted-foreground hover:text-foreground"
         onClick={() => onOpenChange(false)}
       >
         Continue without an account
@@ -457,7 +455,7 @@ function CodeEntryStep({
       <div className="flex flex-col items-center gap-3 text-center">
         <SynaraLogo className="size-10" />
         <DialogTitle className="font-system-ui text-lg font-semibold">Check your email</DialogTitle>
-        <p className="text-[length:var(--app-font-size-ui,12px)] leading-snug text-muted-foreground">
+        <p className="text-ui leading-snug text-muted-foreground">
           {resent ? (
             "New code sent"
           ) : (
@@ -517,7 +515,7 @@ function CodeEntryStep({
           <p
             id={errorId}
             role="alert"
-            className="text-center text-[length:var(--app-font-size-ui-sm,11px)] leading-snug text-destructive"
+            className="text-center text-ui-sm leading-snug text-destructive"
           >
             {error}
           </p>
@@ -529,7 +527,7 @@ function CodeEntryStep({
         </Button>
       </form>
 
-      <p className="text-center text-[length:var(--app-font-size-ui-sm,11px)] text-muted-foreground">
+      <p className="text-center text-ui-sm text-muted-foreground">
         Didn't get it?{" "}
         <button
           type="button"
@@ -544,7 +542,7 @@ function CodeEntryStep({
 
       <button
         type="button"
-        className="self-center text-[length:var(--app-font-size-ui-sm,11px)] text-muted-foreground hover:text-foreground"
+        className="self-center text-ui-sm text-muted-foreground hover:text-foreground"
         onClick={onUseDifferentEmail}
       >
         Use a different email

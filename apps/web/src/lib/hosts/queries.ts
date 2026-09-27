@@ -1,3 +1,4 @@
+import { controlAccountScope } from "./controlQueryScope";
 // FILE: queries.ts
 // Purpose: React Query options and invalidation for hosts, devices, and the
 //          local enrollment state.
@@ -10,11 +11,11 @@ import { readHostsApi, type HostEnrollment } from "./api";
 
 export const remoteHostQueryKeys = {
   all: ["remoteHosts"] as const,
-  hosts: () => ["remoteHosts", "hosts"] as const,
-  devices: () => ["remoteHosts", "devices"] as const,
-  enrollment: () => ["remoteHosts", "enrollment"] as const,
-  sessions: () => ["remoteHosts", "sessions"] as const,
-  connections: () => ["remoteHosts", "connections"] as const,
+  hosts: () => ["remoteHosts", "hosts", controlAccountScope()] as const,
+  devices: () => ["remoteHosts", "devices", controlAccountScope()] as const,
+  enrollment: () => ["remoteHosts", "enrollment", controlAccountScope()] as const,
+  sessions: () => ["remoteHosts", "sessions", controlAccountScope()] as const,
+  connections: () => ["remoteHosts", "connections", controlAccountScope()] as const,
 };
 
 /**

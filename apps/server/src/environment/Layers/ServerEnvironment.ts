@@ -1,3 +1,5 @@
+import { remoteConnectionsUnavailableReason } from "../../remoteFeaturePolicy";
+import { desktopFlavorFromBundleId } from "@synara/shared/betaFeatures";
 import { EnvironmentId, type ExecutionEnvironmentDescriptor } from "@synara/contracts";
 import { Effect, FileSystem, Layer, Path, Random } from "effect";
 
@@ -73,7 +75,15 @@ export const makeServerEnvironment = Effect.fn(function* () {
   });
 
   const environmentId = EnvironmentId.makeUnsafe(environmentIdRaw);
+  const remoteUnavailableReason = remoteConnectionsUnavailableReason(serverConfig.stateDir);
+  const flavor = desktopFlavorFromBundleId(process.env.SYNARA_DESKTOP_BUNDLE_ID);
   const descriptor: ExecutionEnvironmentDescriptor = {
+    channel:
+      flavor === "production"
+        ? "stable"
+        : flavor === "beta" || flavor === "canary"
+          ? flavor
+          : "dev",
     environmentId,
     label: resolveServerEnvironmentLabel({ cwdBaseName: path.basename(serverConfig.cwd) }),
     platform: {
@@ -83,6 +93,9 @@ export const makeServerEnvironment = Effect.fn(function* () {
     serverVersion: packageJson.version,
     capabilities: {
       repositoryIdentity: true,
+      remoteConnections: remoteUnavailableReason === undefined,
+      remoteResources: remoteUnavailableReason === undefined,
+      ...(remoteUnavailableReason ? { remoteUnavailableReason } : {}),
     },
   };
 

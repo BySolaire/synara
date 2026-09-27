@@ -1,3 +1,5 @@
+import { executionNamespace } from "./lib/hosts/executionContext";
+import { executionSessionStorage } from "./lib/hosts/executionStorage";
 // FILE: appNavigation.ts
 // Purpose: Owns the TanStack history instance and browser-style app navigation controls.
 // Layer: Web app routing utility
@@ -24,7 +26,29 @@ function createAppHistory(): RouterHistory {
     return createMemoryHistory({ initialEntries: ["/"] });
   }
   // Electron loads the app from a file-backed shell, so hash history avoids path resolution issues.
-  return isElectron ? createHashHistory() : createBrowserHistory();
+  const history = isElectron ? createHashHistory() : createBrowserHistory();
+  const scope = executionNamespace();
+  if (!scope) return history;
+  const push = history.push.bind(history);
+  const replace = history.replace.bind(history);
+  history.push = (href, state, options) =>
+    push(href, { ...state, synaraExecution: scope }, options);
+  history.replace = (href, state, options) =>
+    replace(href, { ...state, synaraExecution: scope }, options);
+  const previousScope = history.location.state.synaraExecution;
+  const remembered = executionSessionStorage.getItem("last-route:v1");
+  if (previousScope !== scope && remembered?.startsWith("/") && !remembered.startsWith("//"))
+    history.replace(remembered);
+  else history.replace(previousScope && previousScope !== scope ? "/" : history.location.href);
+  history.flush();
+  history.subscribe(() => {
+    if (history.location.state.synaraExecution !== scope) {
+      history.replace("/");
+      return;
+    }
+    executionSessionStorage.setItem("last-route:v1", history.location.href);
+  });
+  return history;
 }
 
 export const appHistory: RouterHistory = createAppHistory();
@@ -121,4 +145,10 @@ export function useAppNavigationState(): AppNavigationState {
   }, []);
 
   return navigationState;
+}
+
+declare module "@tanstack/react-router" {
+  interface HistoryState {
+    synaraExecution?: string;
+  }
 }

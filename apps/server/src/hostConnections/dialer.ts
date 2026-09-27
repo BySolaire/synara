@@ -1,26 +1,34 @@
-// FILE: dialer.ts
-// Purpose: The outbound half of a host session — what a client does to reach
-//          another host. Picks a transport (ADR 0007), presents the grant,
-//          mints the session credential (ADR 0011), and DPoP-authorizes.
-// Layer: server host connections
-//
-// This is the same handshake `apps/e2e`'s headless client speaks, moved into
-// the shell that actually owns the device key. The renderer never sees a
-// grant, a credential, or a DPoP proof: it is handed a local socket that is
-// already on the far side of all of that.
-
-import type { AccountHost, Es256PublicKeyJwk } from "@synara/contracts";
+import { Schema } from "effect";
+import { version as controllerBuild } from "../../package.json" with { type: "json" };
+import {
+  WsBootstrapNegotiateResult,
+  WsCompatibilityError,
+  WS_PROTOCOL_EPOCH,
+  WS_PROTOCOL_MIN_REVISION,
+  WS_PROTOCOL_MAX_REVISION,
+  WS_CLIENT_REQUIRED_CAPABILITIES,
+  type WsBootstrapNegotiateInput,
+  type AccountHost,
+  type Es256PublicKeyJwk,
+} from "@synara/contracts";
 import { signDpopProof, signMintRequest, type DeviceSigningKey } from "@synara/shared/deviceKey";
 import {
   raceTransports,
+  sortByTransportPreference,
   type TransportCandidate,
   type TransportKind,
   type TransportRaceResult,
 } from "@synara/shared/transportRace";
 import { decodeJwt } from "jose";
-import WebSocket, { type RawData } from "ws";
+import WebSocket from "ws";
+import type { RemoteTlsAnchor } from "../remoteTransport/certificates";
+import {
+  connectRemoteTls,
+  connectRemoteWebSocket,
+  REMOTE_INNER_RPC_PATH,
+  REMOTE_OUTER_PATH,
+} from "../remoteTransport/tunnel";
 
-/** The DPoP `htu` every host expects on session_authorize (gateway.ts). */
 const SESSION_PRESENTATION_HTU = "synara://remote/session";
 const HANDSHAKE_TIMEOUT_MS = 15_000;
 
@@ -29,26 +37,35 @@ export interface DialIdentity {
   readonly key: DeviceSigningKey;
   readonly publicJwk: Es256PublicKeyJwk;
 }
-
-export interface DialInput {
+export interface RemoteChannelInput {
   readonly host: Pick<AccountHost, "id" | "environmentId" | "endpoints">;
-  readonly identity: DialIdentity;
-  /** Relay root URL (http(s) or ws(s)); omitted when no relay is configured. */
+  readonly anchor: RemoteTlsAnchor;
   readonly relayUrl?: string | undefined;
   readonly requestGrant: () => Promise<string>;
-  /** Injectable for tests; production opens a real `ws` socket. */
-  readonly openSocket?: (url: string) => WebSocket;
+  readonly signal?: AbortSignal | undefined;
+  readonly path?: string;
   readonly probe?: (candidate: TransportCandidate, signal: AbortSignal) => Promise<boolean>;
 }
-
+export const controllerProtocol: WsBootstrapNegotiateInput = {
+  protocolEpoch: WS_PROTOCOL_EPOCH,
+  minRevision: WS_PROTOCOL_MIN_REVISION,
+  maxRevision: WS_PROTOCOL_MAX_REVISION,
+  clientBuild: controllerBuild,
+  requiredCapabilities: [...WS_CLIENT_REQUIRED_CAPABILITIES],
+};
+export interface DialInput extends RemoteChannelInput {
+  readonly identity: DialIdentity;
+  readonly client?: WsBootstrapNegotiateInput;
+}
 export interface DialedSession {
+  readonly compatibility: WsBootstrapNegotiateResult;
+  readonly environmentId: string;
   readonly socket: WebSocket;
   readonly transport: TransportKind;
   readonly credential: string;
   readonly credentialExpiresAtSeconds: number;
   readonly race: TransportRaceResult;
 }
-
 export class HostDialError extends Error {
   constructor(
     message: string,
@@ -63,33 +80,17 @@ export class HostDialError extends Error {
     this.name = "HostDialError";
   }
 }
-
-function toWebSocketUrl(url: string): URL {
-  const parsed = new URL(url);
-  if (parsed.protocol === "https:") parsed.protocol = "wss:";
-  else if (parsed.protocol === "http:") parsed.protocol = "ws:";
-  return parsed;
-}
-
-/** The host's own `/ws/host` on a direct transport, or the relay's client path. */
 function sessionUrl(candidate: TransportCandidate, grant: string): string {
-  const url = toWebSocketUrl(candidate.url);
-  if (candidate.kind === "relay") {
-    url.pathname = "/client/session";
-    url.search = new URLSearchParams({ grant }).toString();
-  } else {
-    url.pathname = "/ws/host";
-    url.search = "";
-  }
+  const url = new URL(candidate.url);
+  if (url.protocol === "https:") url.protocol = "wss:";
+  else if (url.protocol === "http:") url.protocol = "ws:";
+  if ((url.protocol !== "ws:" && url.protocol !== "wss:") || url.username || url.password)
+    throw new Error("Invalid remote endpoint");
+  url.pathname = candidate.kind === "relay" ? "/client/session" : REMOTE_OUTER_PATH;
+  url.search = candidate.kind === "relay" ? new URLSearchParams({ grant }).toString() : "";
   url.hash = "";
   return url.toString();
 }
-
-/**
- * Liveness probe per candidate. Direct endpoints answer `/health`; the relay
- * answers `/healthz/host/:id`, which says whether THIS host's control socket
- * is registered — the aggregate `/healthz` only proves the relay is up.
- */
 function defaultProbe(hostId: string) {
   return async (candidate: TransportCandidate, signal: AbortSignal): Promise<boolean> => {
     const url = new URL(candidate.url);
@@ -97,26 +98,20 @@ function defaultProbe(hostId: string) {
     else if (url.protocol === "wss:") url.protocol = "https:";
     url.search = "";
     url.hash = "";
-    if (candidate.kind === "relay") {
-      url.pathname = `/healthz/host/${encodeURIComponent(hostId)}`;
-      try {
-        const response = await fetch(url, { signal });
-        if (!response.ok) return false;
-        const body = (await response.json()) as { ready?: boolean };
-        return body.ready === true;
-      } catch {
-        return false;
-      }
-    }
-    url.pathname = "/health";
+    url.pathname =
+      candidate.kind === "relay" ? `/healthz/host/${encodeURIComponent(hostId)}` : "/health";
     try {
-      return (await fetch(url, { signal })).ok;
+      const response = await fetch(url, { signal });
+      if (!response.ok) return false;
+      return (
+        candidate.kind !== "relay" ||
+        ((await response.json()) as { ready?: boolean }).ready === true
+      );
     } catch {
       return false;
     }
   };
 }
-
 export function buildDialCandidates(
   host: Pick<AccountHost, "id" | "endpoints">,
   relayUrl: string | undefined,
@@ -129,158 +124,201 @@ export function buildDialCandidates(
   if (relayUrl) candidates.push({ kind: "relay", url: relayUrl, label: "relay" });
   return candidates;
 }
-
-function rawBuffer(data: RawData): Buffer {
-  if (Buffer.isBuffer(data)) return data;
-  if (Array.isArray(data)) return Buffer.concat(data);
-  return Buffer.from(data);
-}
-
-/** Waits for the next JSON control frame of `type`, or the socket closing. */
-function nextHandshakeFrame(socket: WebSocket, type: string): Promise<Record<string, unknown>> {
+function openOuter(url: string, signal: AbortSignal): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new HostDialError(`host did not answer ${type} in time`, { stage: "handshake" }));
-    }, HANDSHAKE_TIMEOUT_MS);
-    const onMessage = (data: RawData, binary: boolean) => {
-      if (binary) return;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(rawBuffer(data).toString("utf8"));
-      } catch {
-        return;
-      }
-      if (!parsed || typeof parsed !== "object") return;
-      const frame = parsed as Record<string, unknown>;
-      if (frame.type !== type) return;
-      cleanup();
-      resolve(frame);
-    };
-    const onClose = (code: number, reason: Buffer) => {
-      cleanup();
-      reject(
-        new HostDialError(
-          `connection closed during handshake (${code}${reason.length ? `: ${reason.toString("utf8")}` : ""})`,
-          { stage: "handshake", closeCode: code },
-        ),
-      );
-    };
-    const onError = (error: Error) => {
-      cleanup();
-      reject(
-        new HostDialError(
-          "connection failed during handshake",
-          { stage: "handshake" },
-          { cause: error },
-        ),
-      );
-    };
+    const socket = new WebSocket(url, {
+      perMessageDeflate: false,
+      maxPayload: 2 * 1024 * 1024,
+      handshakeTimeout: HANDSHAKE_TIMEOUT_MS,
+    });
     const cleanup = () => {
-      clearTimeout(timer);
-      socket.off("message", onMessage);
-      socket.off("close", onClose);
-      socket.off("error", onError);
+      signal.removeEventListener("abort", abort);
+      socket.off("open", opened);
+      socket.off("close", closed);
+      socket.off("unexpected-response", refused);
     };
-    socket.on("message", onMessage);
-    socket.on("close", onClose);
-    socket.on("error", onError);
-  });
-}
-
-function openSocket(url: string, factory: (url: string) => WebSocket): Promise<WebSocket> {
-  return new Promise((resolve, reject) => {
-    const socket = factory(url);
-    const onOpen = () => {
-      socket.off("error", onError);
-      socket.off("unexpected-response", onUnexpected);
+    const fail = (cause: unknown) => {
+      cleanup();
+      socket.terminate();
+      reject(
+        new HostDialError("Could not open the remote socket", { stage: "handshake" }, { cause }),
+      );
+    };
+    const abort = () => fail(new Error("Remote connection cancelled"));
+    const opened = () => {
+      cleanup();
       resolve(socket);
     };
-    const onError = (error: Error) => {
-      socket.off("open", onOpen);
-      reject(
-        new HostDialError(
-          "could not open the session socket",
-          { stage: "handshake" },
-          { cause: error },
-        ),
-      );
+    const closed = () => fail(new Error("Peer closed during upgrade"));
+    const refused = (_request: unknown, response: import("node:http").IncomingMessage) => {
+      response.resume();
+      fail(new Error(`Upgrade refused (${response.statusCode})`));
     };
-    const onUnexpected = (_request: unknown, response: { statusCode?: number }) => {
-      socket.off("open", onOpen);
-      socket.off("error", onError);
-      reject(
-        new HostDialError(`session upgrade refused with HTTP ${response.statusCode ?? "?"}`, {
+    socket.once("open", opened);
+    socket.once("close", closed);
+    socket.once("unexpected-response", refused);
+    // Retain an error boundary after terminal cancellation of CONNECTING sockets.
+    socket.on("error", fail);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+  });
+}
+
+/** Health chooses preference; the actual upgrade and TLS handshake decide reachability. */
+async function openRemoteTransport<Socket>(
+  input: RemoteChannelInput,
+  authenticate: (outer: WebSocket, signal: AbortSignal) => Promise<Socket>,
+): Promise<{
+  socket: Socket;
+  grant: string;
+  candidate: TransportCandidate;
+  race: TransportRaceResult;
+}> {
+  const candidates = buildDialCandidates(input.host, input.relayUrl);
+  if (candidates.length === 0)
+    throw new HostDialError("That host has no published route", { stage: "no-route" });
+  if (input.anchor.environmentId !== input.host.environmentId)
+    throw new HostDialError("The paired identity does not match this host", { stage: "handshake" });
+  const deadline = AbortSignal.timeout(30_000);
+  const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
+  const race = await raceTransports(candidates, input.probe ?? defaultProbe(input.host.id));
+  const ordered =
+    race.outcome === "reachable"
+      ? [
+          race.candidate,
+          ...sortByTransportPreference(candidates).filter(
+            (candidate) => candidate !== race.candidate,
+          ),
+        ]
+      : sortByTransportPreference(candidates);
+  let failure: unknown;
+  for (const candidate of ordered) {
+    if (signal.aborted) break;
+    let grant: string;
+    try {
+      grant = await new Promise<string>((resolve, reject) => {
+        const abort = () => reject(new Error("Grant request timed out"));
+        signal.addEventListener("abort", abort, { once: true });
+        Promise.resolve()
+          .then(() => input.requestGrant())
+          .then(resolve, reject)
+          .finally(() => signal.removeEventListener("abort", abort));
+        if (signal.aborted) abort();
+      });
+    } catch (cause) {
+      throw new HostDialError("Could not obtain a connection grant", { stage: "grant" }, { cause });
+    }
+    let outer: WebSocket | undefined;
+    try {
+      const attemptSignal = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
+      outer = await openOuter(sessionUrl(candidate, grant), attemptSignal);
+      const socket = await authenticate(outer, attemptSignal);
+      return { socket, grant, candidate, race };
+    } catch (cause) {
+      failure = cause;
+      outer?.terminate();
+    }
+    // Each attempt consumes its own grant. No plaintext or stale-grant fallback.
+  }
+  throw new HostDialError(
+    "No route completed the verified host handshake",
+    { stage: "unreachable", race },
+    { cause: failure },
+  );
+}
+
+export function openRemoteChannel(input: RemoteChannelInput) {
+  return openRemoteTransport(input, (outer, signal) =>
+    connectRemoteWebSocket(outer, input.anchor, input.path ?? REMOTE_INNER_RPC_PATH, signal),
+  );
+}
+export function openRemoteTlsChannel(input: RemoteChannelInput) {
+  return openRemoteTransport(input, (outer, signal) =>
+    connectRemoteTls(outer, input.anchor, signal),
+  );
+}
+
+/** Request/response handshake with one owned listener set and no orphan rejection on send failure. */
+export function exchangeRemoteFrame(
+  socket: WebSocket,
+  request: unknown,
+  responseType: string,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(
+      () => fail(new Error("Remote handshake timed out")),
+      HANDSHAKE_TIMEOUT_MS,
+    );
+    const cleanup = () => {
+      clearTimeout(timeout);
+      socket.off("message", message);
+      socket.off("close", close);
+      socket.off("error", fail);
+      signal?.removeEventListener("abort", abort);
+    };
+    const fail = (cause: unknown) => {
+      cleanup();
+      reject(cause);
+    };
+    const abort = () => fail(new Error("Remote handshake cancelled"));
+    const close = (code: number) =>
+      fail(
+        new HostDialError("Remote peer refused the session", {
           stage: "handshake",
+          closeCode: code,
         }),
       );
+    const message = (data: WebSocket.RawData, binary: boolean) => {
+      try {
+        const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (!binary && frame.type === "session_incompatible")
+          throw Schema.decodeUnknownSync(WsCompatibilityError)(frame.error);
+        if (binary || frame.type !== responseType)
+          throw new Error("Unexpected remote handshake response");
+        cleanup();
+        resolve(frame);
+      } catch (cause) {
+        fail(cause);
+      }
     };
-    socket.once("open", onOpen);
-    socket.once("error", onError);
-    socket.once("unexpected-response", onUnexpected);
-  });
-}
-
-function send(socket: WebSocket, frame: unknown): Promise<void> {
-  return new Promise((resolve, reject) => {
-    socket.send(JSON.stringify(frame), { binary: false }, (error) =>
-      error ? reject(error) : resolve(),
-    );
-  });
-}
-
-/**
- * `grant → race → connect → mint → authorize`, once.
- *
- * The grant is fetched before the race even though only the winner uses it:
- * grants live 60 seconds and a slow race can leave a valid path holding a
- * grant that expires between winning and being presented.
- */
-export async function dialHost(input: DialInput): Promise<DialedSession> {
-  const candidates = buildDialCandidates(input.host, input.relayUrl);
-  if (candidates.length === 0) {
-    throw new HostDialError("that host has no published address and no relay is configured", {
-      stage: "no-route",
+    socket.on("message", message);
+    socket.once("close", close);
+    socket.once("error", fail);
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
+    if (socket.readyState !== WebSocket.OPEN) {
+      close(1006);
+      return;
+    }
+    socket.send(JSON.stringify(request), { binary: false }, (error) => {
+      if (error) fail(error);
     });
-  }
-  let grant: string;
-  try {
-    grant = await input.requestGrant();
-  } catch (error) {
-    throw new HostDialError(
-      "could not obtain a connection grant",
-      { stage: "grant" },
-      { cause: error },
-    );
-  }
-  const race = await raceTransports(candidates, input.probe ?? defaultProbe(input.host.id));
-  if (race.outcome !== "reachable") {
-    throw new HostDialError(
-      race.outcome === "timed-out"
-        ? "that host did not answer on any path"
-        : "that host is not reachable right now",
-      { stage: "unreachable", race },
-    );
-  }
+  });
+}
 
-  const factory =
-    input.openSocket ?? ((url: string) => new WebSocket(url, { perMessageDeflate: false }));
-  const socket = await openSocket(sessionUrl(race.candidate, grant), factory);
+export async function dialHost(input: DialInput): Promise<DialedSession> {
+  const { socket, grant, candidate, race } = await openRemoteChannel(input);
   try {
-    const mintRequest = await signMintRequest({
+    const request = await signMintRequest({
       key: input.identity.key,
       publicJwk: input.identity.publicJwk,
       userId: input.identity.userId,
       grant,
       environmentId: input.host.environmentId,
     });
-    const credentialFrame = nextHandshakeFrame(socket, "session_credential");
-    await send(socket, { v: 1, type: "mint_request", request: mintRequest });
-    const minted = await credentialFrame;
+    const minted = await exchangeRemoteFrame(
+      socket,
+      { v: 1, type: "mint_request", request },
+      "session_credential",
+      input.signal,
+    );
+    if (typeof minted.credential !== "string")
+      throw new Error("Host returned no session credential");
     const credential = minted.credential;
-    if (typeof credential !== "string") {
-      throw new HostDialError("host returned no session credential", { stage: "handshake" });
-    }
     const dpop = await signDpopProof({
       key: input.identity.key,
       publicJwk: input.identity.publicJwk,
@@ -288,22 +326,36 @@ export async function dialHost(input: DialInput): Promise<DialedSession> {
       url: SESSION_PRESENTATION_HTU,
       accessToken: credential,
     });
-    const ready = nextHandshakeFrame(socket, "session_ready");
-    await send(socket, { v: 1, type: "session_authorize", credential, dpop });
-    await ready;
+    const ready = await exchangeRemoteFrame(
+      socket,
+      {
+        v: 1,
+        type: "session_authorize",
+        credential,
+        dpop,
+        client: input.client ?? controllerProtocol,
+      },
+      "session_ready",
+      input.signal,
+    );
+    const compatibility = Schema.decodeUnknownSync(WsBootstrapNegotiateResult)(ready.compatibility);
+    if (ready.environmentId !== input.anchor.environmentId)
+      throw new Error("Host protocol identity does not match its paired root");
     const exp = decodeJwt(credential).exp;
+    if (typeof exp !== "number" || exp <= Date.now() / 1000)
+      throw new Error("Host returned an expired credential");
     return {
       socket,
-      transport: race.candidate.kind,
+      compatibility,
+      environmentId: input.anchor.environmentId,
+      transport: candidate.kind,
       credential,
-      credentialExpiresAtSeconds:
-        typeof exp === "number" ? exp : Math.floor(Date.now() / 1000) + 3600,
+      credentialExpiresAtSeconds: exp,
       race,
     };
-  } catch (error) {
-    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-      socket.close(1000, "handshake failed");
-    }
-    throw error;
+  } catch (cause) {
+    socket.terminate();
+    if (Schema.is(WsCompatibilityError)(cause)) throw cause;
+    throw new HostDialError("Host authentication failed", { stage: "handshake" }, { cause });
   }
 }

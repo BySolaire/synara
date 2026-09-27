@@ -159,6 +159,7 @@ export type MintRequestClaims = typeof MintRequestClaims.Type;
 
 export const SessionCredentialClaims = Schema.Struct({
   ...StandardJwtClaims,
+  trustGeneration: PositiveInt,
   cnf: Confirmation,
   keyGeneration: NonNegativeInt,
   scope: Schema.Tuple([Schema.Literal(HOST_CONNECT_SCOPE)]),
@@ -245,6 +246,15 @@ export const LinkDeviceTokenResponse = Schema.Struct({ challengeId: Uuid, nonce:
 export type LinkDeviceTokenResponse = typeof LinkDeviceTokenResponse.Type;
 
 export const AccountDevice = Schema.Struct({
+  revocationDeliveries: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        hostId: Uuid,
+        hostName: TrimmedNonEmptyString,
+        confirmedAt: Schema.NullOr(IsoDateTime),
+      }),
+    ),
+  ),
   id: Uuid,
   publicKeyJwk: DevicePublicKeyJwk,
   jkt: TrimmedNonEmptyString,
@@ -291,6 +301,7 @@ export const HostAuthorizationSnapshot = Schema.Struct({
    * revocation kind; this makes it cover the most security-critical one.
    */
   revokedDeviceJkts: Schema.Array(TrimmedNonEmptyString),
+  pendingRevocationDeviceJkts: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
 });
 export type HostAuthorizationSnapshot = typeof HostAuthorizationSnapshot.Type;
 

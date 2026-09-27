@@ -106,6 +106,7 @@ export type FakeWorkos = {
   expireMagicAuth(email: string): void;
   /** Every request the server has seen, oldest first. */
   requests: FakeWorkosRequest[];
+  failNextSessionRevocation(): void;
   close(): Promise<void>;
 };
 
@@ -167,7 +168,9 @@ export async function startFakeWorkos(options: StartFakeWorkosOptions = {}): Pro
   /** One-shot: the next authenticate grant refuses with org selection. */
   let organizationSelectionNext = false;
   /** Live refresh tokens → the user they belong to. Single-use, as WorkOS's are. */
-  const refreshTokens = new Map<string, string>();
+  const refreshTokens = new Map<string, { userId: string; sessionId: string }>();
+  const revokedSessions = new Set<string>();
+  let failSessionRevocation = false;
   /**
    * Live Magic Auth codes by email — what WorkOS would have emailed, and when
    * it stops working. Held in clear only because this is an in-process double
@@ -273,14 +276,18 @@ export async function startFakeWorkos(options: StartFakeWorkosOptions = {}): Pro
    * replacement, so a client that fails to persist the rotation is locked out
    * exactly the way it would be in production.
    */
-  async function issueTokenPair(userId: string, orgId?: string) {
+  async function issueTokenPair(
+    userId: string,
+    orgId?: string,
+    sessionId = `session_${randomUUID()}`,
+  ) {
     const user = users.get(userId) ?? addUser({ id: userId });
     const refreshToken = `rt_fake_${randomUUID()}`;
-    refreshTokens.set(refreshToken, user.id);
+    refreshTokens.set(refreshToken, { userId: user.id, sessionId });
     return {
       access_token: await signAccessToken({
         sub: user.id,
-        sid: `session_${randomUUID()}`,
+        sid: sessionId,
         ...(orgId !== undefined ? { orgId } : {}),
       }),
       refresh_token: refreshToken,
@@ -442,8 +449,9 @@ export async function startFakeWorkos(options: StartFakeWorkosOptions = {}): Pro
 
     if (grantType === "refresh_token") {
       const refreshToken = typeof body?.refresh_token === "string" ? body.refresh_token : "";
-      const userId = refreshTokens.get(refreshToken);
-      if (!userId) {
+      const binding = refreshTokens.get(refreshToken);
+      const userId = binding?.userId;
+      if (!binding || !userId || revokedSessions.has(binding.sessionId)) {
         return c.json(
           { error: "invalid_grant", error_description: "Refresh token is invalid or spent" },
           400,
@@ -463,13 +471,26 @@ export async function startFakeWorkos(options: StartFakeWorkosOptions = {}): Pro
           400,
         );
       }
-      return c.json(await issueTokenPair(userId, orgId));
+      return c.json(await issueTokenPair(userId, orgId, binding.sessionId));
     }
 
     return c.json(
       { error: "unsupported_grant_type", error_description: `Unsupported grant: ${grantType}` },
       400,
     );
+  });
+
+  app.post("/user_management/sessions/revoke", async (c) => {
+    if (failSessionRevocation) {
+      failSessionRevocation = false;
+      return c.json({ error: "unavailable" }, 503);
+    }
+    if (c.req.header("authorization") !== `Bearer ${apiKey}`)
+      return c.json({ error: "unauthorized" }, 401);
+    const body = (await c.req.json()) as { session_id?: string };
+    if (!body.session_id) return c.json({ error: "invalid_request" }, 400);
+    revokedSessions.add(body.session_id);
+    return c.body(null, 204);
   });
 
   // Create Magic Auth. Mints (and "emails") the 6-digit code; the response
@@ -612,6 +633,9 @@ export async function startFakeWorkos(options: StartFakeWorkosOptions = {}): Pro
     apiKey,
     issuer,
     requests,
+    failNextSessionRevocation: () => {
+      failSessionRevocation = true;
+    },
     addUser,
     addOrganization,
     addMembership,

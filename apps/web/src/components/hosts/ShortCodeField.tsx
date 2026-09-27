@@ -33,10 +33,7 @@ export function ShortCodeField({
   const separatorCount = Math.floor((codeLength - 1) / groupSize);
   return (
     <div className="space-y-2">
-      <label
-        htmlFor={inputId}
-        className="block text-[length:var(--app-font-size-ui-sm,11px)] font-medium text-foreground"
-      >
+      <label htmlFor={inputId} className="block text-ui-sm font-medium text-foreground">
         {label}
       </label>
       <Input

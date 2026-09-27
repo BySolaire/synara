@@ -1,3 +1,4 @@
+import { snapshotProviderTurns } from "../snapshotProviderTurns.ts";
 /**
  * DevinAdapterLive — Devin CLI (`devin acp`) via ACP.
  *
@@ -33,6 +34,7 @@ import {
   getDevinStaticModelVariants,
   getModelCapabilities,
   getProviderOptionDescriptors,
+  humanizeModelSlug,
   normalizeModelSlug,
   resolveDevinModelVariant,
   trimOrNull,
@@ -155,6 +157,16 @@ import {
 import { DevinAdapter, type DevinAdapterShape } from "../Services/DevinAdapter.ts";
 
 const PROVIDER = "devin" as const;
+
+export const takeDevinSynaraHarnessPolicyTextPart = (
+  state: SynaraHarnessPolicyDeliveryState,
+  scopedGatewayConnectionAvailable: boolean,
+) =>
+  takeSynaraHarnessPolicyTextPartForProviderSession(state, {
+    provider: PROVIDER,
+    scopedGatewayConnectionAvailable,
+  });
+
 const DEVIN_RESUME_VERSION = 1 as const;
 
 const DEVIN_TURN_IDLE_TIMEOUT_MS = resolveAcpTurnIdleTimeoutMs({
@@ -207,7 +219,7 @@ export function resolveDevinOptionalTimeoutMs(input: {
   return parsed;
 }
 
-export function resolveDevinWedgeRecoveryOptions(
+function resolveDevinWedgeRecoveryOptions(
   env: NodeJS.ProcessEnv = process.env,
 ): DevinWedgeRecoveryOptions {
   return {
@@ -723,10 +735,6 @@ function isDevinAcpDebugEnabled(): boolean {
   );
 }
 
-function formatDevinModelName(slug: string): string {
-  return slug.replace(/[-_/]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
 interface DevinModelDescriptorSeed {
   readonly slug: string;
   readonly name?: string;
@@ -983,7 +991,7 @@ export function mergeDevinModelDescriptors(
       const key = slug.toLowerCase();
       if (!slug || seen.has(key)) continue;
       seen.add(key);
-      const name = model.name?.trim() || formatDevinModelName(slug);
+      const name = model.name?.trim() || humanizeModelSlug(slug);
       const rawVariants = model.variants ?? [];
       const effortValues = uniqueStrings(rawVariants.map(inferDevinReasoningEffort)).toSorted(
         (left, right) => DEVIN_EFFORT_ORDER.indexOf(left) - DEVIN_EFFORT_ORDER.indexOf(right),
@@ -1042,7 +1050,7 @@ export function mergeDevinModelDescriptors(
           ? {
               supportedReasoningEfforts: effortValues.map((value) => ({
                 value,
-                label: DEVIN_EFFORT_LABELS[value] ?? formatDevinModelName(value),
+                label: DEVIN_EFFORT_LABELS[value] ?? humanizeModelSlug(value),
               })),
               ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
             }
@@ -1790,6 +1798,7 @@ export function makeDevinAdapter(
             agentGatewayCredentials,
             input.threadId,
             PROVIDER,
+            input,
           );
 
           yield* Effect.addFinalizer(() =>
@@ -1925,6 +1934,9 @@ export function makeDevinAdapter(
                   runtimeMode: input.runtimeMode,
                   interactionMode: ctx?.activeInteractionMode,
                   options: params.options,
+                  computerControlEnabled: ctx?.enableComputerControl === true,
+                  activeTurn: ctx?.activeTurnId !== undefined,
+                  toolCall: params.toolCall,
                 });
                 if (policyOutcome !== undefined) {
                   return { outcome: policyOutcome };
@@ -2088,6 +2100,7 @@ export function makeDevinAdapter(
           };
 
           ctx = {
+            enableComputerControl: input.enableComputerControl === true,
             threadId: input.threadId,
             lifecycleGeneration: input.lifecycleGeneration,
             session,
@@ -2747,10 +2760,10 @@ export function makeDevinAdapter(
           });
         }
 
-        const harnessPolicy = takeSynaraHarnessPolicyTextPartForProviderSession(ctx, {
-          provider: PROVIDER,
-          scopedGatewayConnectionAvailable: ctx.devinSessionConfig?.installed === true,
-        });
+        const harnessPolicy = takeDevinSynaraHarnessPolicyTextPart(
+          ctx,
+          ctx.devinSessionConfig?.installed === true,
+        );
         if (harnessPolicy) {
           promptParts.unshift(harnessPolicy);
         }
@@ -3072,7 +3085,7 @@ export function makeDevinAdapter(
         const ctx = yield* requireSession(threadId);
         return {
           threadId,
-          turns: ctx.turns,
+          turns: snapshotProviderTurns(ctx.turns),
           cwd: ctx.session.cwd ?? null,
         } satisfies ProviderThreadSnapshot;
       });

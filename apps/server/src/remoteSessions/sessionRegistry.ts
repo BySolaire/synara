@@ -120,6 +120,14 @@ export class RemoteSessionRegistry {
     }
   }
 
+  closeDevice(deviceJkt: string): void {
+    this.dropWhere((session) => session.deviceJkt === deviceJkt, "device revoked on host");
+  }
+
+  closeAll(reason = "host connectivity stopped"): void {
+    this.dropWhere(() => true, reason);
+  }
+
   dropExpired(nowSeconds = Math.floor(Date.now() / 1_000)): void {
     this.dropWhere((session) => session.expiresAtSeconds <= nowSeconds, "credential expired");
   }

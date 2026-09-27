@@ -1,3 +1,19 @@
+import { EnvironmentId, type RemotePairingBundle } from "@synara/contracts";
+import {
+  accountApiIssuer,
+  readAccountFile,
+  resolveEnvironmentId,
+} from "../../../server/src/accountAuth";
+import {
+  initializeRemoteTlsIdentity,
+  remoteTlsIdentityPath,
+  remoteTlsAnchor,
+} from "../../../server/src/remoteTransport/certificates";
+import { RemoteDeviceTrustRepositoryLive } from "../../../server/src/persistence/Layers/RemoteDeviceTrust";
+import { RemoteDeviceTrustRepository } from "../../../server/src/persistence/Services/RemoteDeviceTrust";
+import { AuthControlPlaneLive } from "../../../server/src/auth/Layers/AuthControlPlane";
+import { AuthControlPlane } from "../../../server/src/auth/Services/AuthControlPlane";
+import { BootstrapCredentialServiceLive } from "../../../server/src/auth/Layers/BootstrapCredentialService";
 import http from "node:http";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -39,6 +55,9 @@ const EchoRpcGroup = RpcGroup.make(EchoRpc);
 export interface RunningHost extends AsyncDisposable {
   readonly config: ServerConfigShape;
   readonly directUrl: string;
+  createInvitation(): Promise<RemotePairingBundle>;
+  approveInvitation(inviteId: string, deviceJkt: string): Promise<void>;
+  revokeDevice(deviceJkt: string): Promise<void>;
   listSessions(): Promise<{ readonly sessions: readonly HostSession[] }>;
   endSession(sessionId: string): Promise<void>;
   dropExpiredSessions(nowSeconds?: number): void;
@@ -139,6 +158,15 @@ export async function startRealHost(input: {
     Layer.provide(configLayer),
     Layer.provide(NodeServices.layer),
   );
+  const remoteManagementLayer = Layer.mergeAll(
+    RemoteDeviceTrustRepositoryLive,
+    AuthControlPlaneLive.pipe(Layer.provide(BootstrapCredentialServiceLive)),
+  ).pipe(
+    Layer.provide(sessionsLayer),
+    Layer.provide(SqlitePersistenceMemory),
+    Layer.provide(configLayer),
+    Layer.provide(NodeServices.layer),
+  );
   const serverAuthLayer = Layer.effect(
     ServerAuth,
     Effect.gen(function* () {
@@ -193,7 +221,13 @@ export async function startRealHost(input: {
   const scope = await Effect.runPromise(Scope.make("sequential"));
   const context = await Effect.runPromise(
     Layer.buildWithScope(
-      Layer.mergeAll(configLayer, sessionsLayer, serverAuthLayer, NodeServices.layer),
+      Layer.mergeAll(
+        configLayer,
+        sessionsLayer,
+        serverAuthLayer,
+        remoteManagementLayer,
+        NodeServices.layer,
+      ),
       scope,
     ),
   );
@@ -216,18 +250,42 @@ export async function startRealHost(input: {
           );
           const httpApp = yield* HttpRouter.toHttpEffect(routes);
           yield* server.serve(httpApp);
-          return { config, sessions };
+          return {
+            config,
+            sessions,
+            remoteTrust: yield* RemoteDeviceTrustRepository,
+            authControlPlane: yield* AuthControlPlane,
+          };
         }).pipe(Effect.provide(context)),
         scope,
       ),
     );
     const address = (nodeServer as http.Server | null)?.address();
     if (!address || typeof address !== "object") throw new Error("real host did not bind TCP");
+    const credentials = await readAccountFile(input.baseDir);
+    if (!credentials?.hostId || !credentials.hostOwnerUserId || !credentials.organizationId)
+      throw new Error("Missing linked owner");
+    const environmentId = EnvironmentId.makeUnsafe(await resolveEnvironmentId(input.baseDir));
+    // Explicit owner provisioning in this fixture, never automatic trust enrollment.
+    const tlsIdentity = await initializeRemoteTlsIdentity(
+      remoteTlsIdentityPath(started.config.secretsDir),
+      environmentId,
+    );
+    const anchor = remoteTlsAnchor(tlsIdentity);
+    const trustScope = {
+      environmentId,
+      rootFingerprint: anchor.rootFingerprint,
+      accountAuthority: accountApiIssuer(credentials.accountUrl),
+      userId: credentials.hostOwnerUserId,
+      organizationId: credentials.organizationId,
+    };
     const remoteSessions = new RemoteSessionRegistry();
     stopConnectivity = await startHostConnectivity({
       config: started.config,
       listeningPort: address.port,
       localSessions: started.sessions,
+      remoteTrust: started.remoteTrust,
+      authControlPlane: started.authControlPlane,
       remoteSessions,
     });
     // The compact E2E host intentionally mounts only the echo RPC group. Drive
@@ -235,6 +293,9 @@ export async function startRealHost(input: {
     // exercises the same authorization boundary without pulling the complete
     // application RPC graph (and all of its unrelated services) into this host.
     const sessionHandlers = makeHostsRpcHandlers({
+      remoteAccess: async () => {
+        throw new Error("Pairing management is not mounted by the compact echo harness");
+      },
       accountSession: {} as HostsAccountSession,
       remoteSessions,
       hostConnections: {
@@ -251,7 +312,31 @@ export async function startRealHost(input: {
     await waitForRelayRegistration(input.relayOrigin);
     return {
       config: started.config,
-      directUrl: `ws://127.0.0.1:${address.port}/ws/host`,
+      directUrl: `ws://127.0.0.1:${address.port}/ws/host/v2`,
+      createInvitation: async () => ({
+        v: 2,
+        ...anchor,
+        ...trustScope,
+        ...(await Effect.runPromise(started.authControlPlane.remotePairing.create(trustScope))),
+        channel: "dev",
+        hostId: credentials.hostId!,
+        label: "E2E host",
+      }),
+      approveInvitation: async (inviteId, deviceJkt) => {
+        const deadline = Date.now() + 5000;
+        while (Date.now() < deadline) {
+          if (
+            await Effect.runPromise(
+              started.authControlPlane.remotePairing.approve(trustScope, inviteId, deviceJkt),
+            )
+          )
+            return;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        throw new Error("Exact device did not request owner approval");
+      },
+      revokeDevice: (jkt) =>
+        Effect.runPromise(started.remoteTrust.revoke(trustScope, jkt, new Date().toISOString())),
       listSessions: () =>
         Effect.runPromise(
           provideWsConnectionSession(

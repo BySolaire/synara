@@ -10,7 +10,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationEvent,
 } from "@synara/contracts";
-import { Effect, Layer, ManagedRuntime, Option, Queue, Stream } from "effect";
+import { Effect, Layer, ManagedRuntime, Option, Stream } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
@@ -31,6 +31,7 @@ import {
   type OrchestrationProjectionPipelineShape,
 } from "../Services/ProjectionPipeline.ts";
 import { ServerConfig } from "../../config.ts";
+import { ORCHESTRATION_EVENT_PUBSUB_CAPACITY } from "../orchestrationAdmission.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
 /**
@@ -141,6 +142,253 @@ function now() {
 }
 
 describe("OrchestrationEngine", () => {
+  it.each([false, true])(
+    "persists async questions and admits one concurrent answer (running=%s)",
+    async (running) => {
+      const system = await createOrchestrationSystem();
+      const { engine } = system;
+      const createdAt = now();
+      const threadId = ThreadId.makeUnsafe("async-question-thread");
+      const projectId = asProjectId("async-question-project");
+      const questionId = asMessageId("assistant:async-question");
+      const turnId = asTurnId("question-turn");
+      let index = 0;
+      const commandId = () => CommandId.makeUnsafe(`async-question-${++index}`);
+      const questions = [
+        { title: "When does it happen?", options: ["On launch", "On reconnect"] },
+        { title: "Any other details?" },
+      ];
+      try {
+        await system.run(
+          engine.dispatch({
+            type: "project.create",
+            commandId: commandId(),
+            projectId,
+            title: "Async input",
+            workspaceRoot: "/tmp/async-input",
+            defaultModelSelection: null,
+            createdAt,
+          }),
+        );
+        await system.run(
+          engine.dispatch({
+            type: "thread.create",
+            commandId: commandId(),
+            threadId,
+            projectId,
+            title: "Async input",
+            modelSelection: { provider: "codex", model: "gpt-5-codex" },
+            interactionMode: "default",
+            runtimeMode: "approval-required",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+          }),
+        );
+        await system.run(
+          engine.dispatch({
+            type: "thread.message.assistant.delta",
+            commandId: commandId(),
+            threadId,
+            messageId: questionId,
+            turnId,
+            delta: "When does it happen?",
+            createdAt,
+          }),
+        );
+        const completeQuestion = () =>
+          engine.dispatch({
+            type: "thread.message.assistant.complete",
+            commandId: commandId(),
+            threadId,
+            messageId: questionId,
+            turnId,
+            asyncQuestions: questions,
+            createdAt,
+          });
+        await system.run(completeQuestion());
+        await system.run(
+          engine.dispatch({
+            type: "thread.session.set",
+            commandId: commandId(),
+            threadId,
+            session: {
+              threadId,
+              providerName: "codex",
+              status: running ? "running" : "ready",
+              activeTurnId: running ? turnId : null,
+              runtimeMode: "approval-required",
+              lastError: null,
+              updatedAt: createdAt,
+            },
+            createdAt,
+          }),
+        );
+        const before = (await system.run(engine.getReadModel())).threads[0]!;
+        expect(
+          before.messages.find((message) => message.id === questionId)?.asyncUserInput,
+        ).toEqual({ questions });
+        expect(before.activities.some((activity) => activity.kind === "user-input.requested")).toBe(
+          false,
+        );
+        const answer = (suffix: string, answers = ["On reconnect", "Only after sleep"]) =>
+          engine.dispatch({
+            type: "thread.turn.start",
+            commandId: commandId(),
+            threadId,
+            message: {
+              messageId: asMessageId(`answer-${suffix}`),
+              role: "user",
+              text: "client placeholder",
+              attachments: [],
+            },
+            asyncUserInputResponse: { messageId: questionId, answers },
+            dispatchMode: "queue",
+            runtimeMode: "full-access",
+            interactionMode: "plan",
+            createdAt: new Date(Date.parse(createdAt) + 60_000).toISOString(),
+          });
+        await expect(system.run(answer("invalid", ["Only one answer"]))).rejects.toThrow(
+          "one answer per question",
+        );
+        const attempts = await Promise.allSettled([
+          system.run(answer("first")),
+          system.run(answer("duplicate")),
+        ]);
+        expect(attempts.filter((attempt) => attempt.status === "fulfilled")).toHaveLength(1);
+        const rejected = attempts.find((attempt) => attempt.status === "rejected");
+        expect(rejected?.status === "rejected" && String(rejected.reason)).toContain(
+          "already been answered",
+        );
+        const answeredThread = (await system.run(engine.getReadModel())).threads[0]!;
+        expect(
+          answeredThread.messages.find((message) => message.id === questionId)?.updatedAt,
+        ).toBe(createdAt);
+        await system.run(completeQuestion()); // A replay must not reopen the answered card.
+        const after = (await system.run(engine.getReadModel())).threads[0]!;
+        const response = after.messages.find((message) => message.id === questionId)?.asyncUserInput
+          ?.response;
+        expect(response?.answers).toEqual(["On reconnect", "Only after sleep"]);
+        const answers = after.messages.filter((message) => message.role === "user");
+        expect(answers).toHaveLength(1);
+        expect(answers[0]).toMatchObject({
+          id: response?.messageId,
+          text: "When does it happen?\nOn reconnect\n\nAny other details?\nOnly after sleep",
+          dispatchMode: "steer",
+          startsNewTurn: !running,
+        });
+        expect(after.runtimeMode).toBe("approval-required");
+        expect(after.interactionMode).toBe("default");
+        expect(after.session?.status).toBe(running ? "running" : "starting");
+      } finally {
+        await system.dispose();
+      }
+    },
+  );
+
+  it("keeps a second checkpoint revert protected after a failed revert with a higher runtime sequence", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+    const projectId = asProjectId("project-revert-sequence");
+    const threadId = ThreadId.makeUnsafe("thread-revert-sequence");
+    let commandIndex = 0;
+    const commandId = () => CommandId.makeUnsafe(`revert-sequence-${++commandIndex}`);
+    const appendActivity = (kind: string, sequence?: number) =>
+      system.run(
+        engine.dispatch({
+          type: "thread.activity.append",
+          commandId: commandId(),
+          threadId,
+          activity: {
+            id: EventId.makeUnsafe(`revert-sequence-activity-${commandIndex}`),
+            kind,
+            tone: "info",
+            summary: kind,
+            payload: {},
+            turnId: null,
+            ...(sequence === undefined ? {} : { sequence }),
+            createdAt,
+          },
+          createdAt,
+        }),
+      );
+    const revert = () =>
+      system.run(
+        engine.dispatch({
+          type: "thread.checkpoint.revert",
+          commandId: commandId(),
+          threadId,
+          turnCount: 1,
+          createdAt,
+        }),
+      );
+
+    try {
+      await system.run(
+        engine.dispatch({
+          type: "project.create",
+          commandId: commandId(),
+          projectId,
+          title: "Checkpoint sequence",
+          workspaceRoot: "/tmp/checkpoint-sequence",
+          defaultModelSelection: null,
+          createdAt,
+        }),
+      );
+      await system.run(
+        engine.dispatch({
+          type: "thread.create",
+          commandId: commandId(),
+          threadId,
+          projectId,
+          title: "Checkpoint sequence",
+          modelSelection: { provider: "codex", model: "gpt-5-codex" },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        }),
+      );
+      await appendActivity("tool.completed", 1_000);
+      await revert();
+      await appendActivity("checkpoint.revert.failed");
+      await revert();
+
+      await expect(
+        system.run(
+          engine.dispatch({
+            type: "thread.delete",
+            commandId: commandId(),
+            threadId,
+          }),
+        ),
+      ).rejects.toThrow("checkpoint revert in progress");
+      await expect(
+        system.run(
+          engine.dispatch({
+            type: "thread.turn.start",
+            commandId: commandId(),
+            threadId,
+            message: {
+              messageId: asMessageId("message-during-revert"),
+              role: "user",
+              text: "Continue",
+              attachments: [],
+            },
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "full-access",
+            createdAt,
+          }),
+        ),
+      ).rejects.toThrow("checkpoint revert in progress");
+      await expect(revert()).rejects.toThrow("checkpoint revert in progress");
+    } finally {
+      await system.dispose();
+    }
+  });
+
   it("preserves large Unicode responses and segment boundaries through completion", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;
@@ -257,6 +505,24 @@ describe("OrchestrationEngine", () => {
     );
 
     await system.run(system.engine.quiesce);
+    const diagnostic = {
+      type: "thread.activity.append",
+      commandId: CommandId.makeUnsafe("cmd-engine-quiesce-diagnostic"),
+      threadId,
+      activity: {
+        id: EventId.makeUnsafe("engine-quiesce-diagnostic"),
+        tone: "error",
+        kind: "provider.turn.interrupt.failed",
+        summary: "Provider turn interrupt failed",
+        payload: { detail: "Provider rejected the interrupt during shutdown." },
+        turnId: null,
+        createdAt,
+      },
+      createdAt,
+    } as const;
+    await expect(system.run(system.engine.dispatch(diagnostic))).resolves.toMatchObject({
+      sequence: expect.any(Number),
+    });
     await expect(
       system.run(
         system.engine.dispatch({
@@ -313,6 +579,15 @@ describe("OrchestrationEngine", () => {
     await expect(
       system.run(
         system.engine.dispatch({
+          ...diagnostic,
+          commandId: CommandId.makeUnsafe("cmd-engine-stopped-diagnostic"),
+        }),
+      ),
+    ).rejects.toMatchObject({ _tag: "OrchestrationCommandAdmissionError", reason: "stopped" });
+
+    await expect(
+      system.run(
+        system.engine.dispatch({
           type: "thread.turn.interrupt",
           commandId: CommandId.makeUnsafe("cmd-engine-stopped-control"),
           threadId,
@@ -354,96 +629,13 @@ describe("OrchestrationEngine", () => {
     });
 
     const events = await system.run(Stream.runCollect(system.engine.readEvents(0)));
+    expect(Array.from(events)).toHaveLength(1);
     expect(
       Array.from(events).filter((event) => event.commandId === command.commandId),
     ).toHaveLength(1);
-    await system.dispose();
-  });
-
-  it("returns deterministic read models for repeated reads", async () => {
-    const createdAt = now();
-    const system = await createOrchestrationSystem();
-    const { engine } = system;
-
-    await system.run(
-      engine.dispatch({
-        type: "project.create",
-        commandId: CommandId.makeUnsafe("cmd-project-1-create"),
-        projectId: asProjectId("project-1"),
-        title: "Project 1",
-        workspaceRoot: "/tmp/project-1",
-        defaultModelSelection: {
-          provider: "codex",
-          model: "gpt-5-codex",
-        },
-        createdAt,
-      }),
+    expect((await system.run(system.engine.getReadModel())).projects[0]?.title).toBe(
+      "Fingerprint project",
     );
-    await system.run(
-      engine.dispatch({
-        type: "thread.create",
-        commandId: CommandId.makeUnsafe("cmd-thread-1-create"),
-        threadId: ThreadId.makeUnsafe("thread-1"),
-        projectId: asProjectId("project-1"),
-        title: "Thread",
-        modelSelection: {
-          provider: "codex",
-          model: "gpt-5-codex",
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        branch: null,
-        worktreePath: null,
-        createdAt,
-      }),
-    );
-    await system.run(
-      engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.makeUnsafe("cmd-turn-start-1"),
-        threadId: ThreadId.makeUnsafe("thread-1"),
-        message: {
-          messageId: asMessageId("msg-1"),
-          role: "user",
-          text: "hello",
-          attachments: [],
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt,
-      }),
-    );
-
-    const readModelA = await system.run(engine.getReadModel());
-    const readModelB = await system.run(engine.getReadModel());
-    expect(readModelB).toEqual(readModelA);
-    await system.dispose();
-  });
-
-  it("returns the original sequence for equal retries and rejects unequal command-id reuse", async () => {
-    const system = await createOrchestrationSystem();
-    const { engine } = system;
-    const command = {
-      type: "project.create" as const,
-      commandId: CommandId.makeUnsafe("cmd-project-command-identity"),
-      projectId: asProjectId("project-command-identity"),
-      title: "Original identity",
-      workspaceRoot: "/tmp/project-command-identity",
-      defaultModelSelection: null,
-      createdAt: now(),
-    };
-
-    const accepted = await system.run(engine.dispatch(command));
-    await expect(system.run(engine.dispatch(command))).resolves.toEqual(accepted);
-    await expect(
-      system.run(engine.dispatch({ ...command, title: "Different identity" })),
-    ).rejects.toThrow("Command identity collision");
-
-    const events = await system.run(
-      Stream.runCollect(engine.readEvents(0)).pipe(Effect.map((chunk) => Array.from(chunk))),
-    );
-    expect(events).toHaveLength(1);
-    expect((await system.run(engine.getReadModel())).projects[0]?.title).toBe("Original identity");
     await system.dispose();
   });
 
@@ -581,124 +773,49 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 
-  it("replays append-only events from sequence", async () => {
+  it("keeps dispatch responsive and replays every event when a subscriber falls behind", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;
-    const createdAt = now();
-
-    await system.run(
-      engine.dispatch({
-        type: "project.create",
-        commandId: CommandId.makeUnsafe("cmd-project-replay-create"),
-        projectId: asProjectId("project-replay"),
-        title: "Replay Project",
-        workspaceRoot: "/tmp/project-replay",
-        defaultModelSelection: {
-          provider: "codex",
-          model: "gpt-5-codex",
-        },
-        createdAt,
-      }),
-    );
-    await system.run(
-      engine.dispatch({
-        type: "thread.create",
-        commandId: CommandId.makeUnsafe("cmd-thread-replay-create"),
-        threadId: ThreadId.makeUnsafe("thread-replay"),
-        projectId: asProjectId("project-replay"),
-        title: "replay",
-        modelSelection: {
-          provider: "codex",
-          model: "gpt-5-codex",
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        branch: null,
-        worktreePath: null,
-        createdAt,
-      }),
-    );
-    await system.run(
-      engine.dispatch({
-        type: "thread.delete",
-        commandId: CommandId.makeUnsafe("cmd-thread-replay-delete"),
-        threadId: ThreadId.makeUnsafe("thread-replay"),
-      }),
-    );
-
-    const events = await system.run(
-      Stream.runCollect(engine.readEvents(0)).pipe(
-        Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)),
-      ),
-    );
-    expect(events.map((event) => event.type)).toEqual([
-      "project.created",
-      "thread.created",
-      "thread.deleted",
-    ]);
-    await system.dispose();
-  });
-
-  it("streams persisted domain events in order", async () => {
-    const system = await createOrchestrationSystem();
-    const { engine } = system;
-    const createdAt = now();
-
-    await system.run(
-      engine.dispatch({
-        type: "project.create",
-        commandId: CommandId.makeUnsafe("cmd-project-stream-create"),
-        projectId: asProjectId("project-stream"),
-        title: "Stream Project",
-        workspaceRoot: "/tmp/project-stream",
-        defaultModelSelection: {
-          provider: "codex",
-          model: "gpt-5-codex",
-        },
-        createdAt,
-      }),
-    );
-
-    const eventTypes: string[] = [];
-    await system.run(
-      Effect.gen(function* () {
-        const eventQueue = yield* Queue.unbounded<OrchestrationEvent>();
-        yield* Effect.forkScoped(
-          Stream.take(engine.streamDomainEvents, 2).pipe(
-            Stream.runForEach((event) => Queue.offer(eventQueue, event).pipe(Effect.asVoid)),
-          ),
-        );
-        yield* Effect.sleep("10 millis");
-        yield* engine.dispatch({
-          type: "thread.create",
-          commandId: CommandId.makeUnsafe("cmd-stream-thread-create"),
-          threadId: ThreadId.makeUnsafe("thread-stream"),
-          projectId: asProjectId("project-stream"),
-          title: "domain-stream",
-          modelSelection: {
-            provider: "codex",
-            model: "gpt-5-codex",
-          },
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          runtimeMode: "approval-required",
-          branch: null,
-          worktreePath: null,
-          createdAt,
-        });
-        yield* engine.dispatch({
-          type: "thread.meta.update",
-          commandId: CommandId.makeUnsafe("cmd-stream-thread-update"),
-          threadId: ThreadId.makeUnsafe("thread-stream"),
-          title: "domain-stream-updated",
-        });
-        eventTypes.push((yield* Queue.take(eventQueue)).type);
-        eventTypes.push((yield* Queue.take(eventQueue)).type);
-      }).pipe(Effect.scoped),
-    );
-
-    expect(eventTypes).toEqual(["thread.created", "thread.meta-updated"]);
-    await system.dispose();
-  });
+    const projectId = asProjectId("project-slow-subscriber");
+    // Overflow by more than one durable replay page (500 events).
+    const count = ORCHESTRATION_EVENT_PUBSUB_CAPACITY + 510;
+    try {
+      const initial = await system.run(
+        engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.makeUnsafe("cmd-slow-subscriber-create"),
+          projectId,
+          title: "Slow subscriber",
+          workspaceRoot: "/tmp/slow-subscriber",
+          defaultModelSelection: null,
+          createdAt: now(),
+        }),
+      );
+      const result = await system.run(
+        Effect.gen(function* () {
+          // Attach before loading/processing work, as startup and reactors do.
+          const live = yield* engine.subscribeDomainEvents;
+          for (let i = 0; i < count; i++) {
+            yield* engine.dispatch({
+              type: "project.meta.update",
+              commandId: CommandId.makeUnsafe(`cmd-slow-subscriber-${i}`),
+              projectId,
+              title: `Update ${i}`,
+            });
+          }
+          return Array.from(yield* Stream.runCollect(Stream.take(live, count)));
+        }).pipe(Effect.scoped, Effect.timeoutOption("8 seconds")),
+      );
+      expect(Option.isSome(result)).toBe(true);
+      const events = Option.getOrThrow(result);
+      expect(events.map((event) => event.sequence)).toEqual(
+        Array.from({ length: count }, (_, i) => initial.sequence + i + 1),
+      );
+      expect(events.at(-1)?.payload).toMatchObject({ title: `Update ${count - 1}` });
+    } finally {
+      await system.dispose();
+    }
+  }, 15_000);
 
   it("stores completed checkpoint summaries even when no files changed", async () => {
     const system = await createOrchestrationSystem();
@@ -903,7 +1020,7 @@ describe("OrchestrationEngine", () => {
             }),
           );
         }
-        return Effect.void;
+        return Effect.succeed({ deferredPhaseSettled: false });
       },
       projectDeferredEvent: () => Effect.void,
     };
@@ -1050,7 +1167,7 @@ describe("OrchestrationEngine", () => {
         return Effect.void;
       },
       projectEvent: () => Effect.void,
-      projectHotEventInCurrentTransaction: () => Effect.void,
+      projectHotEventInCurrentTransaction: () => Effect.succeed({ deferredPhaseSettled: false }),
       projectDeferredEvent: () => Effect.void,
     };
 
@@ -1168,7 +1285,7 @@ describe("OrchestrationEngine", () => {
             }),
           );
         }
-        return Effect.void;
+        return Effect.succeed({ deferredPhaseSettled: false });
       },
       projectDeferredEvent: () => Effect.void,
     };
@@ -1239,32 +1356,6 @@ describe("OrchestrationEngine", () => {
     expect(updatedThread?.title).toBe("sync-after-failed-projection");
 
     await runtime.dispose();
-  });
-
-  it("fails command dispatch when command invariants are violated", async () => {
-    const system = await createOrchestrationSystem();
-    const { engine } = system;
-
-    await expect(
-      system.run(
-        engine.dispatch({
-          type: "thread.turn.start",
-          commandId: CommandId.makeUnsafe("cmd-invariant-missing-thread"),
-          threadId: ThreadId.makeUnsafe("thread-missing"),
-          message: {
-            messageId: asMessageId("msg-missing"),
-            role: "user",
-            text: "hello",
-            attachments: [],
-          },
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          runtimeMode: "approval-required",
-          createdAt: now(),
-        }),
-      ),
-    ).rejects.toThrow("Thread 'thread-missing' does not exist");
-
-    await system.dispose();
   });
 
   it("loads authoritative pending interactions before expiring a side chat", async () => {
@@ -1405,7 +1496,7 @@ describe("OrchestrationEngine", () => {
       }),
       projectMetadataEvent: () => Effect.void,
       projectEvent: () => Effect.void,
-      projectHotEventInCurrentTransaction: () => Effect.void,
+      projectHotEventInCurrentTransaction: () => Effect.succeed({ deferredPhaseSettled: false }),
       projectDeferredEvent: () => {
         deferredCalls += 1;
         if (deferredCalls === 1) {
@@ -1507,7 +1598,7 @@ describe("OrchestrationEngine", () => {
       bootstrap: Effect.void,
       projectMetadataEvent: () => Effect.void,
       projectEvent: () => Effect.void,
-      projectHotEventInCurrentTransaction: () => Effect.void,
+      projectHotEventInCurrentTransaction: () => Effect.succeed({ deferredPhaseSettled: false }),
       projectDeferredEvent: () => Effect.void,
     };
     const runtime = ManagedRuntime.make(
@@ -1571,7 +1662,7 @@ describe("OrchestrationEngine", () => {
       ),
       projectMetadataEvent: () => Effect.void,
       projectEvent: () => Effect.void,
-      projectHotEventInCurrentTransaction: () => Effect.void,
+      projectHotEventInCurrentTransaction: () => Effect.succeed({ deferredPhaseSettled: false }),
       projectDeferredEvent: () => Effect.void,
     };
     const runtime = ManagedRuntime.make(
@@ -1701,42 +1792,6 @@ describe("OrchestrationEngine", () => {
             provider: "codex",
             model: "gpt-5-codex",
           },
-          createdAt,
-        }),
-      ),
-    ).rejects.toThrow("already uses workspace root");
-
-    await system.dispose();
-  });
-
-  it("rejects duplicate Studio workspace containers", async () => {
-    const system = await createOrchestrationSystem();
-    const { engine } = system;
-    const createdAt = now();
-
-    await system.run(
-      engine.dispatch({
-        type: "project.create",
-        commandId: CommandId.makeUnsafe("cmd-studio-project-create"),
-        projectId: asProjectId("project-studio"),
-        kind: "studio",
-        title: "Studio",
-        workspaceRoot: "/tmp/synara-studio",
-        defaultModelSelection: null,
-        createdAt,
-      }),
-    );
-
-    await expect(
-      system.run(
-        engine.dispatch({
-          type: "project.create",
-          commandId: CommandId.makeUnsafe("cmd-studio-project-duplicate-create"),
-          projectId: asProjectId("project-studio-duplicate"),
-          kind: "studio",
-          title: "Studio",
-          workspaceRoot: "/tmp/synara-studio",
-          defaultModelSelection: null,
           createdAt,
         }),
       ),

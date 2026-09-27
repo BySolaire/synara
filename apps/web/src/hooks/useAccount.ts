@@ -12,7 +12,7 @@ import type {
   AccountUpdateProfileInput,
   AccountUploadAvatarInput,
 } from "@synara/contracts";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import {
   accountQueryKeys,
@@ -23,12 +23,28 @@ import {
 } from "~/lib/accountReactQuery";
 import { ensureNativeApi } from "~/nativeApi";
 
+// Shared by every hook instance in this window, including dialogs and footer.
+const mutationGenerations = new WeakMap<QueryClient, number>();
+type StatusWriteFence = { generation: number; statusRevision: number };
+
 export function useAccount() {
   const queryClient = useQueryClient();
   const statusQuery = useQuery(accountStatusQueryOptions());
 
   const setStatus = (status: AccountStatus) => {
-    queryClient.setQueryData<AccountStatus>(accountQueryKeys.status(), status);
+    queryClient.setQueryData<AccountStatus>(accountQueryKeys.status(), (previous) => {
+      if (
+        status.state === "signed-in" &&
+        previous?.state === "signed-in" &&
+        status.me.id === previous.me.id &&
+        status.me.organization.id === previous.me.organization.id &&
+        !status.accountAuthority &&
+        previous.accountAuthority
+      ) {
+        return { ...status, accountAuthority: previous.accountAuthority };
+      }
+      return status;
+    });
   };
 
   /**
@@ -41,9 +57,23 @@ export function useAccount() {
    * the authoritative answer afterwards, success or failure.
    */
   const statusFence = {
-    onMutate: () => cancelAccountStatusFetches(queryClient),
+    onMutate: async (): Promise<StatusWriteFence> => {
+      const generation = (mutationGenerations.get(queryClient) ?? 0) + 1;
+      mutationGenerations.set(queryClient, generation);
+      await cancelAccountStatusFetches(queryClient);
+      return {
+        generation,
+        statusRevision: queryClient.getQueryState(accountQueryKeys.status())?.dataUpdateCount ?? 0,
+      };
+    },
     onSettled: () => invalidateAccountStatus(queryClient),
   };
+
+  const mayWriteStatus = (fence: StatusWriteFence | undefined) =>
+    fence !== undefined &&
+    mutationGenerations.get(queryClient) === fence.generation &&
+    (queryClient.getQueryState(accountQueryKeys.status())?.dataUpdateCount ?? 0) ===
+      fence.statusRevision;
 
   const sendOtp = useMutation({
     mutationFn: async (input: AccountSendOtpInput) => {
@@ -61,7 +91,8 @@ export function useAccount() {
       const api = ensureNativeApi();
       return api.account.authenticateOtp(input);
     },
-    onSuccess: (status: AccountStatus) => {
+    onSuccess: (status: AccountStatus, _input, fence) => {
+      if (!mayWriteStatus(fence)) return;
       // Drop account-scoped caches from any PREVIOUS identity before this
       // sign-in renders: the usage-summary key carries no user id, so a
       // stale entry would show the last user's usage to the new one.
@@ -90,7 +121,8 @@ export function useAccount() {
         input.signal ? { signal: input.signal } : undefined,
       );
     },
-    onSuccess: (status: AccountStatus) => {
+    onSuccess: (status: AccountStatus, _input, fence) => {
+      if (!mayWriteStatus(fence)) return;
       // Same identity fence as authenticateOtp: no stale account-scoped data
       // may survive into the session this sign-in establishes.
       removeAccountScopedQueries(queryClient);
@@ -114,7 +146,8 @@ export function useAccount() {
       const api = ensureNativeApi();
       return api.account.updateProfile(input);
     },
-    onSuccess: (me: AccountMe) => {
+    onSuccess: (me: AccountMe, _input, fence) => {
+      if (!mayWriteStatus(fence)) return;
       setStatus({ state: "signed-in", me });
     },
   });
@@ -128,7 +161,8 @@ export function useAccount() {
       const api = ensureNativeApi();
       return api.account.uploadAvatar(input);
     },
-    onSuccess: (me: AccountMe) => {
+    onSuccess: (me: AccountMe, _input, fence) => {
+      if (!mayWriteStatus(fence)) return;
       setStatus({ state: "signed-in", me });
     },
   });
@@ -139,7 +173,8 @@ export function useAccount() {
       const api = ensureNativeApi();
       return api.account.deleteAvatar();
     },
-    onSuccess: (me: AccountMe) => {
+    onSuccess: (me: AccountMe, _input, fence) => {
+      if (!mayWriteStatus(fence)) return;
       setStatus({ state: "signed-in", me });
     },
   });
@@ -150,7 +185,8 @@ export function useAccount() {
       const api = ensureNativeApi();
       await api.account.signOut();
     },
-    onSuccess: () => {
+    onSuccess: (_result, _input, fence) => {
+      if (!mayWriteStatus(fence)) return;
       setStatus({ state: "signed-out" });
       // Removal, not invalidation: the signed-out app must neither render
       // nor refetch the departed user's account-scoped data.

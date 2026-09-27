@@ -1,3 +1,8 @@
+import type { RemotePairingBundle } from "@synara/contracts";
+import { connectRemoteWebSocket } from "../../server/src/remoteTransport/tunnel";
+import type { RemoteTlsAnchor } from "../../server/src/remoteTransport/certificates";
+import { pairRemoteHost } from "../../server/src/remotePairing/client";
+import { controllerProtocol } from "../../server/src/hostConnections/dialer";
 import {
   GrantResponse,
   RegisterDeviceResponse,
@@ -26,7 +31,7 @@ import {
   resumeSocketReads,
   sendFrame,
   type SocketClose,
-  type WebSocketInbox,
+  WebSocketInbox,
 } from "./harness/websocket";
 
 export class HeadlessClientError extends Error {
@@ -220,6 +225,7 @@ function makeSession(input: {
 export class HeadlessClient implements AsyncDisposable {
   readonly #sockets = new Set<WebSocket>();
   #identity: ClientIdentity | undefined;
+  #anchor: RemoteTlsAnchor | undefined;
   #device: AccountDevice | undefined;
 
   constructor(
@@ -332,40 +338,76 @@ export class HeadlessClient implements AsyncDisposable {
     return opened;
   }
 
+  async pair(bundle: RemotePairingBundle, directUrl?: string, relayUrl?: string): Promise<void> {
+    const identity = await this.#getIdentity();
+    await pairRemoteHost({
+      host: {
+        id: bundle.hostId,
+        environmentId: bundle.environmentId,
+        endpoints: directUrl ? [{ transport: "lan", url: directUrl }] : [],
+      },
+      anchor: bundle,
+      ...(relayUrl ? { relayUrl } : {}),
+      bundle,
+      identity: { ...identity, userId: this.options.userId },
+      label: "E2E controller",
+      requestGrant: () => this.requestGrant(bundle.hostId),
+      probe: async () => true,
+    });
+    this.#anchor = bundle;
+  }
+
+  async #openVerified(candidate: TransportCandidate, grant = "") {
+    if (!this.#anchor) throw new Error("Explicit owner pairing is required");
+    const url = new URL(websocketSessionUrl(candidate, grant));
+    if (candidate.kind !== "relay") url.pathname = "/ws/host/v2";
+    const outer = await openWebSocket(url.toString());
+    try {
+      const socket = await connectRemoteWebSocket(outer.socket, this.#anchor);
+      this.#sockets.add(socket);
+      socket.once("close", () => this.#sockets.delete(socket));
+      return { socket, inbox: new WebSocketInbox(socket) };
+    } catch (error) {
+      outer.socket.terminate();
+      throw error;
+    }
+  }
+
   async connectWithGrant(input: {
     readonly candidates: readonly TransportCandidate[];
     readonly environmentId: string;
     readonly grant: string;
   }): Promise<HeadlessClientSession> {
     const candidate = await this.selectTransport(input.candidates);
-    const opened =
-      candidate.kind === "relay"
-        ? await this.openRelay(input.grant, candidate.url)
-        : await openWebSocket(websocketSessionUrl(candidate));
-    this.#sockets.add(opened.socket);
-    const identity = await this.#getIdentity();
-    const mintRequest = await signMintRequest({
-      key: identity.key,
-      publicJwk: identity.publicJwk,
-      userId: this.options.userId,
-      grant: input.grant,
-      environmentId: input.environmentId,
-    });
-    await sendFrame(
-      opened.socket,
-      JSON.stringify({ v: 1, type: "mint_request", request: mintRequest }),
-      false,
-    );
-    const minted = await opened.inbox.nextJson("session_credential");
-    if (typeof minted.credential !== "string") throw new Error("host returned no credential");
-    await this.#authorize(opened.socket, opened.inbox, identity, minted.credential);
-    return makeSession({
-      ...opened,
-      transport: candidate.kind,
-      credential: minted.credential,
-      minted: true,
-      onClose: () => this.#sockets.delete(opened.socket),
-    });
+    const opened = await this.#openVerified(candidate, input.grant);
+    try {
+      const identity = await this.#getIdentity();
+      const mintRequest = await signMintRequest({
+        key: identity.key,
+        publicJwk: identity.publicJwk,
+        userId: this.options.userId,
+        grant: input.grant,
+        environmentId: input.environmentId,
+      });
+      await sendFrame(
+        opened.socket,
+        JSON.stringify({ v: 1, type: "mint_request", request: mintRequest }),
+        false,
+      );
+      const minted = await opened.inbox.nextJson("session_credential");
+      if (typeof minted.credential !== "string") throw new Error("host returned no credential");
+      await this.#authorize(opened.socket, opened.inbox, identity, minted.credential);
+      return makeSession({
+        ...opened,
+        transport: candidate.kind,
+        credential: minted.credential,
+        minted: true,
+        onClose: () => this.#sockets.delete(opened.socket),
+      });
+    } catch (error) {
+      opened.socket.terminate();
+      throw error;
+    }
   }
 
   async connectWithCredential(input: {
@@ -373,16 +415,25 @@ export class HeadlessClient implements AsyncDisposable {
     readonly credential: string;
   }): Promise<HeadlessClientSession> {
     const candidate = await this.selectTransport(input.candidates);
-    const opened = await openWebSocket(websocketSessionUrl(candidate));
-    this.#sockets.add(opened.socket);
-    await this.#authorize(opened.socket, opened.inbox, await this.#getIdentity(), input.credential);
-    return makeSession({
-      ...opened,
-      transport: candidate.kind,
-      credential: input.credential,
-      minted: false,
-      onClose: () => this.#sockets.delete(opened.socket),
-    });
+    const opened = await this.#openVerified(candidate);
+    try {
+      await this.#authorize(
+        opened.socket,
+        opened.inbox,
+        await this.#getIdentity(),
+        input.credential,
+      );
+      return makeSession({
+        ...opened,
+        transport: candidate.kind,
+        credential: input.credential,
+        minted: false,
+        onClose: () => this.#sockets.delete(opened.socket),
+      });
+    } catch (error) {
+      opened.socket.terminate();
+      throw error;
+    }
   }
 
   async #authorize(
@@ -400,7 +451,13 @@ export class HeadlessClient implements AsyncDisposable {
     });
     await sendFrame(
       socket,
-      JSON.stringify({ v: 1, type: "session_authorize", credential, dpop }),
+      JSON.stringify({
+        v: 1,
+        type: "session_authorize",
+        credential,
+        dpop,
+        client: controllerProtocol,
+      }),
       false,
     );
     await inbox.nextJson("session_ready");

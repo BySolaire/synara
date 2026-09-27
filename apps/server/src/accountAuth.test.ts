@@ -413,8 +413,7 @@ describe("withFreshAccessToken", () => {
     const baseDir = makeBaseDir();
     await writeAccountCredentials(baseDir, credentials());
 
-    // A network blip says nothing about whether the refresh token is still
-    // good. Discarding it here would force a full re-auth over an outage.
+    // The access token can still be used; an uncertain refresh cannot be replayed.
     await expect(
       withFreshAccessToken(
         {
@@ -422,56 +421,35 @@ describe("withFreshAccessToken", () => {
           client: makeClient({
             refreshAccessToken: () => Promise.reject(new Error("ECONNREFUSED")),
           }),
-          refreshRetryDelayMs: 0,
         },
         () => Promise.reject(unauthorized()),
       ),
     ).rejects.toThrow("ECONNREFUSED");
 
-    expect(await readAccountCredentials(baseDir)).toEqual(credentials());
+    expect(await readAccountCredentials(baseDir)).toMatchObject({
+      ...credentials(),
+      refreshPendingTokenHash: expect.any(String),
+    });
   });
 
-  // A transient refresh failure is worth one bounded retry with the SAME
-  // token — the provider only rotates on success — so a single blip renews
-  // the session instead of failing the command.
-  it("retries a transient refresh failure once and renews on success", async () => {
+  it("never replays a refresh token after a lost rotation response, including a new caller", async () => {
     const baseDir = makeBaseDir();
     await writeAccountCredentials(baseDir, credentials());
-
     let refreshCalls = 0;
-    const result = await withFreshAccessToken(
-      {
-        baseDir,
-        client: makeClient({
-          refreshAccessToken: () => {
-            refreshCalls += 1;
-            if (refreshCalls === 1) {
-              return Promise.reject(
-                new AccountApiError({
-                  code: "internal_error",
-                  status: 502,
-                  message: "Identity provider is unavailable",
-                }),
-              );
-            }
-            return Promise.resolve({
-              accessToken: "access-2",
-              refreshToken: "refresh-2",
-              user: { id: "user_1", email: "ada@example.com" },
-            });
-          },
-        }),
-        refreshRetryDelayMs: 0,
+    const client = makeClient({
+      refreshAccessToken: async () => {
+        refreshCalls += 1;
+        // The identity provider consumed the token, but its reply did not arrive.
+        throw new Error("lost-response-after-rotation");
       },
-      (accessToken) =>
-        accessToken === "access-1" ? Promise.reject(unauthorized()) : Promise.resolve(accessToken),
-    );
-
-    expect(result).toBe("access-2");
-    expect(refreshCalls).toBe(2);
-    expect(await readAccountCredentials(baseDir)).toEqual(
-      credentials({ accessToken: "access-2", refreshToken: "refresh-2" }),
-    );
+    });
+    await expect(
+      withFreshAccessToken({ baseDir, client }, () => Promise.reject(unauthorized())),
+    ).rejects.toThrow("lost-response-after-rotation");
+    await expect(
+      withFreshAccessToken({ baseDir, client }, () => Promise.reject(unauthorized())),
+    ).rejects.toThrow(/uncertain.*sign in/i);
+    expect(refreshCalls).toBe(1);
   });
 
   it("keeps the stored refresh token when the identity provider returns a 5xx", async () => {
@@ -491,7 +469,6 @@ describe("withFreshAccessToken", () => {
               }),
             ),
         }),
-        refreshRetryDelayMs: 0,
       },
       () => Promise.reject(unauthorized()),
     ).catch((error: unknown) => error);
@@ -501,12 +478,14 @@ describe("withFreshAccessToken", () => {
     expect(caught).toBeInstanceOf(AccountApiError);
     expect(caught).not.toBeInstanceOf(SessionExpiredError);
     expect(caught).toMatchObject({ status: 503 });
-    expect(await readAccountCredentials(baseDir)).toEqual(credentials());
+    expect(await readAccountCredentials(baseDir)).toMatchObject({
+      ...credentials(),
+      refreshPendingTokenHash: expect.any(String),
+    });
   });
 
-  // 408 and 429 are 4xx by status but transient by meaning: WorkOS is telling
-  // us to come back, not that the grant is dead. Burning the session on either
-  // turns a momentary rate limit into a forced re-authentication.
+  // A 408/429 does not prove that no rotation occurred behind the account proxy.
+  // Keep credentials and pending intent instead of treating this as invalid_grant.
   it.each([
     [408, "Request timeout"],
     [429, "Too many requests"],
@@ -523,7 +502,6 @@ describe("withFreshAccessToken", () => {
             refreshAccessToken: () =>
               Promise.reject(new AccountApiError({ code: "internal_error", status, message })),
           }),
-          refreshRetryDelayMs: 0,
         },
         () => Promise.reject(unauthorized()),
       ).catch((error: unknown) => error);
@@ -531,7 +509,10 @@ describe("withFreshAccessToken", () => {
       expect(caught).toBeInstanceOf(AccountApiError);
       expect(caught).not.toBeInstanceOf(SessionExpiredError);
       expect(caught).toMatchObject({ status });
-      expect(await readAccountCredentials(baseDir)).toEqual(credentials());
+      expect(await readAccountCredentials(baseDir)).toMatchObject({
+        ...credentials(),
+        refreshPendingTokenHash: expect.any(String),
+      });
     },
   );
 
@@ -1556,7 +1537,7 @@ describe("refreshHostRegistration", () => {
     });
   });
 
-  it("resolves without throwing when the account rejects the refresh", async () => {
+  it("reports endpoint failure to the retrying caller", async () => {
     const baseDir = makeBaseDir();
     await persistTestHostIdentity(baseDir);
     writeRuntimeState(baseDir, "http://192.168.1.42:3773", "192.168.1.42");
@@ -1579,7 +1560,7 @@ describe("refreshHostRegistration", () => {
           },
         }),
       }),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow("Host proof invalid");
 
     // Without this the test would also pass if the refresh never ran at all,
     // which is the opposite of what it is meant to prove.

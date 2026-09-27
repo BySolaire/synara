@@ -101,6 +101,7 @@ export interface HostMintServiceOptions {
    * host's key, so no cloud-side compromise or outage can alter it.
    */
   readonly ownerUserId: string;
+  readonly authorizeDevice: (userId: string, deviceJkt: string) => Promise<number>;
   readonly getApiJwks: () => Promise<ApiJwks>;
   /** Forced refetch when a grant names a kid we do not hold (key rotation). */
   readonly refreshApiJwksForUnknownKid?: () => Promise<ApiJwks | undefined>;
@@ -128,6 +129,7 @@ export class HostMintService {
     let grant: GrantClaimsType;
     let grantJwt: string;
     let deviceJkt: string;
+    let trustGeneration: number;
     try {
       const unverifiedParts = mintRequestJwt.split(".");
       if (unverifiedParts.length !== 3) throw new Error("mint request is not a compact JWT");
@@ -188,21 +190,21 @@ export class HostMintService {
         throw new Error("grant is not bound to this host, user, and device key");
       }
 
-      // The owner is decided from the LINK-TIME record, not from a live API
-      // answer (ADR 0011). Two things follow, both deliberate: the owner's own
-      // access survives an account-API outage, and a compromised API cannot
-      // nominate itself as owner — it would have to also hold this host's key
-      // to change the linked record. Only the org-member path, which is
-      // genuinely cloud-governed policy, needs the round trip.
       if (grant.sub !== this.options.ownerUserId) {
-        const authorization = await this.options.getAuthorization();
-        if (authorization.revokedDeviceJkts.includes(deviceJkt)) {
-          throw new HostMintError("not_authorized", "device is revoked");
-        }
-        const owner = grant.sub === authorization.ownerUserId;
-        if (!owner && (!authorization.discoverable || !authorization.ownerInOrg)) {
-          throw new HostMintError("not_authorized", "user is no longer authorized for this host");
-        }
+        throw new HostMintError(
+          "not_authorized",
+          "Only the locally linked owner can access this host",
+        );
+      }
+      try {
+        trustGeneration = await this.options.authorizeDevice(grant.sub, deviceJkt);
+      } catch (cause) {
+        throw new HostMintError("not_authorized", "Device has no current local approval", {
+          cause,
+        });
+      }
+      if (!Number.isSafeInteger(trustGeneration) || trustGeneration < 1) {
+        throw new HostMintError("not_authorized", "Device has no local approval");
       }
 
       this.#replays.consume(grant.jti, grant.exp, now);
@@ -218,6 +220,7 @@ export class HostMintService {
 
     const expiresAtSeconds = now + SESSION_CREDENTIAL_MAX_AGE_SECONDS;
     const credential = await new SignJWT({
+      trustGeneration,
       cnf: { jkt: deviceJkt },
       keyGeneration: this.options.keyGeneration,
       scope: [HOST_CONNECT_SCOPE],

@@ -1,3 +1,5 @@
+import type { RemoteAccessManagement } from "./remotePairing/management";
+import { requireRemoteConnections, requireHostSecretsSync } from "./remoteFeaturePolicy";
 // FILE: wsHostsRpc.ts
 // Purpose: The remote-host RPC handlers, as one owner-guarded unit.
 // Layer: server RPC handlers
@@ -26,10 +28,13 @@ export interface HostsRpcHandlerDeps {
   readonly accountSession: HostsAccountSession;
   readonly remoteSessions: Pick<RemoteSessionRegistry, "list" | "end">;
   readonly hostConnections: HostConnectionsPort;
+  readonly remoteAccess: RemoteAccessManagement;
 }
 
 const ownerHostsRpc = <A, E, R>(make: () => Effect.Effect<A, E, R>, fallbackMessage: string) =>
   requireOwnerRole.pipe(
+    Effect.andThen(Effect.try({ try: () => requireRemoteConnections(), catch: (cause) => cause })),
+    Effect.mapError((cause) => toAccountWsRpcError(cause, fallbackMessage)),
     Effect.flatMap(() =>
       make().pipe(Effect.mapError((cause) => toAccountWsRpcError(cause, fallbackMessage))),
     ),
@@ -40,6 +45,8 @@ const ownerSensitiveHostsRpc = <A, E, R>(
   fallbackMessage: string,
 ) =>
   requireOwnerRole.pipe(
+    Effect.andThen(Effect.try({ try: () => requireRemoteConnections(), catch: (cause) => cause })),
+    Effect.mapError((cause) => toAccountWsRpcError(cause, fallbackMessage)),
     Effect.flatMap(() =>
       make().pipe(Effect.mapError((cause) => toSensitiveWsRpcError(cause, fallbackMessage))),
     ),
@@ -49,8 +56,14 @@ export function makeHostsRpcHandlers({
   accountSession,
   remoteSessions,
   hostConnections,
+  remoteAccess,
 }: HostsRpcHandlerDeps) {
   return {
+    [WS_METHODS.hostsRemoteAccess]: (input: { request: Parameters<RemoteAccessManagement>[0] }) =>
+      ownerSensitiveHostsRpc(
+        () => Effect.tryPromise((signal) => remoteAccess(input.request, signal)),
+        "Remote access operation failed",
+      ),
     [WS_METHODS.hostsList]: () =>
       ownerHostsRpc(
         () => Effect.tryPromise(() => accountSession.listHosts()),
@@ -149,11 +162,13 @@ export function makeHostsRpcHandlers({
     ) =>
       requireOwnerRole.pipe(
         Effect.flatMap(() =>
-          Effect.tryPromise(() => accountSession.confirmSyncKey(input)).pipe(
-            Effect.mapError((cause) =>
-              toPairingVerificationWsRpcError(cause, "Failed to confirm Sync-Key pairing"),
+          Effect.try({ try: () => requireHostSecretsSync(), catch: (cause) => cause })
+            .pipe(Effect.andThen(Effect.tryPromise(() => accountSession.confirmSyncKey(input))))
+            .pipe(
+              Effect.mapError((cause) =>
+                toPairingVerificationWsRpcError(cause, "Failed to confirm Sync-Key pairing"),
+              ),
             ),
-          ),
         ),
       ),
   };

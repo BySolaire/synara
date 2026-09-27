@@ -1,3 +1,5 @@
+import { readExecutionContext } from "~/lib/hosts/executionContext";
+import { RemotePairingPanel } from "./RemotePairingPanel";
 // FILE: ConnectionsSettingsPanel.tsx
 // Purpose: The hosts pane — the machines this account can reach, the owner's
 //          discoverability switch, and the devices signed in to the account.
@@ -32,7 +34,7 @@ import { HostsUnsupportedError } from "~/lib/hosts/queries";
 import { ensureNativeApi, readNativeApi } from "~/nativeApi";
 import { cn } from "~/lib/utils";
 import { SettingsEmptyState, SettingsListRow, SettingsSection } from "./SettingsPanelPrimitives";
-import { SyncKeyPairingPanel } from "./SyncKeyPairingPanel";
+import { HostConnectionControl } from "../hosts/HostConnectionControl";
 
 /**
  * Relative "last used" copy. Absolute timestamps read as precision this data
@@ -57,10 +59,12 @@ function relativeTimeLabel(iso: string | null, now: number): string {
 export function ConnectionsSettingsPanel({ active }: { active: boolean }) {
   const account = useAccount();
   const signedIn = account.me !== null;
-  const remote = useHosts({ enabled: active && signedIn });
-  const devices = useDevices({ enabled: active && signedIn });
-  const sessions = useHostSessions({ enabled: active && signedIn });
-  const connections = useHostConnections({ enabled: active && signedIn });
+  const capability = readExecutionContext()?.controller.capabilities;
+  const enabled = active && signedIn && capability?.remoteConnections === true;
+  const remote = useHosts({ enabled });
+  const devices = useDevices({ enabled });
+  const sessions = useHostSessions({ enabled });
+  const connections = useHostConnections({ enabled });
   const activeHost = readActiveHost();
   const navigate = useNavigate();
   // Reachability is attempt-based (ADR 0010): the map holds what the LAST
@@ -112,7 +116,7 @@ export function ConnectionsSettingsPanel({ active }: { active: boolean }) {
         [
           `Revoke ${device.displayName}?`,
           "",
-          "This signs that device out of every host. It will need to sign in again before it can connect to anything.",
+          "This blocks new remote connections for this device key. Online hosts receive a revocation; an offline host may keep an existing session until it expires. Account sign-in sessions are managed separately.",
         ].join("\n"),
       );
       if (!confirmed) return;
@@ -121,7 +125,8 @@ export function ConnectionsSettingsPanel({ active }: { active: boolean }) {
         toastManager.add({
           type: "success",
           title: "Device revoked",
-          description: `${device.displayName} was signed out of every host.`,
+          description:
+            "New connections are blocked. Offline hosts may retain existing sessions until authorization expires.",
         });
       } catch (cause) {
         toastManager.add({
@@ -133,6 +138,34 @@ export function ConnectionsSettingsPanel({ active }: { active: boolean }) {
     },
     [devices.revokeDevice],
   );
+
+  const revokeAccountSessions = async (device: AccountDevice) => {
+    if (
+      !(await ensureNativeApi().dialogs.confirm(
+        `Sign out account sessions on ${device.displayName}? This does not revoke its locally paired device key. Existing remote sessions end when their authorization expires unless you also revoke the device.`,
+      ))
+    )
+      return;
+    try {
+      const result = await readHostsApi()?.remoteAccess?.({
+        operation: "revoke-account-sessions",
+        deviceId: device.id,
+      });
+      if (result?.kind !== "account-sessions-revoked")
+        throw new Error("Account session revocation is unavailable.");
+      toastManager.add({
+        type: result.pending ? "warning" : "success",
+        title: result.pending ? "Sign-out delivery pending" : "Account sessions signed out",
+        description: `${result.confirmed} confirmed; ${result.pending} awaiting the identity provider. ${result.pending ? "You can retry this action." : "The device key is unchanged."}`,
+      });
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Could not sign out account sessions",
+        description: accountErrorMessage(error, "Try again."),
+      });
+    }
+  };
 
   const unlinkLocalHost = useCallback(async () => {
     const api = readNativeApi() ?? ensureNativeApi();
@@ -168,7 +201,8 @@ export function ConnectionsSettingsPanel({ active }: { active: boolean }) {
     async (host: AccountHost) => {
       try {
         const connection = await connections.connect.mutateAsync({ hostId: host.id });
-        activateHost({
+        await activateHost({
+          ...(connection.executionScope ? { executionScope: connection.executionScope } : {}),
           hostId: connection.hostId,
           hostName: connection.hostName,
           wsPath: connection.wsPath,
@@ -233,9 +267,26 @@ export function ConnectionsSettingsPanel({ active }: { active: boolean }) {
 
   if (!active) return null;
 
+  if (capability?.remoteConnections !== true)
+    return (
+      <div className="space-y-6">
+        <HostConnectionControl />
+        <SettingsSection title="Remote connections">
+          <SettingsListRow
+            title="Unavailable in this build"
+            description={
+              capability?.remoteUnavailableReason ??
+              "Update the local controller to manage remote access."
+            }
+          />
+        </SettingsSection>
+      </div>
+    );
+
   if (!signedIn) {
     return (
       <div className="space-y-6">
+        <HostConnectionControl />
         <SettingsSection title="Hosts">
           <div className="p-3">
             <SettingsEmptyState layout="block">
@@ -252,6 +303,7 @@ export function ConnectionsSettingsPanel({ active }: { active: boolean }) {
 
   return (
     <div className="space-y-6">
+      <HostConnectionControl />
       <SettingsSection title="Hosts">
         {remote.hostsQuery.isPending ? (
           <SettingsListRow title="Loading hosts..." />
@@ -292,18 +344,13 @@ export function ConnectionsSettingsPanel({ active }: { active: boolean }) {
                         }
                       : { kind: "disconnected", busy: connections.connect.isPending }
                 }
-                onProbe={() => void probeHost(host)}
+                {...(readHostsApi()?.checkReachability
+                  ? { onProbe: () => void probeHost(host) }
+                  : {})}
                 onToggleDiscoverable={(next) => void toggleDiscoverable(host, next)}
                 onConnect={() => void connectToHost(host)}
                 onDisconnect={() => void disconnectFromHost(host.id)}
-                onActivate={() =>
-                  connection &&
-                  activateHost({
-                    hostId: connection.hostId,
-                    hostName: connection.hostName,
-                    wsPath: connection.wsPath,
-                  })
-                }
+                onActivate={() => void connectToHost(host)}
                 onDeactivate={() => deactivateHost()}
               />
             );
@@ -353,8 +400,12 @@ export function ConnectionsSettingsPanel({ active }: { active: boolean }) {
         />
       </SettingsSection>
 
+      <RemotePairingPanel />
       <SettingsSection title="Sync host secrets">
-        <SyncKeyPairingPanel />
+        <SettingsListRow
+          title="Unavailable in this version"
+          description="Remote connections do not sync provider keys or account profiles."
+        />
       </SettingsSection>
 
       <SettingsSection title="Devices">
@@ -379,6 +430,7 @@ export function ConnectionsSettingsPanel({ active }: { active: boolean }) {
               device={device}
               busy={devices.revokeDevice.isPending}
               onRevoke={() => void revokeDevice(device)}
+              onRevokeAccountSessions={() => void revokeAccountSessions(device)}
             />
           ))
         )}
@@ -449,7 +501,7 @@ export function HostRow({
   reachability: HostReachability;
   busy: boolean;
   connection?: HostRowConnection;
-  onProbe: () => void;
+  onProbe?: () => void;
   onToggleDiscoverable: (discoverable: boolean) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
@@ -476,7 +528,7 @@ export function HostRow({
           {/* Reachability as of the last probe — text and emphasis, never a
               colored dot (ADR 0010; the palette has no success token). */}
           <span className={cn(reachabilityToneClassName(reachability))}>
-            {reachabilityLabel(reachability)}
+            {onProbe ? reachabilityLabel(reachability) : "Connect to verify availability"}
           </span>
           {!host.linked ? (
             <span className="text-muted-foreground">
@@ -513,19 +565,19 @@ export function HostRow({
               {connection.busy ? "Connecting..." : "Connect"}
             </Button>
           )}
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={reachability.state === "probing"}
-            onClick={onProbe}
-          >
-            {reachability.state === "probing" ? "Checking..." : "Check"}
-          </Button>
+          {onProbe ? (
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={reachability.state === "probing"}
+              onClick={onProbe}
+            >
+              {reachability.state === "probing" ? "Checking..." : "Check"}
+            </Button>
+          ) : null}
           {owned ? (
             <label className="flex items-center gap-2">
-              <span className="text-[length:var(--app-font-size-ui-sm,11px)] text-muted-foreground">
-                Discoverable
-              </span>
+              <span className="text-ui-sm text-muted-foreground">Discoverable</span>
               <Switch
                 checked={host.discoverable}
                 disabled={busy}
@@ -544,10 +596,12 @@ export function DeviceRow({
   device,
   busy,
   onRevoke,
+  onRevokeAccountSessions,
 }: {
   device: AccountDevice;
   busy: boolean;
   onRevoke: () => void;
+  onRevokeAccountSessions?: () => void;
 }) {
   const revoked = device.revokedAt !== null;
   return (
@@ -557,15 +611,30 @@ export function DeviceRow({
       description={
         <span className="flex flex-col gap-0.5">
           <span>{relativeTimeLabel(device.lastUsedAt, Date.now())}</span>
-          {revoked ? <span className="text-muted-foreground">Revoked</span> : null}
+          {revoked ? <span className="text-muted-foreground">Device key revoked</span> : null}
+          {device.revocationDeliveries?.map((delivery) => (
+            <span key={delivery.hostId} className="text-ui-xs text-muted-foreground">
+              {delivery.hostName}:{" "}
+              {delivery.confirmedAt
+                ? "revocation confirmed"
+                : "delivery pending; existing sessions expire normally"}
+            </span>
+          ))}
         </span>
       }
       actions={
-        revoked ? null : (
-          <Button size="xs" variant="destructive-outline" disabled={busy} onClick={onRevoke}>
-            Revoke
-          </Button>
-        )
+        <div className="flex flex-wrap gap-2">
+          {onRevokeAccountSessions ? (
+            <Button size="xs" variant="outline" disabled={busy} onClick={onRevokeAccountSessions}>
+              Sign out account
+            </Button>
+          ) : null}
+          {!revoked ? (
+            <Button size="xs" variant="destructive-outline" disabled={busy} onClick={onRevoke}>
+              Revoke device key
+            </Button>
+          ) : null}
+        </div>
       }
     />
   );

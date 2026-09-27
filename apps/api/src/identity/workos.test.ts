@@ -564,6 +564,31 @@ describe("request deadlines", () => {
   });
 });
 
+it("revokes the verified session across refresh rotations without ending other sign-ins", async () => {
+  const auth = createWorkosAuth(workos.config());
+  const email = `session-revoke-${crypto.randomUUID()}@example.test`;
+  await auth.createOtpChallenge({ email });
+  const first = await auth.authenticateWithOtp({
+    email,
+    code: workos.currentMagicAuth(email)!.code,
+  });
+  const binding = await auth.verifyAccessToken(first.accessToken);
+  const rotated = await auth.refreshTokens({ refreshToken: first.refreshToken });
+  expect((await auth.verifyAccessToken(rotated.accessToken)).sessionId).toBe(binding.sessionId);
+  await auth.createOtpChallenge({ email });
+  const other = await auth.authenticateWithOtp({
+    email,
+    code: workos.currentMagicAuth(email)!.code,
+  });
+  await auth.revokeSession(binding.sessionId);
+  await expect(auth.refreshTokens({ refreshToken: rotated.refreshToken })).rejects.toThrow(
+    "refresh token was rejected",
+  );
+  await expect(auth.refreshTokens({ refreshToken: other.refreshToken })).resolves.toMatchObject({
+    user: { id: binding.userId },
+  });
+});
+
 describe("refreshTokens classification", () => {
   /** A stand-in that answers the refresh grant with a fixed response. */
   async function refreshAgainst(status: number, body: unknown) {

@@ -198,7 +198,7 @@ describe("DeviceRow", () => {
   it("does not offer to revoke an already-revoked device", () => {
     const html = renderDeviceRow(makeDevice({ revokedAt: "2026-08-12T10:00:00.000Z" }));
 
-    expect(html).toContain("Revoked");
+    expect(html).toContain("Device key revoked");
     expect(html).not.toContain(">Revoke<");
   });
 

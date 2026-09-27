@@ -1,4 +1,8 @@
 import { EventEmitter } from "node:events";
+import http from "node:http";
+import type { Socket } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
+import WebSocket, { WebSocketServer } from "ws";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -29,6 +33,133 @@ class FakeSocket extends EventEmitter implements RelaySocket {
 }
 
 describe("RelayDialSupervisor", () => {
+  it("stops a native CONNECTING socket without an unhandled deferred error", async () => {
+    const server = http.createServer();
+    const sockets = new Set<Socket>();
+    server.on("connection", (socket) => sockets.add(socket));
+    let upgraded!: () => void;
+    const upgrade = new Promise<void>((resolve) => {
+      upgraded = resolve;
+    });
+    server.on("upgrade", (_request, socket) => {
+      socket.resume();
+      upgraded();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing relay listener");
+    const controller = new AbortController();
+    let dialing: WebSocket | undefined;
+    const supervisor = new RelayDialSupervisor({
+      relayUrl: `http://127.0.0.1:${address.port}`,
+      hostId: "fixture-host",
+      requestTicket: async () => "ticket",
+      reverifySessions: async () => {},
+      acceptSplice: async () => {},
+      socketFactory: (url) => (dialing = new WebSocket(url)),
+    });
+    const running = supervisor.run(controller.signal);
+    try {
+      await upgrade;
+      controller.abort();
+      await running;
+      // ws emits the CONNECTING cancellation error on the next tick. Vitest
+      // reports an unhandled error if supervision detached its observer early.
+      await delay(20);
+      expect(dialing?.readyState).toBe(WebSocket.CLOSED);
+    } finally {
+      controller.abort();
+      await running;
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("keeps native control usable after a refused splice upgrade", async () => {
+    const server = http.createServer();
+    const websocket = new WebSocketServer({ noServer: true });
+    const messages: Array<{ type: string }> = [];
+    let control: WebSocket | undefined;
+    let refused = false;
+    server.on("upgrade", (request, socket, head) => {
+      if (request.url?.startsWith("/host/control")) {
+        websocket.handleUpgrade(request, socket, head, (peer) => {
+          control = peer;
+          peer.on("message", (data) => messages.push(JSON.parse(data.toString())));
+        });
+      } else {
+        refused = true;
+        socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing relay listener");
+    const controller = new AbortController();
+    const acceptSplice = vi.fn(async () => {});
+    const supervisor = new RelayDialSupervisor({
+      relayUrl: `http://127.0.0.1:${address.port}`,
+      hostId: "2f1f9dd7-56a5-45cf-b847-12e6658f3720",
+      requestTicket: async () => "ticket",
+      reverifySessions: async () => {},
+      acceptSplice,
+    });
+    const running = supervisor.run(controller.signal);
+    try {
+      await vi.waitFor(() => expect(messages).toContainEqual({ v: 1, type: "ready" }));
+      const originalControl = control!;
+      originalControl.send(
+        JSON.stringify({
+          v: 1,
+          type: "splice_request",
+          spliceId: "a".repeat(43),
+          hostId: "2f1f9dd7-56a5-45cf-b847-12e6658f3720",
+          userId: "member",
+          deviceJkt: "device-jkt",
+          expiresAtMs: Date.now() + 30_000,
+        }),
+      );
+      await vi.waitFor(() => expect(refused).toBe(true));
+      originalControl.send(JSON.stringify({ v: 1, type: "ping" }));
+      await vi.waitFor(() => expect(messages).toContainEqual({ v: 1, type: "pong" }));
+      expect(originalControl.readyState).toBe(WebSocket.OPEN);
+      expect(acceptSplice).not.toHaveBeenCalled();
+    } finally {
+      controller.abort();
+      await running;
+      for (const peer of websocket.clients) peer.terminate();
+      websocket.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("stops while the account ticket request is unresolved and ignores its late answer", async () => {
+    let answer!: (ticket: string) => void;
+    const requestTicket = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const socketFactory = vi.fn(() => new FakeSocket());
+    const controller = new AbortController();
+    const supervisor = new RelayDialSupervisor({
+      relayUrl: "https://relay.example.test",
+      hostId: "fixture-host",
+      requestTicket,
+      socketFactory,
+      acceptSplice: async () => {},
+      reverifySessions: async () => {},
+    });
+    const running = supervisor.run(controller.signal);
+    await vi.waitFor(() => expect(requestTicket).toHaveBeenCalledOnce());
+    controller.abort();
+    await running;
+    answer("late-ticket");
+    await Promise.resolve();
+    expect(socketFactory).not.toHaveBeenCalled();
+  });
+
   it("keeps a valid revocation control socket open when reverification is unavailable", async () => {
     const hostId = "2f1f9dd7-56a5-45cf-b847-12e6658f3720";
     const sockets: FakeSocket[] = [];

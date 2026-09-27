@@ -7,6 +7,7 @@
 import type { AccountStatus } from "@synara/contracts";
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
+import { remoteHostQueryKeys } from "./hosts/queries";
 
 import {
   accountQueryKeys,
@@ -53,13 +54,45 @@ describe("accountUsageSummaryQueryOptions", () => {
 describe("watchAccountIdentityChanges", () => {
   const utcOffsetMinutes = 120;
 
+  it("cancels an old account's pending directory and does not resurrect it after an organization switch", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const a = signedIn("user_a");
+    queryClient.setQueryData(accountQueryKeys.status(), a);
+    const unsubscribe = watchAccountIdentityChanges(queryClient);
+    const oldKey = remoteHostQueryKeys.hosts();
+    let finish!: (hosts: string[]) => void;
+    const pending = queryClient
+      .fetchQuery({
+        queryKey: oldKey,
+        queryFn: () =>
+          new Promise<string[]>((resolve) => {
+            finish = resolve;
+          }),
+      })
+      .catch(() => undefined);
+    if (a.state !== "signed-in") throw new Error("fixture must be signed in");
+    queryClient.setQueryData(accountQueryKeys.status(), {
+      ...a,
+      me: { ...a.me, organization: { id: "other-org", name: "Other workspace" } },
+    });
+    const newKey = remoteHostQueryKeys.hosts();
+    expect(newKey).not.toEqual(oldKey);
+    queryClient.setQueryData(newKey, ["new workspace host"]);
+    finish(["private old workspace host"]);
+    await pending;
+    expect(queryClient.getQueryData(oldKey)).toBeUndefined();
+    expect(queryClient.getQueryData(newKey)).toEqual(["new workspace host"]);
+    unsubscribe();
+    queryClient.clear();
+  });
+
   it("evicts account-scoped queries when a status write reveals a new identity", () => {
     const queryClient = new QueryClient();
     queryClient.setQueryData<AccountStatus>(accountQueryKeys.status(), signedIn("user_a"));
+    const unsubscribe = watchAccountIdentityChanges(queryClient);
     queryClient.setQueryData(accountQueryKeys.usageSummary("user_a", utcOffsetMinutes), {
       lifetimeTokens: 42,
     });
-    const unsubscribe = watchAccountIdentityChanges(queryClient);
 
     // Another client signed out A and signed in B; this client only sees the
     // result of its own status refetch landing in the cache.
@@ -74,10 +107,10 @@ describe("watchAccountIdentityChanges", () => {
   it("evicts account-scoped queries when a status refetch reveals a sign-out", () => {
     const queryClient = new QueryClient();
     queryClient.setQueryData<AccountStatus>(accountQueryKeys.status(), signedIn("user_a"));
+    const unsubscribe = watchAccountIdentityChanges(queryClient);
     queryClient.setQueryData(accountQueryKeys.usageSummary("user_a", utcOffsetMinutes), {
       lifetimeTokens: 42,
     });
-    const unsubscribe = watchAccountIdentityChanges(queryClient);
 
     queryClient.setQueryData<AccountStatus>(accountQueryKeys.status(), { state: "signed-out" });
 
@@ -90,10 +123,10 @@ describe("watchAccountIdentityChanges", () => {
   it("keeps account-scoped queries across same-identity status refreshes", () => {
     const queryClient = new QueryClient();
     queryClient.setQueryData<AccountStatus>(accountQueryKeys.status(), signedIn("user_a"));
+    const unsubscribe = watchAccountIdentityChanges(queryClient);
     queryClient.setQueryData(accountQueryKeys.usageSummary("user_a", utcOffsetMinutes), {
       lifetimeTokens: 42,
     });
-    const unsubscribe = watchAccountIdentityChanges(queryClient);
 
     // Routine refetches (token refresh, window focus) answer the same user.
     queryClient.setQueryData<AccountStatus>(accountQueryKeys.status(), signedIn("user_a"));
@@ -107,10 +140,10 @@ describe("watchAccountIdentityChanges", () => {
   it("ignores writes to unrelated query keys", () => {
     const queryClient = new QueryClient();
     queryClient.setQueryData<AccountStatus>(accountQueryKeys.status(), signedIn("user_a"));
+    const unsubscribe = watchAccountIdentityChanges(queryClient);
     queryClient.setQueryData(accountQueryKeys.usageSummary("user_a", utcOffsetMinutes), {
       lifetimeTokens: 42,
     });
-    const unsubscribe = watchAccountIdentityChanges(queryClient);
 
     queryClient.setQueryData(["something", "else"], { whatever: true });
 

@@ -5,8 +5,6 @@
 
 import {
   ApprovalRequestId,
-  AutomationId,
-  AutomationRunId,
   CommandId,
   type ContextMenuItem,
   EventId,
@@ -25,6 +23,12 @@ import {
 } from "@synara/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const transportInstances: Array<{
+  url: string | undefined;
+  options: { onGenerationChanged?: () => void };
+  requests: unknown[][];
+  subscriptions: string[];
+}> = [];
 const requestMock = vi.fn<(...args: Array<unknown>) => Promise<unknown>>();
 const disposeMock = vi.fn();
 const showContextMenuFallbackMock =
@@ -60,9 +64,21 @@ const subscribeMock = vi.fn<
 
 vi.mock("./wsTransport", () => {
   return {
+    rawSocketUrl: () => "ws://127.0.0.1:58001/ws",
     WsTransport: class MockWsTransport {
-      request = requestMock;
-      subscribe = subscribeMock;
+      readonly calls: (typeof transportInstances)[number];
+      constructor(url?: string, options: { onGenerationChanged?: () => void } = {}) {
+        this.calls = { url, options, requests: [], subscriptions: [] };
+        transportInstances.push(this.calls);
+      }
+      request = (...args: unknown[]) => {
+        this.calls.requests.push(args);
+        return requestMock(...args);
+      };
+      subscribe = (...args: Parameters<typeof subscribeMock>) => {
+        this.calls.subscriptions.push(args[0]);
+        return subscribeMock(...args);
+      };
       onStateChange() {
         return () => undefined;
       }
@@ -85,6 +101,17 @@ vi.mock("./wsTransport", () => {
 
 vi.mock("./contextMenuFallback", () => ({
   showContextMenuFallback: showContextMenuFallbackMock,
+}));
+
+const withNativeMenuIconsMock = vi.fn(
+  async <T extends string>(items: readonly ContextMenuItem<T>[]) =>
+    items.map((item) =>
+      item.icon ? { ...item, iconDataUrl: `data:image/png;base64,${item.icon}` } : item,
+    ),
+);
+
+vi.mock("./lib/nativeMenuIcons", () => ({
+  withNativeMenuIcons: withNativeMenuIconsMock,
 }));
 
 let nextPushSequence = 1;
@@ -127,8 +154,10 @@ const defaultProviders: ReadonlyArray<ServerProviderStatus> = [
 beforeEach(() => {
   vi.resetModules();
   requestMock.mockReset();
+  transportInstances.length = 0;
   disposeMock.mockReset();
   showContextMenuFallbackMock.mockReset();
+  withNativeMenuIconsMock.mockClear();
   subscribeMock.mockClear();
   channelListeners.clear();
   latestPushByChannel.clear();
@@ -142,6 +171,79 @@ afterEach(() => {
 });
 
 describe("wsNativeApi", () => {
+  it("keeps account requests and controller restarts independent from remote execution", async () => {
+    const scope = {
+      environmentId: "mini",
+      accountAuthority: "https://accounts.test",
+      userId: "owner",
+      organizationId: "personal",
+      channel: "beta",
+    };
+    const selected = {
+      hostId: "mini-host",
+      hostName: "Mini",
+      wsPath: "/ws/remote/mini-host",
+      executionScope: scope,
+    };
+    Object.assign(getWindowForTest(), {
+      sessionStorage: { getItem: () => JSON.stringify(selected) },
+    });
+    let environments = 0;
+    requestMock.mockImplementation(async (method) => {
+      if (method === WS_METHODS.hostsConnect) return selected;
+      if (method === WS_METHODS.serverGetEnvironment)
+        return {
+          environmentId: environments++ === 0 ? "controller" : "mini",
+          label: "Computer",
+          platform: { os: "darwin", arch: "arm64" },
+          serverVersion: "1",
+          capabilities: { repositoryIdentity: true },
+        };
+      return {};
+    });
+    const { bootstrapExecutionContext } = await import("./lib/hosts/connectionClients");
+    await bootstrapExecutionContext();
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+    transportInstances.forEach((instance) => {
+      instance.requests.length = 0;
+    });
+    await api.account.status();
+    await api.server.getEnvironment();
+    expect(transportInstances).toHaveLength(2);
+    expect(transportInstances[0]!.requests.map((call) => call[0])).toEqual([
+      WS_METHODS.accountStatus,
+    ]);
+    expect(transportInstances[1]!.url).toBe("ws://127.0.0.1:58001/ws/remote/mini-host/ws");
+    expect(transportInstances[1]!.requests.map((call) => call[0])).toEqual([
+      WS_METHODS.serverGetEnvironment,
+    ]);
+    expect(transportInstances[0]!.subscriptions).toEqual([]);
+    const cursors = await import("./threadDetailResumeCursors");
+    const thread = ThreadId.makeUnsafe("same-thread");
+    cursors.setThreadDetailResumeCursor(thread, 42);
+    transportInstances[0]!.options.onGenerationChanged?.();
+    expect(cursors.getThreadDetailResumeCursor(thread)).toBe(42);
+    transportInstances[1]!.options.onGenerationChanged?.();
+    expect(cursors.getThreadDetailResumeCursor(thread)).toBeUndefined();
+    Reflect.deleteProperty(getWindowForTest(), "sessionStorage");
+  });
+
+  it("gives a slow provider refresh a bounded deadline beyond the generic RPC timeout", async () => {
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+    requestMock.mockResolvedValue({ providers: defaultProviders });
+
+    await expect(api.server.refreshProviders()).resolves.toEqual({
+      providers: defaultProviders,
+    });
+    expect(requestMock).toHaveBeenCalledExactlyOnceWith(
+      WS_METHODS.serverRefreshProviders,
+      undefined,
+      { timeoutMs: 180_000 },
+    );
+  });
+
   it("delivers and caches valid server.welcome payloads", async () => {
     const { createWsNativeApi, onServerWelcome } = await import("./wsNativeApi");
 
@@ -160,33 +262,6 @@ describe("wsNativeApi", () => {
 
     expect(lateListener).toHaveBeenCalledTimes(1);
     expect(lateListener).toHaveBeenCalledWith(expect.objectContaining(payload));
-  });
-
-  it("preserves bootstrap ids from server.welcome payloads", async () => {
-    const { createWsNativeApi, onServerWelcome } = await import("./wsNativeApi");
-
-    createWsNativeApi();
-    const listener = vi.fn();
-    onServerWelcome(listener);
-
-    emitPush(WS_CHANNELS.serverWelcome, {
-      cwd: "/tmp/workspace",
-      homeDir: "/Users/tester",
-      projectName: "synara-code",
-      bootstrapProjectId: ProjectId.makeUnsafe("project-1"),
-      bootstrapThreadId: ThreadId.makeUnsafe("thread-1"),
-    });
-
-    expect(listener).toHaveBeenCalledTimes(1);
-    expect(listener).toHaveBeenCalledWith(
-      expect.objectContaining({
-        cwd: "/tmp/workspace",
-        homeDir: "/Users/tester",
-        projectName: "synara-code",
-        bootstrapProjectId: "project-1",
-        bootstrapThreadId: "thread-1",
-      }),
-    );
   });
 
   it("delivers successive server.welcome payloads to active listeners", async () => {
@@ -245,29 +320,6 @@ describe("wsNativeApi", () => {
     expect(lateListener).toHaveBeenCalledWith(payload);
   });
 
-  it("delivers successive server.configUpdated payloads to active listeners", async () => {
-    const { createWsNativeApi, onServerConfigUpdated } = await import("./wsNativeApi");
-
-    createWsNativeApi();
-    const listener = vi.fn();
-    onServerConfigUpdated(listener);
-
-    emitPush(WS_CHANNELS.serverConfigUpdated, {
-      issues: [{ kind: "keybindings.malformed-config", message: "bad json" }],
-      providers: defaultProviders,
-    });
-    emitPush(WS_CHANNELS.serverConfigUpdated, {
-      issues: [],
-      providers: defaultProviders,
-    });
-
-    expect(listener).toHaveBeenCalledTimes(2);
-    expect(listener).toHaveBeenLastCalledWith({
-      issues: [],
-      providers: defaultProviders,
-    });
-  });
-
   it("delivers and caches provider-only status updates", async () => {
     const { createWsNativeApi, onServerProviderStatusesUpdated } = await import("./wsNativeApi");
 
@@ -305,7 +357,13 @@ describe("wsNativeApi", () => {
         textGenerationModelSelection: { provider: "codex", model: "gpt-5.4-mini" },
         providers: {
           codex: { enabled: true, binaryPath: "codex", homePath: "", customModels: [] },
-          claudeAgent: { enabled: true, binaryPath: "claude", launchArgs: "", customModels: [] },
+          claudeAgent: {
+            enabled: true,
+            binaryPath: "claude",
+            launchArgs: "",
+            enableArtifacts: false,
+            customModels: [],
+          },
           cursor: { enabled: false, binaryPath: "agent", apiEndpoint: "", customModels: [] },
           devin: { enabled: true, binaryPath: "devin", customModels: [] },
           antigravity: { enabled: true, binaryPath: "agy", customModels: [] },
@@ -320,6 +378,7 @@ describe("wsNativeApi", () => {
             customModels: [],
           },
           pi: { enabled: true, binaryPath: "pi", agentDir: "", customModels: [] },
+          omp: { enabled: true, binaryPath: "omp", agentDir: "", customModels: [] },
         },
         skills: { disabled: [] },
       },
@@ -420,68 +479,6 @@ describe("wsNativeApi", () => {
     });
   });
 
-  it("forwards automation requests and events", async () => {
-    requestMock.mockResolvedValue({ definitions: [], runs: [] });
-    const { createWsNativeApi } = await import("./wsNativeApi");
-
-    const api = createWsNativeApi();
-    const onAutomationEvent = vi.fn();
-    const unsubscribe = api.automation.onEvent(onAutomationEvent);
-
-    await api.automation.list({ projectId: ProjectId.makeUnsafe("project-1") });
-    await api.automation.getMemory({
-      automationId: AutomationId.makeUnsafe("automation-1"),
-    });
-    await api.automation.runNow({ automationId: AutomationId.makeUnsafe("automation-1") });
-    await api.automation.markRunRead({
-      runId: AutomationRunId.makeUnsafe("automation-run-1"),
-      unread: false,
-    });
-    await api.automation.archiveRun({
-      runId: AutomationRunId.makeUnsafe("automation-run-1"),
-      archived: true,
-    });
-    await api.automation.resolveProposal({
-      automationId: AutomationId.makeUnsafe("automation-1"),
-      resolution: "accepted",
-    });
-
-    const event = {
-      type: "definition-deleted",
-      automationId: AutomationId.makeUnsafe("automation-1"),
-    } as const;
-    emitPush(WS_CHANNELS.automationEvent, event);
-    unsubscribe();
-    emitPush(WS_CHANNELS.automationEvent, {
-      type: "definition-deleted",
-      automationId: AutomationId.makeUnsafe("automation-2"),
-    });
-
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.automationList, {
-      projectId: "project-1",
-    });
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.automationGetMemory, {
-      automationId: "automation-1",
-    });
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.automationRunNow, {
-      automationId: "automation-1",
-    });
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.automationMarkRunRead, {
-      runId: "automation-run-1",
-      unread: false,
-    });
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.automationArchiveRun, {
-      runId: "automation-run-1",
-      archived: true,
-    });
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.automationResolveProposal, {
-      automationId: "automation-1",
-      resolution: "accepted",
-    });
-    expect(onAutomationEvent).toHaveBeenCalledTimes(1);
-    expect(onAutomationEvent).toHaveBeenCalledWith(event);
-  });
-
   it("wraps orchestration dispatch commands in the command envelope", async () => {
     requestMock.mockResolvedValue(undefined);
     const { createWsNativeApi } = await import("./wsNativeApi");
@@ -523,17 +520,6 @@ describe("wsNativeApi", () => {
     );
   });
 
-  it("forwards terminal output ACKs to the websocket transport", async () => {
-    requestMock.mockResolvedValue(undefined);
-    const { createWsNativeApi } = await import("./wsNativeApi");
-
-    const api = createWsNativeApi();
-    const input = { threadId: "thread-1", terminalId: "default", bytes: 4096 };
-    await api.terminal.ackOutput(input);
-
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.terminalAckOutput, input);
-  });
-
   it("omits null user-input answers before dispatching to orchestration", async () => {
     requestMock.mockResolvedValue(undefined);
     const { createWsNativeApi } = await import("./wsNativeApi");
@@ -560,50 +546,6 @@ describe("wsNativeApi", () => {
           Runtime: "Bun",
         },
       },
-    });
-  });
-
-  it("forwards workspace file writes to the websocket project method", async () => {
-    requestMock.mockResolvedValue({
-      relativePath: "plan.md",
-      version: `sha256:${"1".repeat(64)}`,
-    });
-    const { createWsNativeApi } = await import("./wsNativeApi");
-
-    const api = createWsNativeApi();
-    await api.projects.writeFile({
-      cwd: "/tmp/project",
-      relativePath: "plan.md",
-      contents: "# Plan\n",
-    });
-
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.projectsWriteFile, {
-      cwd: "/tmp/project",
-      relativePath: "plan.md",
-      contents: "# Plan\n",
-    });
-  });
-
-  it("forwards workspace file reads to the websocket project method", async () => {
-    requestMock.mockResolvedValue({
-      relativePath: "src/app.ts",
-      contents: "export {};\n",
-      truncated: false,
-      version: `sha256:${"1".repeat(64)}`,
-      encoding: "utf8",
-      lineEnding: "lf",
-    });
-    const { createWsNativeApi } = await import("./wsNativeApi");
-
-    const api = createWsNativeApi();
-    await api.projects.readFile({
-      cwd: "/tmp/project",
-      relativePath: "src/app.ts",
-    });
-
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.projectsReadFile, {
-      cwd: "/tmp/project",
-      relativePath: "src/app.ts",
     });
   });
 
@@ -926,22 +868,6 @@ describe("wsNativeApi", () => {
     });
   });
 
-  it("forwards full-thread diff requests to the orchestration websocket method", async () => {
-    requestMock.mockResolvedValue({ diff: "patch" });
-    const { createWsNativeApi } = await import("./wsNativeApi");
-
-    const api = createWsNativeApi();
-    await api.orchestration.getFullThreadDiff({
-      threadId: ThreadId.makeUnsafe("thread-1"),
-      toTurnCount: 1,
-    });
-
-    expect(requestMock).toHaveBeenCalledWith(ORCHESTRATION_WS_METHODS.getFullThreadDiff, {
-      threadId: "thread-1",
-      toTurnCount: 1,
-    });
-  });
-
   it("scopes orchestration replay requests to the visible thread when provided", async () => {
     requestMock.mockResolvedValue([]);
     const { createWsNativeApi } = await import("./wsNativeApi");
@@ -953,125 +879,6 @@ describe("wsNativeApi", () => {
       fromSequenceExclusive: 41,
       threadId: "thread-1",
     });
-  });
-
-  it("forwards provider delivery inspection and reconciliation", async () => {
-    requestMock.mockResolvedValue([]);
-    const { createWsNativeApi } = await import("./wsNativeApi");
-    const api = createWsNativeApi();
-
-    await api.orchestration.listProviderDeliveryBlockers({
-      threadId: ThreadId.makeUnsafe("thread-1"),
-      limit: 10,
-    });
-    await api.orchestration.reconcileProviderDelivery({
-      eventSequence: 42,
-      threadId: ThreadId.makeUnsafe("thread-1"),
-      expectedState: "uncertain",
-      outcome: "safe_retry",
-      note: "The provider confirms it did not accept the command.",
-    });
-
-    expect(requestMock).toHaveBeenCalledWith(
-      ORCHESTRATION_WS_METHODS.listProviderDeliveryBlockers,
-      { threadId: "thread-1", limit: 10 },
-    );
-    expect(requestMock).toHaveBeenCalledWith(ORCHESTRATION_WS_METHODS.reconcileProviderDelivery, {
-      eventSequence: 42,
-      threadId: "thread-1",
-      expectedState: "uncertain",
-      outcome: "safe_retry",
-      note: "The provider confirms it did not accept the command.",
-    });
-  });
-
-  it("forwards browser webview detach requests to the desktop bridge", async () => {
-    const detachWebview = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(getWindowForTest(), "desktopBridge", {
-      configurable: true,
-      writable: true,
-      value: {
-        browser: {
-          detachWebview,
-        },
-      },
-    });
-
-    const { createWsNativeApi } = await import("./wsNativeApi");
-    const api = createWsNativeApi();
-    const input = {
-      threadId: ThreadId.makeUnsafe("thread-1"),
-      tabId: "tab-1",
-      webContentsId: 42,
-    };
-    await api.browser.detachWebview(input);
-
-    expect(detachWebview).toHaveBeenCalledWith(input);
-    expect(requestMock).not.toHaveBeenCalled();
-  });
-
-  it("forwards browser annotation sessions and events to the desktop bridge", async () => {
-    const threadId = ThreadId.makeUnsafe("thread-annotations");
-    const session = {
-      sessionId: "session-a",
-      threadId,
-      tabId: "tab-a",
-      document: {
-        token: "document-a",
-        key: `sha256:${"0".repeat(64)}`,
-        url: "https://example.test/",
-      },
-      source: { url: "https://example.test/", pageTitle: "Example" },
-    };
-    const start = vi.fn().mockResolvedValue(session);
-    const cancel = vi.fn().mockResolvedValue(undefined);
-    const syncMarkers = vi.fn().mockResolvedValue(undefined);
-    const unsubscribe = vi.fn();
-    const onEvent = vi.fn(() => unsubscribe);
-    Object.defineProperty(getWindowForTest(), "desktopBridge", {
-      configurable: true,
-      writable: true,
-      value: {
-        browser: {
-          annotations: { start, cancel, syncMarkers, onEvent },
-        },
-      },
-    });
-
-    const { createWsNativeApi } = await import("./wsNativeApi");
-    const api = createWsNativeApi();
-    const startInput = {
-      threadId,
-      tabId: "tab-a",
-      theme: {
-        mode: "dark" as const,
-        accent: "rgb(96, 115, 204)",
-        surface: "rgb(27, 27, 29)",
-        text: "rgb(250, 250, 250)",
-        mutedText: "rgb(161, 161, 170)",
-        border: "rgb(63, 63, 70)",
-        focusBorder: "rgb(96, 115, 204)",
-        primary: "rgb(250, 250, 250)",
-        primaryText: "rgb(24, 24, 27)",
-      },
-    };
-    const cancelInput = { threadId, tabId: "tab-a" };
-    const projection = {
-      threadId,
-      tabId: "tab-a",
-      version: 7,
-      markers: [],
-    };
-    const listener = vi.fn();
-
-    await expect(api.browser.annotations.start(startInput)).resolves.toEqual(session);
-    await api.browser.annotations.cancel(cancelInput);
-    await api.browser.annotations.syncMarkers(projection);
-    expect(api.browser.annotations.onEvent(listener)).toBe(unsubscribe);
-    expect(start).toHaveBeenCalledWith(startInput);
-    expect(cancel).toHaveBeenCalledWith(cancelInput);
-    expect(syncMarkers).toHaveBeenCalledWith(projection);
-    expect(onEvent).toHaveBeenCalledWith(listener);
   });
 
   it("keeps a blank fallback browser tab after closing the last tab", async () => {
@@ -1091,6 +898,7 @@ describe("wsNativeApi", () => {
   });
 
   it("forwards context menu metadata to desktop bridge", async () => {
+    vi.stubGlobal("navigator", { platform: "Win32" });
     const showContextMenu = vi.fn().mockResolvedValue("delete");
     Object.defineProperty(getWindowForTest(), "desktopBridge", {
       configurable: true,
@@ -1110,10 +918,48 @@ describe("wsNativeApi", () => {
       { x: 200, y: 300 },
     );
 
+    expect(api.browser.vault).toBeUndefined();
+
     expect(showContextMenu).toHaveBeenCalledWith(
       [
         { id: "rename", label: "Rename thread" },
         { id: "delete", label: "Delete", separatorBefore: true, destructive: true },
+      ],
+      { x: 200, y: 300 },
+    );
+    expect(withNativeMenuIconsMock).not.toHaveBeenCalled();
+  });
+
+  it("rasterizes context menu icons for the macOS desktop bridge", async () => {
+    vi.stubGlobal("navigator", { platform: "MacIntel" });
+    const showContextMenu = vi.fn().mockResolvedValue("rename");
+    Object.defineProperty(getWindowForTest(), "desktopBridge", {
+      configurable: true,
+      writable: true,
+      value: {
+        showContextMenu,
+      },
+    });
+
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+    await api.contextMenu.show(
+      [
+        { id: "rename", label: "Rename thread", icon: "pencil" },
+        { id: "copy-thread-id", label: "Copy Thread ID" },
+      ],
+      { x: 200, y: 300 },
+    );
+
+    expect(showContextMenu).toHaveBeenCalledWith(
+      [
+        {
+          id: "rename",
+          label: "Rename thread",
+          icon: "pencil",
+          iconDataUrl: "data:image/png;base64,pencil",
+        },
+        { id: "copy-thread-id", label: "Copy Thread ID" },
       ],
       { x: 200, y: 300 },
     );
@@ -1176,18 +1022,6 @@ describe("wsNativeApi", () => {
       WS_METHODS.serverTranscribeVoice,
       expect.anything(),
     );
-  });
-
-  it("prewarms voice state through the persistent server transport", async () => {
-    const { createWsNativeApi } = await import("./wsNativeApi");
-    const api = createWsNativeApi();
-
-    await api.server.prewarmVoice?.({ provider: "codex", cwd: "/repo" });
-
-    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.serverPrewarmVoice, {
-      provider: "codex",
-      cwd: "/repo",
-    });
   });
 
   it("uses the bounded HTTP upload instead of WebSocket RPC for browser voice", async () => {

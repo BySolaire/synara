@@ -40,6 +40,7 @@ const authHeaders = (token: string) => ({
 
 describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
   const databaseUrl = TEST_DATABASE_URL as string;
+  let database: ReturnType<typeof createDb>;
   let pool: ReturnType<typeof createDb>["pool"];
   let workos: FakeWorkos;
   let config: WorkosApiConfig;
@@ -73,7 +74,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
   }
 
   function buildApp() {
-    const { db } = createDb(databaseUrl);
+    const { db } = database;
     const { verifier, grants } = createWorkosIdentityProvider(config);
     const app = new Hono();
     const revocations = createRevocationLog(db);
@@ -269,12 +270,13 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
       issuer: config.apiPublicUrl,
       seed: config.apiSigningKey,
     });
-    pool = createDb(databaseUrl).pool;
+    database = createDb(databaseUrl);
+    pool = database.pool;
   });
 
   afterAll(async () => {
-    await pool.end();
-    await workos.close();
+    await pool?.end();
+    await workos?.close();
   });
 
   beforeEach(() => clearOrgCache());
@@ -718,7 +720,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
       ).toBe(204);
     });
 
-    it("requires PoP, scopes identical jkt per user, and permits re-register after revoke", async () => {
+    it("requires PoP, scopes identical jkt per user, and refuses re-register after revoke", async () => {
       const { app } = buildApp();
       const a = await signIn();
       const b = await signIn();
@@ -764,9 +766,46 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
           })
         ).status,
       ).toBe(204);
-      const replacement = await registerDevice(app, a, key);
-      expect(replacement.id).not.toBe(first.id);
-      expect(replacement.jkt).toBe(first.jkt);
+      const replacement = await app.request("/api/v1/devices", {
+        method: "POST",
+        headers: authHeaders(a.token),
+        body: JSON.stringify({ proof: await deviceProof(key, a.userId) }),
+      });
+      expect(replacement.status).toBe(403);
+      expect(await replacement.json()).toMatchObject({ error: "device_not_registered" });
+    });
+
+    it("binds verified sessions and independently revokes account access with retryable provider delivery", async () => {
+      const { app, db } = buildApp();
+      const owner = await signIn();
+      const other = await signIn(owner);
+      const outsider = await signIn();
+      const device = await registerDevice(app, owner);
+      const path = `/api/v1/devices/${device.id}/account-sessions`;
+      expect(
+        (await app.request(path, { method: "DELETE", headers: authHeaders(outsider.token) }))
+          .status,
+      ).toBe(404);
+      // Local tombstone is committed even when the provider is unavailable.
+      workos.failNextSessionRevocation();
+      const pending = await app.request(path, {
+        method: "DELETE",
+        headers: authHeaders(other.token),
+      });
+      expect(pending.status).toBe(202);
+      expect(await pending.json()).toEqual({ confirmed: 0, pending: 1 });
+      expect(
+        (await app.request("/api/v1/devices", { headers: authHeaders(owner.token) })).status,
+      ).toBe(401);
+      const retried = await app.request(path, {
+        method: "DELETE",
+        headers: authHeaders(other.token),
+      });
+      expect(retried.status).toBe(200);
+      expect(await retried.json()).toEqual({ confirmed: 1, pending: 0 });
+      expect(
+        (await db.select().from(devices).where(eq(devices.id, device.id)))[0]?.revokedAt,
+      ).toBeNull();
     });
 
     it("revocation over-notifies every host in the user's organizations", async () => {
@@ -793,10 +832,79 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
         new Set([ownHost.id, mateHost.id]),
       );
     });
+
+    it("reports host revocation as pending until that host proves durable delivery", async () => {
+      const { app } = buildApp();
+      const owner = await signIn();
+      const first = await linkHost(app, owner, { environmentId: randomUUID() });
+      const second = await linkHost(app, owner, { environmentId: randomUUID() });
+      const device = await registerDevice(app, owner);
+      expect(
+        (
+          await app.request(`/api/v1/devices/${device.id}`, {
+            method: "DELETE",
+            headers: authHeaders(owner.token),
+          })
+        ).status,
+      ).toBe(204);
+      const read = async () => {
+        const response = await app.request("/api/v1/devices", {
+          headers: authHeaders(owner.token),
+        });
+        const body = (await response.json()) as {
+          devices: Array<{
+            id: string;
+            revocationDeliveries: Array<{ hostId: string; confirmedAt: string | null }>;
+          }>;
+        };
+        return body.devices.find((entry) => entry.id === device.id)!.revocationDeliveries;
+      };
+      expect(await read()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ hostId: first.id, confirmedAt: null }),
+          expect.objectContaining({ hostId: second.id, confirmedAt: null }),
+        ]),
+      );
+      const endpoint = `/api/v1/hosts/${first.id}/device-revocations/ack`;
+      const body = JSON.stringify({ deviceJkts: [device.jkt] });
+      expect(
+        (await app.request(endpoint, { method: "POST", headers: authHeaders(owner.token), body }))
+          .status,
+      ).toBe(401);
+      expect(
+        (
+          await app.request(endpoint, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: `HostProof ${await hostProof(second.key, second)}`,
+            },
+            body,
+          })
+        ).status,
+      ).not.toBe(204);
+      expect(
+        (
+          await app.request(endpoint, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: `HostProof ${await hostProof(first.key, first)}`,
+            },
+            body,
+          })
+        ).status,
+      ).toBe(204);
+      const delivered = await read();
+      expect(delivered.find((entry) => entry.hostId === first.id)!.confirmedAt).toEqual(
+        expect.any(String),
+      );
+      expect(delivered.find((entry) => entry.hostId === second.id)!.confirmedAt).toBeNull();
+    });
   });
 
   describe("5. grants", () => {
-    it("issues owner and discoverable-member grants carrying the device cnf", async () => {
+    it("issues owner grants with device binding and denies discoverable members", async () => {
       const { app } = buildApp();
       const owner = await signIn();
       const member = await teammate(owner);
@@ -808,6 +916,11 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
           headers: authHeaders(session.token),
           body: JSON.stringify({ deviceJkt: device.jkt }),
         });
+        if (session === member) {
+          expect(response.status).toBe(403);
+          expect(await response.json()).toMatchObject({ error: "not_host_owner" });
+          continue;
+        }
         expect(response.status).toBe(200);
         const { grant } = (await response.json()) as { grant: string };
         const payload = await signing.verify(grant, {
@@ -906,30 +1019,6 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
       ).toBe(409);
     });
 
-    it("refuses a departed owner and lazily emits org_departure", async () => {
-      const { app, db } = buildApp();
-      const owner = await signIn();
-      const member = await teammate(owner);
-      const host = await linkSharedHost(app, owner, { environmentId: randomUUID() });
-      const device = await registerDevice(app, member);
-      workos.removeMembership(owner.orgId, owner.userId);
-      clearOrgCache();
-      const response = await app.request(`/api/v1/hosts/${host.id}/grant`, {
-        method: "POST",
-        headers: authHeaders(member.token),
-        body: JSON.stringify({ deviceJkt: device.jkt }),
-      });
-      expect(response.status).toBe(403);
-      expect(
-        await db
-          .select()
-          .from(revocationEvents)
-          .where(
-            and(eq(revocationEvents.hostId, host.id), eq(revocationEvents.kind, "org_departure")),
-          ),
-      ).not.toHaveLength(0);
-    });
-
     it("does not mint across a concurrent device revoke or host unlink", async () => {
       const { app } = buildApp();
       const owner = await signIn();
@@ -955,7 +1044,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
         revoking.release();
       }
 
-      const replacement = await registerDevice(app, owner, device.key);
+      const replacement = await registerDevice(app, owner);
       const unlinking = await pool.connect();
       try {
         await unlinking.query("BEGIN");

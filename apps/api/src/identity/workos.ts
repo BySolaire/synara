@@ -570,6 +570,25 @@ export function createWorkosIdentityProvider(config: WorkosApiConfig): {
   }
 
   const verifier: AccountIdentityVerifier = {
+    async revokeSession(sessionId) {
+      const response = await fetchWithDeadline(
+        `${config.workosApiUrl}/user_management/sessions/revoke`,
+        "/user_management/sessions/revoke",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${config.workosApiKey}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ session_id: sessionId }),
+        },
+      );
+      if (!response.ok) {
+        // Never echo the provider body or the session identifier.
+        throw new IdentityProviderError(response.status, "Account session revocation failed");
+      }
+    },
+
     async verifyAccessToken(token) {
       const { issuer, jwks } = await resolveVerificationKeys();
       const { payload } = await jwtVerify(token, jwks, { issuer });

@@ -1,3 +1,16 @@
+import {
+  remoteMethodUnavailable,
+  REMOTE_NATIVE_UNAVAILABLE,
+} from "@synara/shared/remoteCapabilities";
+import { readExecutionContext } from "./lib/hosts/executionContext";
+import {
+  getConnectionClients,
+  setExecutionGenerationHandler,
+  disposeConnectionClients,
+} from "./lib/hosts/connectionClients";
+import { resetThreadDetailResumeCursors } from "./threadDetailResumeCursors";
+import { useDeviceStateStore } from "./deviceStateStore";
+import { useComputerStateStore } from "./computerStateStore";
 // FILE: wsNativeApi.ts
 // Purpose: NativeApi implementation backed by the browser WebSocket RPC transport.
 // Layer: Web transport adapter
@@ -48,15 +61,19 @@ import {
   DEVICE_WS_CHANNELS,
   DEVICE_WS_METHODS,
   type DeviceEvent,
+  COMPUTER_WS_CHANNELS,
+  COMPUTER_WS_METHODS,
+  type ComputerEvent,
 } from "@synara/contracts";
-import { VOICE_TRANSCRIPTION_UPLOAD_ROUTE_PATH } from "@synara/shared/binaryTransfer";
 
 import { showConfirmDialogFallback } from "./confirmDialogFallback";
 import { showContextMenuFallback } from "./contextMenuFallback";
 import { requireHttpExternalUrl } from "./lib/externalUrl";
-import { WsTransport, type WsThreadStreamFailure } from "./wsTransport";
+import { withNativeMenuIcons } from "./lib/nativeMenuIcons";
+import { isMacNavigatorPlatform } from "./lib/utils";
+import { type WsTransport, type WsThreadStreamFailure } from "./wsTransport";
 import { emitWsCompatibilityIssue, emitWsTransportState } from "./wsTransportEvents";
-import { resolveWsHttpUrl } from "./lib/wsHttpUrl";
+import { resolveExecutionResource } from "./lib/wsHttpUrl";
 import type { HostsApi } from "./lib/hosts/api";
 
 export type { WsThreadStreamFailure } from "./wsTransport";
@@ -158,6 +175,7 @@ const terminalEventListeners = createListenerRegistry<TerminalEvent>();
 const projectDevServerEventListeners = createListenerRegistry<ProjectDevServerEvent>();
 const automationEventListeners = createListenerRegistry<AutomationStreamEvent>();
 const deviceEventListeners = createListenerRegistry<DeviceEvent>();
+const computerEventListeners = createListenerRegistry<ComputerEvent>();
 const orchestrationDomainEventListeners = createListenerRegistry<OrchestrationEvent>();
 const orchestrationShellEventListeners = createListenerRegistry<OrchestrationShellStreamItem>();
 const orchestrationThreadEventListeners = createListenerRegistry<OrchestrationThreadStreamItem>();
@@ -178,6 +196,7 @@ function clearWsNativeApiListeners(): void {
   projectDevServerEventListeners.clear();
   automationEventListeners.clear();
   deviceEventListeners.clear();
+  computerEventListeners.clear();
   orchestrationDomainEventListeners.clear();
   orchestrationShellEventListeners.clear();
   orchestrationThreadEventListeners.clear();
@@ -242,22 +261,27 @@ async function requestAuthJson<T>(
 async function requestVoiceTranscriptionUpload(
   input: Parameters<NativeApi["server"]["transcribeVoice"]>[0],
 ) {
-  const params = new URLSearchParams({
-    provider: input.provider,
-    cwd: input.cwd,
-    mimeType: input.mimeType,
-    sampleRateHz: String(input.sampleRateHz),
-    durationMs: String(input.durationMs),
-    ...(input.threadId ? { threadId: input.threadId } : {}),
-  });
   const decoded = atob(input.audioBase64);
   const bytes = new Uint8Array(decoded.length);
   for (let index = 0; index < decoded.length; index += 1) {
     bytes[index] = decoded.charCodeAt(index);
   }
   const response = await fetch(
-    resolveWsHttpUrl(`${VOICE_TRANSCRIPTION_UPLOAD_ROUTE_PATH}?${params.toString()}`),
-    { method: "POST", credentials: "include", body: bytes },
+    resolveExecutionResource({
+      kind: "voice-upload",
+      provider: input.provider,
+      cwd: input.cwd,
+      mimeType: input.mimeType,
+      sampleRateHz: input.sampleRateHz,
+      durationMs: input.durationMs,
+      ...(input.threadId ? { threadId: input.threadId } : {}),
+    }),
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": input.mimeType },
+      body: bytes,
+    },
   );
   const payload = (await response.json().catch(() => null)) as
     | ServerVoiceTranscriptionResult
@@ -431,9 +455,20 @@ export function createWsNativeApi(): NativeApi {
     instance = null;
   }
 
-  const transport = new WsTransport();
+  setExecutionGenerationHandler(() => {
+    resetThreadDetailResumeCursors();
+    useDeviceStateStore.getState().clear();
+    useComputerStateStore.getState().clear();
+  });
+  const { execution: transport, controller } = getConnectionClients();
+  const remoteExecution = Boolean(readExecutionContext()?.remote);
+  const executionRequest: typeof transport.request = (...args) => {
+    if (remoteExecution && remoteMethodUnavailable(args[0]))
+      return Promise.reject(new Error(REMOTE_NATIVE_UNAVAILABLE));
+    return transport.request(...args);
+  };
   let unsubscribeDomainEventTransport: (() => void) | null = null;
-  transport.onStateChange((state) => emitWsTransportState(state));
+  transport.onStateChange((state) => emitWsTransportState(state), { replayCurrent: true });
   transport.onCompatibilityIssue((issue) => emitWsCompatibilityIssue(issue), {
     replayCurrent: true,
   });
@@ -474,6 +509,9 @@ export function createWsNativeApi(): NativeApi {
   transport.subscribe(DEVICE_WS_CHANNELS.event, (message) => {
     deviceEventListeners.emit(message.data);
   });
+  transport.subscribe(COMPUTER_WS_CHANNELS.event, (message) => {
+    computerEventListeners.emit(message.data);
+  });
   transport.subscribe(ORCHESTRATION_WS_CHANNELS.shellEvent, (message) => {
     orchestrationShellEventListeners.emit(message.data);
   });
@@ -486,6 +524,14 @@ export function createWsNativeApi(): NativeApi {
   const api: NativeApi & { hosts: HostsApi } = {
     dialogs: {
       pickFolder: async () => {
+        const context = readExecutionContext();
+        if (context?.remote) {
+          const { showExecutionFolderPicker } = await import("./lib/hosts/ExecutionFolderPicker");
+          return showExecutionFolderPicker({
+            label: context.execution.label,
+            browse: (input) => executionRequest(WS_METHODS.filesystemBrowse, input),
+          });
+        }
         if (!window.desktopBridge) return null;
         return window.desktopBridge.pickFolder();
       },
@@ -510,56 +556,54 @@ export function createWsNativeApi(): NativeApi {
       },
     },
     terminal: {
-      open: (input) => transport.request(WS_METHODS.terminalOpen, input),
-      write: (input) => transport.request(WS_METHODS.terminalWrite, input),
-      ackOutput: (input) => transport.request(WS_METHODS.terminalAckOutput, input),
-      resize: (input) => transport.request(WS_METHODS.terminalResize, input),
-      clear: (input) => transport.request(WS_METHODS.terminalClear, input),
-      restart: (input) => transport.request(WS_METHODS.terminalRestart, input),
-      close: (input) => transport.request(WS_METHODS.terminalClose, input),
+      open: (input) => executionRequest(WS_METHODS.terminalOpen, input),
+      write: (input) => executionRequest(WS_METHODS.terminalWrite, input),
+      ackOutput: (input) => executionRequest(WS_METHODS.terminalAckOutput, input),
+      resize: (input) => executionRequest(WS_METHODS.terminalResize, input),
+      clear: (input) => executionRequest(WS_METHODS.terminalClear, input),
+      restart: (input) => executionRequest(WS_METHODS.terminalRestart, input),
+      close: (input) => executionRequest(WS_METHODS.terminalClose, input),
       onEvent: terminalEventListeners.subscribe,
     },
     projects: {
-      discoverScripts: (input) => transport.request(WS_METHODS.projectsDiscoverScripts, input),
-      listDirectories: (input) => transport.request(WS_METHODS.projectsListDirectories, input),
-      searchEntries: (input) => transport.request(WS_METHODS.projectsSearchEntries, input),
-      searchLocalEntries: (input) =>
-        transport.request(WS_METHODS.projectsSearchLocalEntries, input),
-      searchContent: (input) => transport.request(WS_METHODS.projectsSearchContent, input),
-      prewarmSearchIndex: (input) =>
-        transport.request(WS_METHODS.projectsPrewarmSearchIndex, input),
+      discoverScripts: (input) => executionRequest(WS_METHODS.projectsDiscoverScripts, input),
+      listDirectories: (input) => executionRequest(WS_METHODS.projectsListDirectories, input),
+      searchEntries: (input) => executionRequest(WS_METHODS.projectsSearchEntries, input),
+      searchLocalEntries: (input) => executionRequest(WS_METHODS.projectsSearchLocalEntries, input),
+      searchContent: (input) => executionRequest(WS_METHODS.projectsSearchContent, input),
+      prewarmSearchIndex: (input) => executionRequest(WS_METHODS.projectsPrewarmSearchIndex, input),
       readFile: (input, options) =>
         options?.signal
-          ? transport.request(WS_METHODS.projectsReadFile, input, { signal: options.signal })
-          : transport.request(WS_METHODS.projectsReadFile, input),
+          ? executionRequest(WS_METHODS.projectsReadFile, input, { signal: options.signal })
+          : executionRequest(WS_METHODS.projectsReadFile, input),
       onFileChange: (input, callback) => transport.subscribeProjectFileChange(input, callback),
       resolveWorkspaceFileReferences: (input) =>
-        transport.request(WS_METHODS.projectsResolveWorkspaceFileReferences, input),
+        executionRequest(WS_METHODS.projectsResolveWorkspaceFileReferences, input),
       resolveOutOfRootFileReference: (input) =>
-        transport.request(WS_METHODS.projectsResolveOutOfRootFileReference, input),
+        executionRequest(WS_METHODS.projectsResolveOutOfRootFileReference, input),
       createLocalFilePreviewGrant: (input) =>
-        transport.request(WS_METHODS.projectsCreateLocalFilePreviewGrant, input),
-      writeFile: (input) => transport.request(WS_METHODS.projectsWriteFile, input),
-      runDevServer: (input) => transport.request(WS_METHODS.projectsRunDevServer, input),
-      stopDevServer: (input) => transport.request(WS_METHODS.projectsStopDevServer, input),
-      listDevServers: () => transport.request(WS_METHODS.projectsListDevServers),
+        executionRequest(WS_METHODS.projectsCreateLocalFilePreviewGrant, input),
+      writeFile: (input) => executionRequest(WS_METHODS.projectsWriteFile, input),
+      runDevServer: (input) => executionRequest(WS_METHODS.projectsRunDevServer, input),
+      stopDevServer: (input) => executionRequest(WS_METHODS.projectsStopDevServer, input),
+      listDevServers: () => executionRequest(WS_METHODS.projectsListDevServers),
       onDevServerEvent: projectDevServerEventListeners.subscribe,
       provisionFromGitHub: (input, options) =>
-        transport.request(WS_METHODS.projectsProvisionFromGitHub, input, {
+        executionRequest(WS_METHODS.projectsProvisionFromGitHub, input, {
           timeoutMs: null,
           ...(options?.signal ? { signal: options.signal } : {}),
         }),
       onProvisionProgress: projectProvisionProgressListeners.subscribe,
     },
     filesystem: {
-      browse: (input) => transport.request(WS_METHODS.filesystemBrowse, input),
+      browse: (input) => executionRequest(WS_METHODS.filesystemBrowse, input),
     },
     studio: {
-      listThreadOutputs: (input) => transport.request(WS_METHODS.studioListThreadOutputs, input),
+      listThreadOutputs: (input) => executionRequest(WS_METHODS.studioListThreadOutputs, input),
     },
     shell: {
       openInEditor: (cwd, editor) =>
-        transport.request(WS_METHODS.shellOpenInEditor, { cwd, editor }),
+        executionRequest(WS_METHODS.shellOpenInEditor, { cwd, editor }),
       openExternal: async (url) => {
         const externalUrl = requireHttpExternalUrl(url);
         if (window.desktopBridge) {
@@ -575,6 +619,7 @@ export function createWsNativeApi(): NativeApi {
         window.open(externalUrl, "_blank", "noopener,noreferrer");
       },
       showInFolder: async (path) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           await window.desktopBridge.showInFolder(path);
         }
@@ -582,55 +627,58 @@ export function createWsNativeApi(): NativeApi {
       },
     },
     git: {
-      githubRepository: (input) => transport.request(WS_METHODS.gitGithubRepository, input),
-      pull: (input) => transport.request(WS_METHODS.gitPull, input),
-      status: (input) => transport.request(WS_METHODS.gitStatus, input),
-      readWorkingTreeDiff: (input) => transport.request(WS_METHODS.gitReadWorkingTreeDiff, input),
-      workingTreeDiffStats: (input) => transport.request(WS_METHODS.gitWorkingTreeDiffStats, input),
+      githubRepository: (input) => executionRequest(WS_METHODS.gitGithubRepository, input),
+      pull: (input) => executionRequest(WS_METHODS.gitPull, input),
+      status: (input) => executionRequest(WS_METHODS.gitStatus, input),
+      readWorkingTreeDiff: (input) => executionRequest(WS_METHODS.gitReadWorkingTreeDiff, input),
+      readFileAtRev: (input) => executionRequest(WS_METHODS.gitReadFileAtRev, input),
+      workingTreeDiffStats: (input) => executionRequest(WS_METHODS.gitWorkingTreeDiffStats, input),
+      blameLine: (input) => executionRequest(WS_METHODS.gitBlameLine, input),
       summarizeDiff: (input) =>
-        transport.request(WS_METHODS.gitSummarizeDiff, input, {
+        executionRequest(WS_METHODS.gitSummarizeDiff, input, {
           timeoutMs: null,
         }),
       runStackedAction: (input) =>
-        transport.request(WS_METHODS.gitRunStackedAction, input, {
+        executionRequest(WS_METHODS.gitRunStackedAction, input, {
           timeoutMs: null,
         }),
-      listBranches: (input) => transport.request(WS_METHODS.gitListBranches, input),
-      createWorktree: (input) => transport.request(WS_METHODS.gitCreateWorktree, input),
+      listBranches: (input) => executionRequest(WS_METHODS.gitListBranches, input),
+      listRecentCommits: (input) => executionRequest(WS_METHODS.gitListRecentCommits, input),
+      createWorktree: (input) => executionRequest(WS_METHODS.gitCreateWorktree, input),
       // Worktree materialization scales with checkout size; progress events
       // keep the UI honest while the stream runs, so no fixed timeout.
       createDetachedWorktree: (input) =>
-        transport.request(WS_METHODS.gitCreateDetachedWorktree, input, {
+        executionRequest(WS_METHODS.gitCreateDetachedWorktree, input, {
           timeoutMs: null,
         }),
-      removeWorktree: (input) => transport.request(WS_METHODS.gitRemoveWorktree, input),
-      createBranch: (input) => transport.request(WS_METHODS.gitCreateBranch, input),
-      checkout: (input) => transport.request(WS_METHODS.gitCheckout, input),
-      stashAndCheckout: (input) => transport.request(WS_METHODS.gitStashAndCheckout, input),
-      stashDrop: (input) => transport.request(WS_METHODS.gitStashDrop, input),
-      stashInfo: (input) => transport.request(WS_METHODS.gitStashInfo, input),
-      removeIndexLock: (input) => transport.request(WS_METHODS.gitRemoveIndexLock, input),
-      init: (input) => transport.request(WS_METHODS.gitInit, input),
-      stageFiles: (input) => transport.request(WS_METHODS.gitStageFiles, input),
-      unstageFiles: (input) => transport.request(WS_METHODS.gitUnstageFiles, input),
-      handoffThread: (input) => transport.request(WS_METHODS.gitHandoffThread, input),
-      resolvePullRequest: (input) => transport.request(WS_METHODS.gitResolvePullRequest, input),
-      pullRequestSnapshot: (input) => transport.request(WS_METHODS.gitPullRequestSnapshot, input),
+      removeWorktree: (input) => executionRequest(WS_METHODS.gitRemoveWorktree, input),
+      createBranch: (input) => executionRequest(WS_METHODS.gitCreateBranch, input),
+      checkout: (input) => executionRequest(WS_METHODS.gitCheckout, input),
+      stashAndCheckout: (input) => executionRequest(WS_METHODS.gitStashAndCheckout, input),
+      stashDrop: (input) => executionRequest(WS_METHODS.gitStashDrop, input),
+      stashInfo: (input) => executionRequest(WS_METHODS.gitStashInfo, input),
+      removeIndexLock: (input) => executionRequest(WS_METHODS.gitRemoveIndexLock, input),
+      init: (input) => executionRequest(WS_METHODS.gitInit, input),
+      stageFiles: (input) => executionRequest(WS_METHODS.gitStageFiles, input),
+      unstageFiles: (input) => executionRequest(WS_METHODS.gitUnstageFiles, input),
+      handoffThread: (input) => executionRequest(WS_METHODS.gitHandoffThread, input),
+      resolvePullRequest: (input) => executionRequest(WS_METHODS.gitResolvePullRequest, input),
+      pullRequestSnapshot: (input) => executionRequest(WS_METHODS.gitPullRequestSnapshot, input),
       preparePullRequestThread: (input) =>
-        transport.request(WS_METHODS.gitPreparePullRequestThread, input),
+        executionRequest(WS_METHODS.gitPreparePullRequestThread, input),
       onActionProgress: gitActionProgressListeners.subscribe,
       onWorktreeSetupProgress: gitWorktreeSetupProgressListeners.subscribe,
     },
     pullRequests: {
-      list: (input) => transport.request(WS_METHODS.pullRequestsList, input),
+      list: (input) => executionRequest(WS_METHODS.pullRequestsList, input),
       reviewRequestCount: (input) =>
-        transport.request(WS_METHODS.pullRequestsReviewRequestCount, input),
-      detail: (input) => transport.request(WS_METHODS.pullRequestsDetail, input),
-      diff: (input) => transport.request(WS_METHODS.pullRequestsDiff, input),
+        executionRequest(WS_METHODS.pullRequestsReviewRequestCount, input),
+      detail: (input) => executionRequest(WS_METHODS.pullRequestsDetail, input),
+      diff: (input) => executionRequest(WS_METHODS.pullRequestsDiff, input),
       action: (input) =>
-        transport.request(WS_METHODS.pullRequestsAction, input, { timeoutMs: null }),
-      comment: (input) => transport.request(WS_METHODS.pullRequestsComment, input),
-      setPinned: (input) => transport.request(WS_METHODS.pullRequestsSetPinned, input),
+        executionRequest(WS_METHODS.pullRequestsAction, input, { timeoutMs: null }),
+      comment: (input) => executionRequest(WS_METHODS.pullRequestsComment, input),
+      setPinned: (input) => executionRequest(WS_METHODS.pullRequestsSetPinned, input),
     },
     contextMenu: {
       show: async <T extends string>(
@@ -638,16 +686,18 @@ export function createWsNativeApi(): NativeApi {
         position?: { x: number; y: number },
       ): Promise<T | null> => {
         if (window.desktopBridge) {
-          return window.desktopBridge.showContextMenu(items, position);
+          // Native icons are macOS-only; other platforms keep the plain menu.
+          const desktopItems = isMacNavigatorPlatform() ? await withNativeMenuIcons(items) : items;
+          return window.desktopBridge.showContextMenu(desktopItems, position);
         }
         return showContextMenuFallback(items, position);
       },
     },
     server: {
-      getConfig: () => transport.request(WS_METHODS.serverGetConfig),
-      getEnvironment: () => transport.request(WS_METHODS.serverGetEnvironment),
-      getSettings: () => transport.request(WS_METHODS.serverGetSettings),
-      updateSettings: (input) => transport.request(WS_METHODS.serverUpdateSettings, input),
+      getConfig: () => executionRequest(WS_METHODS.serverGetConfig),
+      getEnvironment: () => executionRequest(WS_METHODS.serverGetEnvironment),
+      getSettings: () => executionRequest(WS_METHODS.serverGetSettings),
+      updateSettings: (input) => executionRequest(WS_METHODS.serverUpdateSettings, input),
       getAuthSession: () => requestAuthJson<AuthSessionState>("/api/auth/session"),
       bootstrapAuth: (input: AuthBootstrapInput) =>
         requestAuthJson<AuthBootstrapResult>("/api/auth/bootstrap", {
@@ -691,34 +741,42 @@ export function createWsNativeApi(): NativeApi {
         return result;
       },
       listExternalMcpIntegrations: () =>
-        transport.request(WS_METHODS.serverListExternalMcpIntegrations),
+        executionRequest(WS_METHODS.serverListExternalMcpIntegrations),
       createExternalMcpIntegration: (input: ExternalMcpCreateIntegrationInput) =>
-        transport.request(WS_METHODS.serverCreateExternalMcpIntegration, input),
+        executionRequest(WS_METHODS.serverCreateExternalMcpIntegration, input),
       revokeExternalMcpIntegration: (input: ExternalMcpRevokeIntegrationInput) =>
-        transport.request(WS_METHODS.serverRevokeExternalMcpIntegration, input),
+        executionRequest(WS_METHODS.serverRevokeExternalMcpIntegration, input),
       refreshExternalMcpPairing: (input: ExternalMcpRefreshPairingInput) =>
-        transport.request(WS_METHODS.serverRefreshExternalMcpPairing, input),
-      refreshProviders: () => transport.request(WS_METHODS.serverRefreshProviders),
+        executionRequest(WS_METHODS.serverRefreshExternalMcpPairing, input),
+      // Claude runs sequential CLI and auth probes, so a refresh can exceed the
+      // generic 60-second RPC deadline. Keep this bounded while allowing slow
+      // probes to finish; onboarding shows an error if this deadline expires.
+      refreshProviders: () =>
+        executionRequest(WS_METHODS.serverRefreshProviders, undefined, { timeoutMs: 180_000 }),
       // Provider updates run up to 2 minutes server-side; callers wrap this in
       // withProviderUpdateTimeout, which owns the client-side watchdog.
       updateProvider: (input) =>
-        transport.request(WS_METHODS.serverUpdateProvider, input, { timeoutMs: null }),
-      listWorktrees: () => transport.request(WS_METHODS.serverListWorktrees),
-      listLocalServers: () => transport.request(WS_METHODS.serverListLocalServers),
-      stopLocalServer: (input) => transport.request(WS_METHODS.serverStopLocalServer, input),
+        executionRequest(WS_METHODS.serverUpdateProvider, input, { timeoutMs: null }),
+      listWorktrees: () => executionRequest(WS_METHODS.serverListWorktrees),
+      listLocalServers: () => executionRequest(WS_METHODS.serverListLocalServers),
+      stopLocalServer: (input) => executionRequest(WS_METHODS.serverStopLocalServer, input),
       getProviderUsageSnapshot: (input) =>
-        transport.request(WS_METHODS.serverGetProviderUsageSnapshot, input),
-      listProviderUsage: (input) => transport.request(WS_METHODS.serverListProviderUsage, input),
-      getDiagnostics: () => transport.request(WS_METHODS.serverGetDiagnostics),
+        executionRequest(WS_METHODS.serverGetProviderUsageSnapshot, input),
+      listProviderUsage: (input) => executionRequest(WS_METHODS.serverListProviderUsage, input),
+      consumeCodexResetCredit: (input) =>
+        executionRequest(WS_METHODS.serverConsumeCodexResetCredit, input),
+      getDiagnostics: () => executionRequest(WS_METHODS.serverGetDiagnostics),
+      readThreadDiagnostics: (input) =>
+        executionRequest(WS_METHODS.serverReadThreadDiagnostics, input),
       generateThreadRecap: (input) =>
-        transport.request(WS_METHODS.serverGenerateThreadRecap, input, {
+        executionRequest(WS_METHODS.serverGenerateThreadRecap, input, {
           timeoutMs: null,
         }),
       generateAutomationIntent: (input) =>
-        transport.request(WS_METHODS.serverGenerateAutomationIntent, input, {
+        executionRequest(WS_METHODS.serverGenerateAutomationIntent, input, {
           timeoutMs: null,
         }),
-      prewarmVoice: (input) => transport.request(WS_METHODS.serverPrewarmVoice, input),
+      prewarmVoice: (input) => executionRequest(WS_METHODS.serverPrewarmVoice, input),
       transcribeVoice: async (input) => {
         try {
           return await requestVoiceTranscriptionUpload(input);
@@ -726,61 +784,64 @@ export function createWsNativeApi(): NativeApi {
           if (!(error instanceof VoiceUploadRouteUnavailableError)) {
             throw error;
           }
-          return transport.request(WS_METHODS.serverTranscribeVoice, input, { timeoutMs: null });
+          return executionRequest(WS_METHODS.serverTranscribeVoice, input, { timeoutMs: null });
         }
       },
-      upsertKeybinding: (input) => transport.request(WS_METHODS.serverUpsertKeybinding, input),
+      upsertKeybinding: (input) => executionRequest(WS_METHODS.serverUpsertKeybinding, input),
     },
     stats: {
-      getProfileStats: (input) => transport.request(WS_METHODS.statsGetProfileStats, input),
+      getProfileStats: (input) => executionRequest(WS_METHODS.statsGetProfileStats, input),
       getProfileTokenStats: (input) =>
-        transport.request(WS_METHODS.statsGetProfileTokenStats, input),
+        executionRequest(WS_METHODS.statsGetProfileTokenStats, input),
     },
     provider: {
       getComposerCapabilities: (input) =>
-        transport.request(WS_METHODS.providerGetComposerCapabilities, input),
+        executionRequest(WS_METHODS.providerGetComposerCapabilities, input),
       // Compaction is capped server-side per provider (ACP providers allow up
       // to the 10-minute turn-idle ceiling), so the server owns this bound.
       compactThread: (input) =>
-        transport.request(WS_METHODS.providerCompactThread, input, { timeoutMs: null }),
-      listCommands: (input) => transport.request(WS_METHODS.providerListCommands, input),
-      listSkills: (input) => transport.request(WS_METHODS.providerListSkills, input),
-      listSkillsCatalog: (input) => transport.request(WS_METHODS.providerListSkillsCatalog, input),
-      listPlugins: (input) => transport.request(WS_METHODS.providerListPlugins, input),
-      readPlugin: (input) => transport.request(WS_METHODS.providerReadPlugin, input),
-      listModels: (input) => transport.request(WS_METHODS.providerListModels, input),
-      listAgents: (input) => transport.request(WS_METHODS.providerListAgents, input),
+        executionRequest(WS_METHODS.providerCompactThread, input, { timeoutMs: null }),
+      listCommands: (input) => executionRequest(WS_METHODS.providerListCommands, input),
+      listSkills: (input) => executionRequest(WS_METHODS.providerListSkills, input),
+      listSkillsCatalog: (input) => executionRequest(WS_METHODS.providerListSkillsCatalog, input),
+      listPlugins: (input) => executionRequest(WS_METHODS.providerListPlugins, input),
+      readPlugin: (input) => executionRequest(WS_METHODS.providerReadPlugin, input),
+      listModels: (input) => executionRequest(WS_METHODS.providerListModels, input),
+      listAgents: (input) => executionRequest(WS_METHODS.providerListAgents, input),
     },
     orchestration: {
-      getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),
-      getShellSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getShellSnapshot),
+      getSnapshot: () => executionRequest(ORCHESTRATION_WS_METHODS.getSnapshot),
+      getShellSnapshot: () => executionRequest(ORCHESTRATION_WS_METHODS.getShellSnapshot),
       getThreadDetailSnapshot: (input) =>
-        transport.request(ORCHESTRATION_WS_METHODS.getThreadDetailSnapshot, input),
+        executionRequest(ORCHESTRATION_WS_METHODS.getThreadDetailSnapshot, input),
       dispatchCommand: (command) => {
-        return transport.request(ORCHESTRATION_WS_METHODS.dispatchCommand, {
+        return executionRequest(ORCHESTRATION_WS_METHODS.dispatchCommand, {
           command: omitNullUserInputAnswers(command),
         });
       },
-      importThread: (input) => transport.request(ORCHESTRATION_WS_METHODS.importThread, input),
+      importThread: (input) => executionRequest(ORCHESTRATION_WS_METHODS.importThread, input),
+      listProjectImports: (input) =>
+        executionRequest(ORCHESTRATION_WS_METHODS.listProjectImports, input),
+      importProject: (input) => executionRequest(ORCHESTRATION_WS_METHODS.importProject, input),
       regenerateThreadTitle: (input) =>
-        transport.request(ORCHESTRATION_WS_METHODS.regenerateThreadTitle, input, {
+        executionRequest(ORCHESTRATION_WS_METHODS.regenerateThreadTitle, input, {
           timeoutMs: null,
         }),
-      repairState: () => transport.request(ORCHESTRATION_WS_METHODS.repairState),
-      getTurnDiff: (input) => transport.request(ORCHESTRATION_WS_METHODS.getTurnDiff, input),
+      repairState: () => executionRequest(ORCHESTRATION_WS_METHODS.repairState),
+      getTurnDiff: (input) => executionRequest(ORCHESTRATION_WS_METHODS.getTurnDiff, input),
       getFullThreadDiff: (input) =>
-        transport.request(ORCHESTRATION_WS_METHODS.getFullThreadDiff, input),
+        executionRequest(ORCHESTRATION_WS_METHODS.getFullThreadDiff, input),
       replayEvents: (fromSequenceExclusive, threadId) =>
-        transport.request(ORCHESTRATION_WS_METHODS.replayEvents, {
+        executionRequest(ORCHESTRATION_WS_METHODS.replayEvents, {
           fromSequenceExclusive,
           ...(threadId === undefined ? {} : { threadId }),
         }),
       listProviderDeliveryBlockers: (input = {}) =>
-        transport.request(ORCHESTRATION_WS_METHODS.listProviderDeliveryBlockers, input),
+        executionRequest(ORCHESTRATION_WS_METHODS.listProviderDeliveryBlockers, input),
       reconcileProviderDelivery: (input) =>
-        transport.request(ORCHESTRATION_WS_METHODS.reconcileProviderDelivery, input),
+        executionRequest(ORCHESTRATION_WS_METHODS.reconcileProviderDelivery, input),
       prepareQuitResume: (input) =>
-        transport.request(ORCHESTRATION_WS_METHODS.prepareQuitResume, input),
+        executionRequest(ORCHESTRATION_WS_METHODS.prepareQuitResume, input),
       subscribeShell: () => transport.request<void>(ORCHESTRATION_WS_METHODS.subscribeShell, {}),
       unsubscribeShell: () =>
         transport.request<void>(ORCHESTRATION_WS_METHODS.unsubscribeShell, {}),
@@ -809,95 +870,118 @@ export function createWsNativeApi(): NativeApi {
       onThreadEvent: orchestrationThreadEventListeners.subscribe,
     },
     account: {
-      status: () => transport.request(WS_METHODS.accountStatus),
-      sendOtp: (input) => transport.request(WS_METHODS.accountSendOtp, input),
+      status: () => controller.request(WS_METHODS.accountStatus),
+      sendOtp: (input) => controller.request(WS_METHODS.accountSendOtp, input),
       // The input carries the emailed code — a credential. Pass it straight
       // through: do not wrap, retry, or log it, and do not keep it after the
       // promise settles.
-      authenticateOtp: (input) => transport.request(WS_METHODS.accountAuthenticateOtp, input),
-      beginSso: (input) => transport.request(WS_METHODS.accountBeginSso, input),
+      authenticateOtp: (input) => controller.request(WS_METHODS.accountAuthenticateOtp, input),
+      beginSso: (input) => controller.request(WS_METHODS.accountBeginSso, input),
       // No deadline: the server waits on the browser callback for as long as
       // the attempt lives. If the socket drops, the sign-in still completed
       // server-side — re-querying `status` on reconnect recovers it.
       completeSso: (input, options) =>
-        transport.request(WS_METHODS.accountCompleteSso, input, {
+        controller.request(WS_METHODS.accountCompleteSso, input, {
           timeoutMs: null,
           ...(options?.signal ? { signal: options.signal } : {}),
         }),
-      cancelSso: (input) => transport.request(WS_METHODS.accountCancelSso, input),
-      usageSummary: (input) => transport.request(WS_METHODS.accountUsageSummary, input),
-      updateProfile: (input) => transport.request(WS_METHODS.accountUpdateProfile, input),
-      uploadAvatar: (input) => transport.request(WS_METHODS.accountUploadAvatar, input),
-      deleteAvatar: () => transport.request(WS_METHODS.accountDeleteAvatar),
-      signOut: () => transport.request(WS_METHODS.accountSignOut),
+      cancelSso: (input) => controller.request(WS_METHODS.accountCancelSso, input),
+      usageSummary: (input) => controller.request(WS_METHODS.accountUsageSummary, input),
+      updateProfile: (input) => controller.request(WS_METHODS.accountUpdateProfile, input),
+      uploadAvatar: (input) => controller.request(WS_METHODS.accountUploadAvatar, input),
+      deleteAvatar: () => controller.request(WS_METHODS.accountDeleteAvatar),
+      signOut: () => controller.request(WS_METHODS.accountSignOut),
       openVerificationUrl: (input) =>
-        transport.request(WS_METHODS.accountOpenVerificationUrl, input),
+        controller.request(WS_METHODS.accountOpenVerificationUrl, input),
     },
     hosts: {
-      listHosts: () => transport.request(WS_METHODS.hostsList),
-      updateHost: (input) => transport.request(WS_METHODS.hostsUpdate, input),
-      deleteHost: (input) => transport.request(WS_METHODS.hostsDelete, input),
-      listDevices: () => transport.request(WS_METHODS.hostsListDevices),
-      revokeDevice: (input) => transport.request(WS_METHODS.hostsRevokeDevice, input),
-      approveDeviceLink: (input) => transport.request(WS_METHODS.hostsApproveDeviceLink, input),
-      requestGrant: (input) => transport.request(WS_METHODS.hostsRequestGrant, input),
-      enrollment: () => transport.request(WS_METHODS.hostsEnrollment),
-      unlinkLocalHost: () => transport.request(WS_METHODS.hostsUnlinkLocalHost),
-      listSessions: () => transport.request(WS_METHODS.hostsListSessions),
-      endSession: (input) => transport.request(WS_METHODS.hostsEndSession, input),
-      beginSyncKeyPairing: () => transport.request(WS_METHODS.hostsBeginSyncKeyPairing),
-      offerSyncKey: (input) => transport.request(WS_METHODS.hostsOfferSyncKey, input),
-      receiveSyncKey: () => transport.request(WS_METHODS.hostsReceiveSyncKey),
-      confirmSyncKey: (input) => transport.request(WS_METHODS.hostsConfirmSyncKey, input),
+      remoteAccess: (input) =>
+        controller.request(
+          WS_METHODS.hostsRemoteAccess,
+          { request: input },
+          { timeoutMs: 11 * 60_000 },
+        ),
+      listHosts: () => controller.request(WS_METHODS.hostsList),
+      updateHost: (input) => controller.request(WS_METHODS.hostsUpdate, input),
+      deleteHost: (input) => controller.request(WS_METHODS.hostsDelete, input),
+      listDevices: () => controller.request(WS_METHODS.hostsListDevices),
+      revokeDevice: (input) => controller.request(WS_METHODS.hostsRevokeDevice, input),
+      approveDeviceLink: (input) => controller.request(WS_METHODS.hostsApproveDeviceLink, input),
+      requestGrant: (input) => controller.request(WS_METHODS.hostsRequestGrant, input),
+      enrollment: () => controller.request(WS_METHODS.hostsEnrollment),
+      unlinkLocalHost: () => controller.request(WS_METHODS.hostsUnlinkLocalHost),
+      listSessions: () => controller.request(WS_METHODS.hostsListSessions),
+      endSession: (input) => controller.request(WS_METHODS.hostsEndSession, input),
+      beginSyncKeyPairing: () => controller.request(WS_METHODS.hostsBeginSyncKeyPairing),
+      offerSyncKey: (input) => controller.request(WS_METHODS.hostsOfferSyncKey, input),
+      receiveSyncKey: () => controller.request(WS_METHODS.hostsReceiveSyncKey),
+      confirmSyncKey: (input) => controller.request(WS_METHODS.hostsConfirmSyncKey, input),
       // Dialing races several transports with a 3s deadline and then does a
       // two-round-trip handshake; the default RPC deadline is too tight.
-      connect: (input) => transport.request(WS_METHODS.hostsConnect, input, { timeoutMs: 30_000 }),
-      disconnect: (input) => transport.request(WS_METHODS.hostsDisconnect, input),
-      listConnections: () => transport.request(WS_METHODS.hostsListConnections),
+      connect: (input) => controller.request(WS_METHODS.hostsConnect, input, { timeoutMs: 30_000 }),
+      disconnect: (input) => controller.request(WS_METHODS.hostsDisconnect, input),
+      listConnections: () => controller.request(WS_METHODS.hostsListConnections),
     },
     automation: {
-      list: (input) => transport.request(WS_METHODS.automationList, input),
-      getMemory: (input) => transport.request(WS_METHODS.automationGetMemory, input),
-      create: (input) => transport.request(WS_METHODS.automationCreate, input),
-      update: (input) => transport.request(WS_METHODS.automationUpdate, input),
-      delete: (input) => transport.request(WS_METHODS.automationDelete, input),
-      runNow: (input) => transport.request(WS_METHODS.automationRunNow, input),
-      cancelRun: (input) => transport.request(WS_METHODS.automationCancelRun, input),
-      markRunRead: (input) => transport.request(WS_METHODS.automationMarkRunRead, input),
-      archiveRun: (input) => transport.request(WS_METHODS.automationArchiveRun, input),
-      resolveProposal: (input) => transport.request(WS_METHODS.automationResolveProposal, input),
+      list: (input) => executionRequest(WS_METHODS.automationList, input),
+      getMemory: (input) => executionRequest(WS_METHODS.automationGetMemory, input),
+      create: (input) => executionRequest(WS_METHODS.automationCreate, input),
+      update: (input) => executionRequest(WS_METHODS.automationUpdate, input),
+      delete: (input) => executionRequest(WS_METHODS.automationDelete, input),
+      runNow: (input) => executionRequest(WS_METHODS.automationRunNow, input),
+      cancelRun: (input) => executionRequest(WS_METHODS.automationCancelRun, input),
+      markRunRead: (input) => executionRequest(WS_METHODS.automationMarkRunRead, input),
+      archiveRun: (input) => executionRequest(WS_METHODS.automationArchiveRun, input),
+      resolveProposal: (input) => executionRequest(WS_METHODS.automationResolveProposal, input),
       onEvent: automationEventListeners.subscribe,
     },
     device: {
-      list: (input) => transport.request(DEVICE_WS_METHODS.list, input),
+      list: (input) => executionRequest(DEVICE_WS_METHODS.list, input),
       // Booting a cold simulator routinely outruns the default RPC deadline.
-      boot: (input) => transport.request(DEVICE_WS_METHODS.boot, input, { timeoutMs: null }),
-      shutdown: (input) => transport.request(DEVICE_WS_METHODS.shutdown, input),
-      attach: (input) => transport.request(DEVICE_WS_METHODS.attach, input),
-      detach: (input) => transport.request(DEVICE_WS_METHODS.detach, input),
-      getThreadState: (input) => transport.request(DEVICE_WS_METHODS.getThreadState, input),
-      tap: (input) => transport.request(DEVICE_WS_METHODS.tap, input),
-      swipe: (input) => transport.request(DEVICE_WS_METHODS.swipe, input),
-      typeText: (input) => transport.request(DEVICE_WS_METHODS.typeText, input),
-      keyEvent: (input) => transport.request(DEVICE_WS_METHODS.keyEvent, input),
-      pressButton: (input) => transport.request(DEVICE_WS_METHODS.pressButton, input),
+      boot: (input) => executionRequest(DEVICE_WS_METHODS.boot, input, { timeoutMs: null }),
+      shutdown: (input) => executionRequest(DEVICE_WS_METHODS.shutdown, input),
+      attach: (input) => executionRequest(DEVICE_WS_METHODS.attach, input),
+      detach: (input) => executionRequest(DEVICE_WS_METHODS.detach, input),
+      getThreadState: (input) => executionRequest(DEVICE_WS_METHODS.getThreadState, input),
+      tap: (input) => executionRequest(DEVICE_WS_METHODS.tap, input),
+      swipe: (input) => executionRequest(DEVICE_WS_METHODS.swipe, input),
+      typeText: (input) => executionRequest(DEVICE_WS_METHODS.typeText, input),
+      keyEvent: (input) => executionRequest(DEVICE_WS_METHODS.keyEvent, input),
+      pressButton: (input) => executionRequest(DEVICE_WS_METHODS.pressButton, input),
       installApp: (input) =>
-        transport.request(DEVICE_WS_METHODS.installApp, input, { timeoutMs: null }),
-      launchApp: (input) => transport.request(DEVICE_WS_METHODS.launchApp, input),
-      openUrl: (input) => transport.request(DEVICE_WS_METHODS.openUrl, input),
-      screenshot: (input) => transport.request(DEVICE_WS_METHODS.screenshot, input),
+        executionRequest(DEVICE_WS_METHODS.installApp, input, { timeoutMs: null }),
+      launchApp: (input) => executionRequest(DEVICE_WS_METHODS.launchApp, input),
+      openUrl: (input) => executionRequest(DEVICE_WS_METHODS.openUrl, input),
+      screenshot: (input) => executionRequest(DEVICE_WS_METHODS.screenshot, input),
       startRecording: (input) =>
-        transport.request(DEVICE_WS_METHODS.startRecording, input, { timeoutMs: null }),
+        executionRequest(DEVICE_WS_METHODS.startRecording, input, { timeoutMs: null }),
       stopRecording: (input) =>
-        transport.request(DEVICE_WS_METHODS.stopRecording, input, { timeoutMs: null }),
-      describeUi: (input) => transport.request(DEVICE_WS_METHODS.describeUi, input),
+        executionRequest(DEVICE_WS_METHODS.stopRecording, input, { timeoutMs: null }),
+      describeUi: (input) => executionRequest(DEVICE_WS_METHODS.describeUi, input),
       // A scroll loop runs several swipe/describe round-trips on the device.
       scrollToElement: (input) =>
-        transport.request(DEVICE_WS_METHODS.scrollToElement, input, { timeoutMs: null }),
+        executionRequest(DEVICE_WS_METHODS.scrollToElement, input, { timeoutMs: null }),
       onEvent: deviceEventListeners.subscribe,
     },
+    computer: {
+      getStatus: (input) => executionRequest(COMPUTER_WS_METHODS.getStatus, input),
+      getAuditHistory: (input) => executionRequest(COMPUTER_WS_METHODS.getAuditHistory, input),
+      getState: (input) => executionRequest(COMPUTER_WS_METHODS.getState, input),
+      provision: (input) =>
+        executionRequest(COMPUTER_WS_METHODS.provision, input, { timeoutMs: null }),
+      getThreadState: (input) => executionRequest(COMPUTER_WS_METHODS.getThreadState, input),
+      setControlEnabled: (input) => executionRequest(COMPUTER_WS_METHODS.setControlEnabled, input),
+      inputClick: (input) => executionRequest(COMPUTER_WS_METHODS.inputClick, input),
+      inputScroll: (input) => executionRequest(COMPUTER_WS_METHODS.inputScroll, input),
+      inputKey: (input) => executionRequest(COMPUTER_WS_METHODS.inputKey, input),
+      onEvent: computerEventListeners.subscribe,
+    },
     browser: {
+      ...(!remoteExecution && window.desktopBridge?.browser?.vault
+        ? { vault: window.desktopBridge.browser.vault }
+        : {}),
       open: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           return window.desktopBridge.browser.open(input);
         }
@@ -912,6 +996,7 @@ export function createWsNativeApi(): NativeApi {
         return emitFallbackBrowserState(input.threadId);
       },
       close: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           return window.desktopBridge.browser.close(input);
         }
@@ -924,34 +1009,40 @@ export function createWsNativeApi(): NativeApi {
         return emitFallbackBrowserState(input.threadId);
       },
       hide: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           await window.desktopBridge.browser.hide(input);
         }
       },
       getState: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           return window.desktopBridge.browser.getState(input);
         }
         return cloneBrowserState(getFallbackBrowserState(input.threadId));
       },
       setPanelBounds: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           await window.desktopBridge.browser.setPanelBounds(input);
           return;
         }
       },
       attachWebview: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           return window.desktopBridge.browser.attachWebview(input);
         }
         return cloneBrowserState(getFallbackBrowserState(input.threadId));
       },
       detachWebview: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           await window.desktopBridge.browser.detachWebview(input);
         }
       },
       copyLink: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           await window.desktopBridge.browser.copyLink(input);
           return;
@@ -959,6 +1050,7 @@ export function createWsNativeApi(): NativeApi {
         throw new Error("Copying the browser link requires the desktop app.");
       },
       copyScreenshotToClipboard: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           await window.desktopBridge.browser.copyScreenshotToClipboard(input);
           return;
@@ -966,12 +1058,16 @@ export function createWsNativeApi(): NativeApi {
         throw new Error("Browser screenshots require the desktop app.");
       },
       captureScreenshot: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           return window.desktopBridge.browser.captureScreenshot(input);
         }
         throw new Error("Browser screenshots require the desktop app.");
       },
+      capturePreview: async (input) =>
+        remoteExecution ? null : (window.desktopBridge?.browser.capturePreview(input) ?? null),
       navigate: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           return window.desktopBridge.browser.navigate(input);
         }
@@ -987,24 +1083,28 @@ export function createWsNativeApi(): NativeApi {
         return emitFallbackBrowserState(input.threadId);
       },
       reload: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           return window.desktopBridge.browser.reload(input);
         }
         return cloneBrowserState(getFallbackBrowserState(input.threadId));
       },
       goBack: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           return window.desktopBridge.browser.goBack(input);
         }
         return cloneBrowserState(getFallbackBrowserState(input.threadId));
       },
       goForward: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           return window.desktopBridge.browser.goForward(input);
         }
         return cloneBrowserState(getFallbackBrowserState(input.threadId));
       },
       newTab: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           return window.desktopBridge.browser.newTab(input);
         }
@@ -1018,6 +1118,7 @@ export function createWsNativeApi(): NativeApi {
         return emitFallbackBrowserState(input.threadId);
       },
       closeTab: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           return window.desktopBridge.browser.closeTab(input);
         }
@@ -1039,6 +1140,7 @@ export function createWsNativeApi(): NativeApi {
         return emitFallbackBrowserState(input.threadId);
       },
       selectTab: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           return window.desktopBridge.browser.selectTab(input);
         }
@@ -1049,18 +1151,21 @@ export function createWsNativeApi(): NativeApi {
         return emitFallbackBrowserState(input.threadId);
       },
       openDevTools: async (input) => {
+        if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
         if (window.desktopBridge) {
           await window.desktopBridge.browser.openDevTools(input);
         }
       },
       annotations: {
         start: async (input) => {
+          if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
           if (window.desktopBridge) {
             return window.desktopBridge.browser.annotations.start(input);
           }
           throw new Error("Browser annotations require the desktop app.");
         },
         cancel: async (input) => {
+          if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
           if (window.desktopBridge) {
             await window.desktopBridge.browser.annotations.cancel(input);
             return;
@@ -1068,6 +1173,7 @@ export function createWsNativeApi(): NativeApi {
           throw new Error("Browser annotations require the desktop app.");
         },
         syncMarkers: async (input) => {
+          if (remoteExecution) throw new Error(REMOTE_NATIVE_UNAVAILABLE);
           if (window.desktopBridge) {
             await window.desktopBridge.browser.annotations.syncMarkers(input);
             return;
@@ -1075,6 +1181,7 @@ export function createWsNativeApi(): NativeApi {
           throw new Error("Browser annotations require the desktop app.");
         },
         onEvent: (callback) => {
+          if (remoteExecution) return () => {};
           if (window.desktopBridge) {
             return window.desktopBridge.browser.annotations.onEvent(callback);
           }
@@ -1082,12 +1189,14 @@ export function createWsNativeApi(): NativeApi {
         },
       },
       onState: (callback) => {
+        if (remoteExecution) return () => {};
         if (window.desktopBridge) {
           return window.desktopBridge.browser.onState(callback);
         }
         return fallbackBrowserStateListeners.subscribe(callback);
       },
       onCopyLink: (callback) => {
+        if (remoteExecution) return () => {};
         if (window.desktopBridge) {
           return window.desktopBridge.browser.onBrowserCopyLink(callback);
         }
@@ -1103,16 +1212,15 @@ export function createWsNativeApi(): NativeApi {
 // Browser-mode tests mount full app roots repeatedly in one page; reset the
 // singleton so each test gets a fresh WebSocket stream and cached push state.
 export async function resetWsNativeApiForTest(): Promise<void> {
-  const transport = instance?.transport;
   instance = null;
   clearWsNativeApiListeners();
   fallbackBrowserStates.clear();
-  await transport?.dispose();
+  await disposeConnectionClients();
 }
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
-    void instance?.transport.dispose();
+    void disposeConnectionClients();
     instance = null;
     clearWsNativeApiListeners();
   });

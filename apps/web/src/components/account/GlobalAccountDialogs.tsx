@@ -1,3 +1,4 @@
+import { ACCOUNT_PROFILE_SYNC_ENABLED } from "@synara/shared/betaFeatures";
 // FILE: GlobalAccountDialogs.tsx
 // Purpose: Mounts the single sign-in and onboarding dialogs and sequences them:
 // any successful auth with a null profile flows straight into onboarding, which
@@ -20,7 +21,8 @@ export function GlobalAccountDialogs() {
 
   // A signed-in session without a profile means onboarding never finished —
   // whether the sign-in just happened here or was recovered on reconnect.
-  const needsOnboarding = account.me !== null && (account.me.profile ?? null) === null;
+  const needsOnboarding =
+    ACCOUNT_PROFILE_SYNC_ENABLED && account.me !== null && (account.me.profile ?? null) === null;
   useEffect(() => {
     if (needsOnboarding && view !== "onboarding") openOnboarding();
   }, [needsOnboarding, view, openOnboarding]);
@@ -37,7 +39,7 @@ export function GlobalAccountDialogs() {
   const signedInProfile = account.me === null ? undefined : (account.me.profile ?? null);
   useEffect(() => {
     if (view !== "sign-in" || signedInProfile === undefined) return;
-    if (signedInProfile === null) {
+    if (ACCOUNT_PROFILE_SYNC_ENABLED && signedInProfile === null) {
       openOnboarding();
     } else {
       close();
@@ -52,14 +54,18 @@ export function GlobalAccountDialogs() {
           if (!open) close();
         }}
         onSignedIn={(status) => {
-          if (status.state === "signed-in" && (status.me.profile ?? null) === null) {
+          if (
+            ACCOUNT_PROFILE_SYNC_ENABLED &&
+            status.state === "signed-in" &&
+            (status.me.profile ?? null) === null
+          ) {
             openOnboarding();
           } else {
             close();
           }
         }}
       />
-      {account.me ? (
+      {ACCOUNT_PROFILE_SYNC_ENABLED && account.me ? (
         <OnboardingDialog open={view === "onboarding"} me={account.me} onFinished={close} />
       ) : null}
     </>

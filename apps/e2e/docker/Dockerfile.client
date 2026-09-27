@@ -3,7 +3,7 @@
 # Build from the repository root. The deps stage is byte-identical to
 # apps/relay/Dockerfile so BuildKit reuses that layer instead of re-installing
 # the workspace.
-FROM oven/bun:1.3-slim AS deps
+FROM oven/bun:1.4.2-slim AS deps
 WORKDIR /app
 
 COPY package.json bun.lock turbo.json ./
@@ -11,29 +11,19 @@ COPY patches patches
 COPY --parents apps/*/package.json packages/*/package.json scripts/package.json ./
 RUN bun install --frozen-lockfile --ignore-scripts
 
-FROM oven/bun:1.3-slim
+# Bundle the actual TLS client and shared protocol for Node; Bun only builds it.
+COPY packages packages
+COPY apps/server/src apps/server/src
+COPY apps/server/package.json apps/server/package.json
+COPY apps/e2e apps/e2e
+RUN bun build apps/e2e/docker/client.ts --target=node --outfile=/app/client.mjs
+
+FROM node:24-slim
 WORKDIR /app
 ENV NODE_ENV=production
-
-# iptables for the egress pinhole (see client-entrypoint.sh). Installed here,
-# applied at container start with CAP_NET_ADMIN, never needed by the client.
 RUN apt-get update -qq \
-  && apt-get install -y -qq --no-install-recommends iptables >/dev/null \
+  && apt-get install -y -qq --no-install-recommends iptables util-linux >/dev/null \
   && rm -rf /var/lib/apt/lists/*
-
-COPY --from=deps /app/node_modules node_modules
-COPY --from=deps /app/apps/e2e/node_modules apps/e2e/node_modules
-COPY --from=deps /app/packages/contracts/node_modules packages/contracts/node_modules
-COPY --from=deps /app/packages/shared/node_modules packages/shared/node_modules
-COPY --from=deps /app/packages/relay-protocol/node_modules packages/relay-protocol/node_modules
-COPY package.json bun.lock ./
-COPY packages/contracts packages/contracts
-COPY packages/shared packages/shared
-COPY packages/relay-protocol packages/relay-protocol
-COPY apps/e2e/package.json apps/e2e/tsconfig.json apps/e2e/
-COPY apps/e2e/src apps/e2e/src
-COPY apps/e2e/docker/client.ts apps/e2e/docker/client.ts
+COPY --from=deps /app/client.mjs /app/client.mjs
 COPY --chmod=755 apps/e2e/docker/client-entrypoint.sh /usr/local/bin/client-entrypoint
-
-# Starts as root to install the packet-filter rules, then drops to `bun`.
 ENTRYPOINT ["client-entrypoint"]

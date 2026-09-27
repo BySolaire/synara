@@ -5,6 +5,7 @@ import { Effect, Path as EffectPath } from "effect";
 
 import {
   accountApiIssuer,
+  accountStateDirectory,
   readAccountCredentials,
   readAccountFile,
   SessionExpiredError,
@@ -39,12 +40,14 @@ const runWithPath = <A, E>(effect: Effect.Effect<A, E, EffectPath.Path>): Promis
  *
  * POST /devices is intentionally called on every cold-launch enrollment:
  * the account service upserts an active (user,jkt) row, while a revoked row
- * causes it to create a fresh id for the same machine-retained key.
+ * refuses re-enrollment of that same machine-retained key.
  */
 export async function ensureAccountDeviceRegistration(
   options: EnsureAccountDeviceRegistrationOptions,
 ): Promise<RegisteredAccountDeviceIdentity> {
-  const stored = await readAccountCredentials(options.baseDir);
+  const stored = await readAccountCredentials(
+    accountStateDirectory(options.baseDir, options.devUrl),
+  );
   if (!stored || stored.accountUrl !== options.accountUrl) throw new SessionExpiredError();
   const userId = options.userId ?? stored.userId;
   if (!userId) throw new Error("The signed-in account is missing its user id");
@@ -52,7 +55,7 @@ export async function ensureAccountDeviceRegistration(
   const { secretsDir } = await runWithPath(deriveServerPaths(options.baseDir, options.devUrl));
   const identity = await loadOrCreateDeviceIdentity(deviceIdentityPath(secretsDir));
   const response = await withFreshAccessToken(
-    { baseDir: options.baseDir, client: options.client },
+    { baseDir: accountStateDirectory(options.baseDir, options.devUrl), client: options.client },
     async (accessToken) => {
       const proof = await signDeviceRegistration({
         key: identity.key,
@@ -70,23 +73,26 @@ export async function ensureAccountDeviceRegistration(
   }
 
   const registration = { deviceId: response.device.id, jkt: identity.jkt };
-  const persisted = await withLockedAccountFile(options.baseDir, async () => {
-    const current = await readAccountFile(options.baseDir);
-    if (
-      !current ||
-      current.accountUrl !== options.accountUrl ||
-      (current.userId !== undefined && current.userId !== userId)
-    ) {
-      return false;
-    }
-    await writeAccountCredentials(options.baseDir, {
-      ...current,
-      userId,
-      deviceId: registration.deviceId,
-      deviceJkt: registration.jkt,
-    });
-    return true;
-  });
+  const persisted = await withLockedAccountFile(
+    accountStateDirectory(options.baseDir, options.devUrl),
+    async () => {
+      const current = await readAccountFile(accountStateDirectory(options.baseDir, options.devUrl));
+      if (
+        !current ||
+        current.accountUrl !== options.accountUrl ||
+        (current.userId !== undefined && current.userId !== userId)
+      ) {
+        return false;
+      }
+      await writeAccountCredentials(accountStateDirectory(options.baseDir, options.devUrl), {
+        ...current,
+        userId,
+        deviceId: registration.deviceId,
+        deviceJkt: registration.jkt,
+      });
+      return true;
+    },
+  );
   if (!persisted) throw new SessionExpiredError();
   return registration;
 }

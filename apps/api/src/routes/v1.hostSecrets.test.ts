@@ -54,6 +54,7 @@ function envelope(version: number, seed = "v") {
 
 describe.skipIf(!TEST_DATABASE_URL)("Slice E host secrets API", () => {
   const databaseUrl = TEST_DATABASE_URL as string;
+  let database: ReturnType<typeof createDb>;
   let pool: ReturnType<typeof createDb>["pool"];
   let workos: FakeWorkos;
   let config: WorkosApiConfig;
@@ -86,7 +87,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice E host secrets API", () => {
   }
 
   function buildApp() {
-    const { db } = createDb(databaseUrl);
+    const { db } = database;
     const { verifier, grants } = createWorkosIdentityProvider(config);
     const app = new Hono();
     app.route(
@@ -219,12 +220,13 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice E host secrets API", () => {
       issuer: config.apiPublicUrl,
       seed: config.apiSigningKey,
     });
-    pool = createDb(databaseUrl).pool;
+    database = createDb(databaseUrl);
+    pool = database.pool;
   });
 
   afterAll(async () => {
-    await pool.end();
-    await workos.close();
+    await pool?.end();
+    await workos?.close();
   });
 
   beforeEach(() => clearOrgCache());

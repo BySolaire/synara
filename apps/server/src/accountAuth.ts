@@ -9,7 +9,7 @@
  *
  * @module accountAuth
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import OS from "node:os";
 import path from "node:path";
@@ -87,6 +87,8 @@ export interface StoredAccountFile {
   readonly userId?: string;
   readonly accessToken?: string;
   readonly refreshToken?: string;
+  /** Durable intent: a crash or lost reply must never replay a single-use token. */
+  readonly refreshPendingTokenHash?: string | undefined;
   /** The active account row for this shell's device signing key. */
   readonly deviceId?: string;
   /** RFC 7638 thumbprint of the device key retained in the private secrets directory. */
@@ -118,6 +120,12 @@ const defaultStdout: Stdout = (text) => {
 /** Runs an Effect that only needs the Node path service (no scope, no filesystem layer). */
 const runWithPath = <A, E>(effect: Effect.Effect<A, E, Path.Path>): Promise<A> =>
   Effect.runPromise(effect.pipe(Effect.provide(Path.layer)));
+
+/** Account credentials follow the installation whose environment and keys they name.
+ * Production keeps its existing location; dev never adopts that live identity. */
+export function accountStateDirectory(baseDir: string, devUrl?: URL): string {
+  return devUrl === undefined ? baseDir : path.join(baseDir, "dev");
+}
 
 export function accountCredentialsPath(baseDir: string): string {
   return path.join(baseDir, CREDENTIALS_FILE_NAME);
@@ -177,6 +185,9 @@ export async function readAccountFile(baseDir: string): Promise<StoredAccountFil
       ...(typeof record.userId === "string" ? { userId: record.userId } : {}),
       ...(typeof record.accessToken === "string" ? { accessToken: record.accessToken } : {}),
       ...(typeof record.refreshToken === "string" ? { refreshToken: record.refreshToken } : {}),
+      ...(typeof record.refreshPendingTokenHash === "string"
+        ? { refreshPendingTokenHash: record.refreshPendingTokenHash }
+        : {}),
       ...(hasRegisteredDevice
         ? { deviceId: record.deviceId as string, deviceJkt: record.deviceJkt as string }
         : {}),
@@ -239,6 +250,7 @@ export async function deleteAccountCredentials(baseDir: string): Promise<void> {
 
 export interface UnlinkLocalAccountHostOptions {
   readonly baseDir: string;
+  readonly devUrl?: URL | undefined;
   readonly client?: AccountClient;
 }
 
@@ -250,16 +262,18 @@ export interface UnlinkLocalAccountHostOptions {
 export async function unlinkLocalAccountHost(
   options: UnlinkLocalAccountHostOptions,
 ): Promise<void> {
-  await withLockedAccountFile(options.baseDir, async () => {
-    const stored = await readAccountFile(options.baseDir);
+  await withLockedAccountFile(accountStateDirectory(options.baseDir, options.devUrl), async () => {
+    const stored = await readAccountFile(accountStateDirectory(options.baseDir, options.devUrl));
     if (!stored?.hostId || stored.hostKeyGeneration === undefined) return;
 
-    const { hostIdentityPath } = await runWithPath(deriveServerPaths(options.baseDir, undefined));
+    const { hostIdentityPath } = await runWithPath(
+      deriveServerPaths(options.baseDir, options.devUrl),
+    );
     const identity = await readHostIdentity(hostIdentityPath);
     if (!identity) {
       throw new Error("The local host identity is missing, so this machine cannot prove unlinking");
     }
-    const environmentId = await resolveEnvironmentId(options.baseDir);
+    const environmentId = await resolveEnvironmentId(options.baseDir, options.devUrl);
     const hostProof = await mintHostProof({
       identity,
       apiIssuer: accountApiIssuer(stored.accountUrl),
@@ -281,7 +295,7 @@ export async function unlinkLocalAccountHost(
         ([acknowledgedHostId]) => acknowledgedHostId !== stored.hostId,
       ),
     ) as Record<string, true>;
-    await writeAccountCredentials(options.baseDir, {
+    await writeAccountCredentials(accountStateDirectory(options.baseDir, options.devUrl), {
       ...session,
       ...(Object.keys(remainingAcknowledgements).length > 0
         ? { discoverabilityAcknowledgedByHostId: remainingAcknowledgements }
@@ -460,21 +474,6 @@ function isUnauthorized(error: unknown): boolean {
 const TRANSIENT_GRANT_STATUSES: ReadonlySet<number> = new Set([408, 429]);
 
 /**
- * Whether a refresh failure says nothing about the token — a transient 4xx
- * (408/429), any 5xx, or a network error (no AccountApiError at all). Worth
- * one bounded retry with the SAME token: the provider only rotates on
- * success, so re-presenting it is safe.
- */
-function isTransientRefreshFailure(error: unknown): boolean {
-  if (!(error instanceof AccountApiError)) return true;
-  return TRANSIENT_GRANT_STATUSES.has(error.status) || error.status >= 500;
-}
-
-/** Bounded backoff between refresh retries; injectable clock not needed — one step. */
-const REFRESH_RETRY_DELAY_MS = 1_000;
-const REFRESH_ATTEMPTS = 2;
-
-/**
  * Whether the identity provider actually refused the grant, as opposed to
  * failing to answer. Only a terminal 4xx means the stored refresh token is
  * genuinely spent; a 5xx, a timeout, a rate limit, or a DNS failure says
@@ -492,8 +491,6 @@ function isGrantRejected(error: unknown): boolean {
 export interface WithFreshAccessTokenOptions {
   readonly baseDir: string;
   readonly client: AccountClient;
-  /** Delay before the one transient-refresh retry; injectable for tests. */
-  readonly refreshRetryDelayMs?: number;
   /**
    * Lets a caller preserve domain-specific 401/403 answers. Most account
    * routes use those statuses for authentication, but a host grant also uses
@@ -508,6 +505,7 @@ function withoutSession(credentials: StoredAccountFile): StoredAccountFile {
   const {
     accessToken: _accessToken,
     refreshToken: _refreshToken,
+    refreshPendingTokenHash: _refreshPendingTokenHash,
     organizationId: _organizationId,
     userId: _userId,
     ...rest
@@ -560,25 +558,12 @@ async function clearStoredSessionIfCurrent(
 /** What renewing the session produced: a usable token, or a dead session. */
 type SessionRenewal = { kind: "renewed"; accessToken: string } | { kind: "expired" };
 
-/**
- * The refresh grant with one bounded retry on a transient failure. Refresh
- * is safe to re-attempt with the same token — the provider only rotates on
- * success — and a single retry absorbs the blip (a timed-out attempt, a
- * rate-limit tick, a 5xx) that would otherwise fail a user's command while
- * their session was perfectly renewable.
- */
-async function refreshWithBoundedRetry(
-  client: AccountClient,
-  request: { refreshToken: string; organizationId: string },
-  retryDelayMs: number,
-): ReturnType<AccountClient["refreshAccessToken"]> {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      return await client.refreshAccessToken(request);
-    } catch (error) {
-      if (attempt >= REFRESH_ATTEMPTS || !isTransientRefreshFailure(error)) throw error;
-      await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs));
-    }
+export class SessionRefreshUncertainError extends SessionExpiredError {
+  constructor() {
+    super();
+    this.name = "SessionRefreshUncertainError";
+    this.message =
+      "The previous account renewal has an uncertain outcome. Please sign in again to recover safely.";
   }
 }
 
@@ -594,9 +579,9 @@ async function refreshWithBoundedRetry(
  * the winner's perfectly valid session).
  *
  * The rotated pair is persisted while still inside the lock and *before* the
- * caller retries: if the process died between redeeming a token and writing
- * the replacement, the stored token would already be spent and the user
- * silently signed out with no way to tell why. The write merges into the
+ * caller retries. A durable pending marker covers a crash between redemption
+ * and response persistence; that uncertain outcome requires sign-in instead
+ * of another redemption. The write merges into the
  * re-read file, not the caller's snapshot, so host fields stored concurrently
  * survive.
  */
@@ -604,7 +589,6 @@ async function renewSession(
   baseDir: string,
   client: AccountClient,
   consumed: AccountCredentials,
-  retryDelayMs: number,
 ): Promise<SessionRenewal> {
   return withLockedAccountFile(baseDir, async (): Promise<SessionRenewal> => {
     const current = await readAccountFile(baseDir);
@@ -618,18 +602,20 @@ async function renewSession(
         : { kind: "expired" };
     }
 
+    const tokenHash = createHash("sha256").update(current.refreshToken).digest("hex");
+    if (current.refreshPendingTokenHash === tokenHash) throw new SessionRefreshUncertainError();
+    // Fsync intent BEFORE sending. No provider idempotency/recovery contract exists:
+    // after an ambiguous response or crash, explicit sign-in is the safe recovery.
+    await writeAccountCredentials(baseDir, { ...current, refreshPendingTokenHash: tokenHash });
     let refreshed;
     try {
-      refreshed = await refreshWithBoundedRetry(
-        client,
-        { refreshToken: current.refreshToken, organizationId: current.organizationId },
-        retryDelayMs,
-      );
+      refreshed = await client.refreshAccessToken({
+        refreshToken: current.refreshToken,
+        organizationId: current.organizationId,
+      });
     } catch (refreshError) {
-      // Only a refusal proves the token is dead. On an outage or a network
-      // failure the stored token is probably still good, and keeping a
-      // possibly-spent token costs one failed command, where discarding a
-      // possibly-valid one costs a full re-authentication.
+      // Preserve the durable intent on any ambiguous outcome. A later caller
+      // may still use the access token but cannot spend this refresh token again.
       if (!isGrantRejected(refreshError)) throw refreshError;
       await writeAccountCredentials(baseDir, withoutSession(current));
       return { kind: "expired" };
@@ -639,6 +625,7 @@ async function renewSession(
       ...current,
       accessToken: refreshed.accessToken,
       refreshToken: refreshed.refreshToken,
+      refreshPendingTokenHash: undefined,
       // Backfills files written before userId existed; on current files this
       // rewrites the same id.
       userId: refreshed.user.id,
@@ -687,12 +674,7 @@ export async function withFreshAccessToken<A>(
       throw error;
     }
 
-    const renewal = await renewSession(
-      baseDir,
-      client,
-      credentials,
-      options.refreshRetryDelayMs ?? REFRESH_RETRY_DELAY_MS,
-    );
+    const renewal = await renewSession(baseDir, client, credentials);
     if (renewal.kind === "expired") throw new SessionExpiredError();
     return await fn(renewal.accessToken);
   }
@@ -757,7 +739,7 @@ async function linkThisHost(
   let linkedPublicKeyPem: string | undefined;
   try {
     const challenge = await withFreshAccessToken(
-      { baseDir: options.baseDir, client },
+      { baseDir: accountStateDirectory(options.baseDir, options.devUrl), client },
       (accessToken) =>
         client.startHostLink(accessToken, {
           environmentId: EnvironmentId.makeUnsafe(environmentId),
@@ -768,7 +750,10 @@ async function linkThisHost(
     );
     // Every link attempt is a key rotation. Persist before completing so the
     // account can never accept a public key this process did not durably keep.
-    const identity = await generateHostIdentityForLink(options.baseDir, hostIdentityPath);
+    const identity = await generateHostIdentityForLink(
+      accountStateDirectory(options.baseDir, options.devUrl),
+      hostIdentityPath,
+    );
     linkedPublicKeyPem = identity.publicKeyPem;
     const proof = await mintHostLinkProof({
       identity,
@@ -789,21 +774,24 @@ async function linkThisHost(
   }
 
   const endpoints = await resolveLanEndpoints(options.baseDir, options.devUrl);
-  const saved = await withLockedAccountFile(options.baseDir, async () => {
-    const current = await readAccountFile(options.baseDir);
-    if (!current) return "missing" as const;
-    const persistedIdentity = await readHostIdentity(hostIdentityPath);
-    if (!persistedIdentity || persistedIdentity.publicKeyPem !== linkedPublicKeyPem) {
-      return "superseded" as const;
-    }
-    await writeAccountCredentials(options.baseDir, {
-      ...current,
-      hostId: linked.host.id,
-      hostOwnerUserId: linked.host.ownerUserId,
-      hostKeyGeneration: linked.host.keyGeneration,
-    });
-    return "saved" as const;
-  });
+  const saved = await withLockedAccountFile(
+    accountStateDirectory(options.baseDir, options.devUrl),
+    async () => {
+      const current = await readAccountFile(accountStateDirectory(options.baseDir, options.devUrl));
+      if (!current) return "missing" as const;
+      const persistedIdentity = await readHostIdentity(hostIdentityPath);
+      if (!persistedIdentity || persistedIdentity.publicKeyPem !== linkedPublicKeyPem) {
+        return "superseded" as const;
+      }
+      await writeAccountCredentials(accountStateDirectory(options.baseDir, options.devUrl), {
+        ...current,
+        hostId: linked.host.id,
+        hostOwnerUserId: linked.host.ownerUserId,
+        hostKeyGeneration: linked.host.keyGeneration,
+      });
+      return "saved" as const;
+    },
+  );
   if (saved === "missing") {
     stdout(
       `Linked this host as "${linked.host.name}" (${linked.host.id}), but the local credentials file disappeared before the link could be saved.\nRun \`synara auth\` again; unlink the stale host if it lingers.\n`,
@@ -858,7 +846,9 @@ async function linkThisHost(
  * is unavailable; a later status read retries this idempotent guard.
  */
 export async function ensureLocalAccountHostLinked(options: AccountFlowOptions): Promise<void> {
-  const existing = await readAccountCredentials(options.baseDir);
+  const existing = await readAccountCredentials(
+    accountStateDirectory(options.baseDir, options.devUrl),
+  );
   if (!existing) return;
   const { hostIdentityPath } = await runWithPath(
     deriveServerPaths(options.baseDir, options.devUrl),
@@ -895,8 +885,11 @@ export async function ensureLocalAccountHostLinked(options: AccountFlowOptions):
 export async function resolveAuthLoginAccountUrl(options: {
   readonly baseDir: string;
   readonly explicitUrl: string | undefined;
+  readonly devUrl?: URL;
 }): Promise<string | undefined> {
-  const stored = await readAccountCredentials(options.baseDir);
+  const stored = await readAccountCredentials(
+    accountStateDirectory(options.baseDir, options.devUrl),
+  );
   if (!stored) return options.explicitUrl;
   if (options.explicitUrl !== undefined && options.explicitUrl !== stored.accountUrl) {
     throw new Error(
@@ -914,7 +907,9 @@ export async function resolveAuthLoginAccountUrl(options: {
  */
 export async function runAuthLogin(options: AccountFlowOptions): Promise<void> {
   const stdout = options.stdout ?? defaultStdout;
-  const existing = await readAccountCredentials(options.baseDir);
+  const existing = await readAccountCredentials(
+    accountStateDirectory(options.baseDir, options.devUrl),
+  );
   if (!existing) {
     stdout(
       "Not signed in — sign in from the Synara app first (account menu), then run `synara auth` to link this machine.\n",
@@ -970,7 +965,10 @@ export async function runDeviceCodeHostLink(options: AccountFlowOptions): Promis
   const { hostIdentityPath } = await runWithPath(
     deriveServerPaths(options.baseDir, options.devUrl),
   );
-  const identity = await generateHostIdentityForLink(options.baseDir, hostIdentityPath);
+  const identity = await generateHostIdentityForLink(
+    accountStateDirectory(options.baseDir, options.devUrl),
+    hostIdentityPath,
+  );
   const proof = await mintHostLinkProof({
     identity,
     apiIssuer: accountApiIssuer(options.accountUrl),
@@ -983,13 +981,13 @@ export async function runDeviceCodeHostLink(options: AccountFlowOptions): Promis
   });
   const linked = await client.completeHostLink({ challengeId: challenge.challengeId, proof });
   const instance = await client.instance();
-  await withLockedAccountFile(options.baseDir, async () => {
+  await withLockedAccountFile(accountStateDirectory(options.baseDir, options.devUrl), async () => {
     const persistedIdentity = await readHostIdentity(hostIdentityPath);
     if (!persistedIdentity || persistedIdentity.publicKeyPem !== identity.publicKeyPem) {
       throw new Error("Another host link superseded this device-code link with a newer local key");
     }
-    const previous = await readAccountFile(options.baseDir);
-    await writeAccountCredentials(options.baseDir, {
+    const previous = await readAccountFile(accountStateDirectory(options.baseDir, options.devUrl));
+    await writeAccountCredentials(accountStateDirectory(options.baseDir, options.devUrl), {
       ...(previous?.accountUrl === options.accountUrl ? previous : {}),
       accountUrl: options.accountUrl,
       workosClientId: instance.clientId,
@@ -1003,7 +1001,7 @@ export async function runDeviceCodeHostLink(options: AccountFlowOptions): Promis
     baseDir: options.baseDir,
     client,
     ...(options.devUrl ? { devUrl: options.devUrl } : {}),
-  });
+  }).catch(() => {});
   stdout(`Linked this host as "${linked.host.name}" (${linked.host.id}).\n`);
 }
 
@@ -1098,29 +1096,25 @@ export interface RefreshHostRegistrationOptions {
 export async function refreshHostRegistration(
   options: RefreshHostRegistrationOptions,
 ): Promise<void> {
-  const credentials = await readAccountFile(options.baseDir);
+  const credentials = await readAccountFile(accountStateDirectory(options.baseDir, options.devUrl));
   if (!credentials?.hostId || credentials.hostKeyGeneration === undefined) return;
 
   const client = clientFor(credentials.accountUrl, options.client);
   const endpoints = await resolveLanEndpoints(options.baseDir, options.devUrl);
-  try {
-    const environmentId = await resolveEnvironmentId(options.baseDir, options.devUrl);
-    const { hostIdentityPath } = await runWithPath(
-      deriveServerPaths(options.baseDir, options.devUrl),
-    );
-    const identity = await readHostIdentity(hostIdentityPath);
-    if (!identity) return;
-    const hostProof = await mintHostProof({
-      identity,
-      apiIssuer: accountApiIssuer(credentials.accountUrl),
-      environmentId,
-      hostId: credentials.hostId,
-      keyGeneration: credentials.hostKeyGeneration,
-    });
-    await client.replaceHostEndpoints(hostProof, credentials.hostId, endpoints);
-  } catch {
-    // Intentionally silent: no retry, no log noise on every offline start.
-  }
+  const environmentId = await resolveEnvironmentId(options.baseDir, options.devUrl);
+  const { hostIdentityPath } = await runWithPath(
+    deriveServerPaths(options.baseDir, options.devUrl),
+  );
+  const identity = await readHostIdentity(hostIdentityPath);
+  if (!identity) return;
+  const hostProof = await mintHostProof({
+    identity,
+    apiIssuer: accountApiIssuer(credentials.accountUrl),
+    environmentId,
+    hostId: credentials.hostId,
+    keyGeneration: credentials.hostKeyGeneration,
+  });
+  await client.replaceHostEndpoints(hostProof, credentials.hostId, endpoints);
 }
 
 /**
@@ -1130,6 +1124,7 @@ export async function refreshHostRegistration(
  */
 export interface LogoutOptions {
   readonly baseDir: string;
+  readonly devUrl?: URL | undefined;
   readonly client?: AccountClient;
   readonly stdout?: Stdout;
 }
@@ -1148,16 +1143,20 @@ export async function runAuthLogout(options: LogoutOptions): Promise<void> {
   // is gone, where every writer's own locked re-read makes it bail). The
   // remote call is bounded by the client's request timeout, far inside the
   // lock's stale threshold, so holding the lock across it is safe.
-  await withLockedAccountFile(options.baseDir, async () => {
+  await withLockedAccountFile(accountStateDirectory(options.baseDir, options.devUrl), async () => {
     // Deliberately the raw file, not a live session: a user whose session
     // expired still has a host registration to tear down and a file to delete.
-    const credentials = await readAccountFile(options.baseDir);
+    const credentials = await readAccountFile(
+      accountStateDirectory(options.baseDir, options.devUrl),
+    );
     if (!credentials) {
       // A file that exists but does not parse as v2 is a leftover from a
       // previous version or a corrupt write. Deleting it is the whole point of
       // logout, and leaving it behind would also keep `synara auth` from ever
       // reporting a clean "Not signed in".
-      const stale = await deleteAccountCredentialsIfPresent(options.baseDir);
+      const stale = await deleteAccountCredentialsIfPresent(
+        accountStateDirectory(options.baseDir, options.devUrl),
+      );
       stdout(
         stale
           ? "Removed stale credentials from a previous version. The host record may need manual removal.\n"
@@ -1173,9 +1172,9 @@ export async function runAuthLogout(options: LogoutOptions): Promise<void> {
 
     if (credentials.hostId && credentials.hostKeyGeneration !== undefined) {
       try {
-        const environmentId = await resolveEnvironmentId(options.baseDir);
+        const environmentId = await resolveEnvironmentId(options.baseDir, options.devUrl);
         const { hostIdentityPath } = await runWithPath(
-          deriveServerPaths(options.baseDir, undefined),
+          deriveServerPaths(options.baseDir, options.devUrl),
         );
         const identity = await readHostIdentity(hostIdentityPath);
         if (identity) {
@@ -1197,8 +1196,10 @@ export async function runAuthLogout(options: LogoutOptions): Promise<void> {
     // The account service no longer brokers session listing or revocation —
     // WorkOS owns sessions, and the access token is short-lived. Dropping the
     // local credentials is what sign-out means here.
-    await deleteAccountCredentials(options.baseDir);
-    const { hostIdentityPath } = await runWithPath(deriveServerPaths(options.baseDir, undefined));
+    await deleteAccountCredentials(accountStateDirectory(options.baseDir, options.devUrl));
+    const { hostIdentityPath } = await runWithPath(
+      deriveServerPaths(options.baseDir, options.devUrl),
+    );
     await deleteHostIdentity(hostIdentityPath);
     stdout(
       `Signed out of ${credentials.accountUrl}. Local credentials deleted.\nThe browser session at the identity provider expires on its own.\n`,
@@ -1250,7 +1251,9 @@ export async function runStatus(options: StatusOptions): Promise<void> {
     return;
   }
 
-  const credentials = await readAccountCredentials(options.baseDir);
+  const credentials = await readAccountCredentials(
+    accountStateDirectory(options.baseDir, options.devUrl),
+  );
   if (!credentials) {
     stdout(`Not signed in to ${options.accountUrl} — sign in from the Synara app.\n`);
     return;
@@ -1258,7 +1261,10 @@ export async function runStatus(options: StatusOptions): Promise<void> {
 
   const client = clientFor(credentials.accountUrl, options.client);
   const withToken = <A>(fn: (accessToken: string) => Promise<A>) =>
-    withFreshAccessToken({ baseDir: options.baseDir, client }, fn);
+    withFreshAccessToken(
+      { baseDir: accountStateDirectory(options.baseDir, options.devUrl), client },
+      fn,
+    );
 
   let me;
   try {

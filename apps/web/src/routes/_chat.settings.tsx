@@ -4,8 +4,9 @@
 // Exports: Settings route component for `/settings`
 
 import { PROVIDER_DISPLAY_NAMES, type ProviderKind } from "@synara/contracts";
-import { PROVIDER_DESCRIPTORS } from "@synara/shared/providerMetadata";
+import { isBetaFeatureOn, VISIBLE_PROVIDER_DESCRIPTORS } from "../betaFeatures";
 import { sameAppSnapShortcut } from "@synara/shared/appSnapShortcut";
+import { SafariAccessSetupButton } from "../components/SafariAccessOnboarding";
 import { createFileRoute, useSearch } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 
@@ -15,6 +16,7 @@ import {
   DEFAULT_UI_DENSITY,
   DEFAULT_CHAT_WIDTH,
   type UiDensity,
+  type SidebarLayout,
   MAX_CHAT_FONT_SIZE_PX,
   MAX_TERMINAL_FONT_SIZE_PX,
   MIN_CHAT_FONT_SIZE_PX,
@@ -35,8 +37,10 @@ import {
 } from "~/components/settings/ConversationStorageSettingsPanels";
 import {
   AppSnapSettingsPanel,
+  BetaChannelSettingsPanel,
   NotificationsSettingsPanel,
 } from "~/components/settings/DesktopSettingsPanels";
+import { ComputerSettingsPanel } from "~/components/settings/ComputerSettingsPanel";
 import { ModelsSettingsPanel } from "~/components/settings/ModelsSettingsPanel";
 import {
   isProviderInstallSettingsDirty,
@@ -52,6 +56,7 @@ import { ConnectionsSettingsPanel } from "../components/settings/ConnectionsSett
 import {
   SettingResetButton,
   SettingsSegmentedControl,
+  type SettingsSegmentedOption,
   SettingsSelectControl,
 } from "../components/settings/SettingControls";
 import {
@@ -78,7 +83,9 @@ import {
   AutocompleteList,
   AutocompletePopup,
 } from "../components/ui/autocomplete";
+import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { useOnboardingDialogStore } from "../onboarding/onboardingDialogStore";
 import { Input } from "../components/ui/input";
 import { SelectItem } from "../components/ui/select";
 import { Switch } from "../components/ui/switch";
@@ -91,7 +98,7 @@ import { useTheme } from "../hooks/useTheme";
 import { isUiDensity } from "../lib/appDensity";
 import { isChatWidthMode, type ChatWidthMode } from "../lib/chatWidth";
 import { isElectron } from "../env";
-import { RotateCcwIcon } from "../lib/icons";
+import { ResetIcon } from "../lib/icons";
 import {
   cn,
   getNavigatorPlatform,
@@ -110,6 +117,11 @@ import {
 import { SETTINGS_PAGE_BACKGROUND_CLASS_NAME } from "../settingsPanelStyles";
 
 // ── Settings taxonomy ──────────────────────────────────────────────────────
+
+const SIDEBAR_LAYOUT_OPTIONS = [
+  { value: "classic", label: "Classic" },
+  { value: "rail", label: "Rail" },
+] as const satisfies readonly SettingsSegmentedOption<SidebarLayout>[];
 
 const UI_DENSITY_OPTIONS = [
   {
@@ -155,7 +167,7 @@ const CHAT_WIDTH_OPTIONS = [
   description: string;
 }>;
 
-const PROVIDER_SELECT_OPTIONS = PROVIDER_DESCRIPTORS.map((descriptor) => descriptor.kind);
+const PROVIDER_SELECT_OPTIONS = VISIBLE_PROVIDER_DESCRIPTORS.map((descriptor) => descriptor.kind);
 
 const TIMESTAMP_FORMAT_LABELS = {
   locale: "System default",
@@ -309,6 +321,12 @@ function SettingsRouteView() {
     ...(!isDefaultActiveTheme ? [`${resolvedTheme === "dark" ? "Dark" : "Light"} theme pack`] : []),
     ...(settings.defaultProvider !== defaults.defaultProvider ? ["Default provider"] : []),
     ...(settings.defaultThreadEnvMode !== defaults.defaultThreadEnvMode ? ["New thread mode"] : []),
+    ...(settings.archiveDeletesOrphanedWorktree !== defaults.archiveDeletesOrphanedWorktree
+      ? ["Delete worktree on archive"]
+      : []),
+    ...(isBetaFeatureOn("sidebarV2") && settings.sidebarLayout !== defaults.sidebarLayout
+      ? ["Sidebar layout"]
+      : []),
     ...(settings.sidebarProjectSortOrder !== defaults.sidebarProjectSortOrder
       ? ["Project sort order"]
       : []),
@@ -342,6 +360,7 @@ function SettingsRouteView() {
     ...(settings.enableAssistantStreaming !== defaults.enableAssistantStreaming
       ? ["Assistant output"]
       : []),
+    ...(settings.composerEffortSlider !== defaults.composerEffortSlider ? ["Effort slider"] : []),
     ...(settings.followUpBehavior !== defaults.followUpBehavior ? ["Follow-up behavior"] : []),
     ...(settings.autoOpenDevicePane !== defaults.autoOpenDevicePane
       ? ["Automatically open simulator"]
@@ -351,6 +370,15 @@ function SettingsRouteView() {
       ? ["AppSnap shortcut"]
       : []),
     ...(settings.appSnapPlaySound !== defaults.appSnapPlaySound ? ["AppSnap capture sound"] : []),
+    ...(settings.computerControlEnabled !== defaults.computerControlEnabled
+      ? ["Computer control"]
+      : []),
+    ...(settings.autoOpenComputerPane !== defaults.autoOpenComputerPane
+      ? ["Computer preview auto-open"]
+      : []),
+    ...(settings.agentCursorColorMode !== defaults.agentCursorColorMode
+      ? ["Agent cursor colors"]
+      : []),
     ...(settings.enableProviderUpdateChecks !== defaults.enableProviderUpdateChecks
       ? ["Provider update checks"]
       : []),
@@ -449,6 +477,8 @@ function SettingsRouteView() {
 
   const renderGeneralPanel = () => (
     <div className="space-y-6">
+      <SafariAccessSetupButton />
+      <BetaChannelSettingsPanel active={true} />
       <SettingsSection title="Core defaults">
         <SettingsRow
           title="Default provider"
@@ -524,9 +554,54 @@ function SettingsRouteView() {
             </SettingsSelectControl>
           }
         />
+
+        {renderBooleanSettingRow({
+          settingKey: "archiveDeletesOrphanedWorktree",
+          title: "Delete worktree on archive",
+          description:
+            "After Archive's Undo period, remove a clean worktree only if the task has stopped and no other task uses it. Its branch remains available for recovery.",
+          resetLabel: "delete worktree on archive",
+          ariaLabel: "Delete worktree on archive",
+        })}
+
+        <SettingsRow
+          title="Welcome tour"
+          description="Replay the first-run setup: feature tour, provider selection, appearance, and first project."
+          control={
+            <Button
+              variant="outline"
+              onClick={() => useOnboardingDialogStore.getState().openDialog()}
+            >
+              Open welcome tour
+            </Button>
+          }
+        />
       </SettingsSection>
 
       <SettingsSection title="Sidebar organization">
+        {isBetaFeatureOn("sidebarV2") ? (
+          <SettingsRow
+            title="Sidebar layout"
+            description="Classic keeps the single sidebar. Rail adds fixed icon tabs on the left, with projects and threads in a panel beside them."
+            resetAction={
+              settings.sidebarLayout !== defaults.sidebarLayout ? (
+                <SettingResetButton
+                  label="sidebar layout"
+                  onClick={() => updateSettings({ sidebarLayout: defaults.sidebarLayout })}
+                />
+              ) : null
+            }
+            control={
+              <SettingsSegmentedControl
+                value={settings.sidebarLayout}
+                onValueChange={(value) => updateSettings({ sidebarLayout: value })}
+                ariaLabel="Sidebar layout"
+                options={SIDEBAR_LAYOUT_OPTIONS}
+              />
+            }
+          />
+        ) : null}
+
         <SettingsRow
           title="Project order"
           description="Controls how projects are arranged in the main sidebar."
@@ -697,15 +772,6 @@ function SettingsRouteView() {
             description: "Show the pinned-messages checklist in the Environment panel.",
             resetLabel: "pinned messages section",
             ariaLabel: "Show the Pinned messages section in the Environment panel",
-          })}
-
-          {renderBooleanSettingRow({
-            settingKey: "showEnvironmentMarkers",
-            title: "Text markers",
-            description:
-              "Show highlighted and underlined transcript text in the Environment panel.",
-            resetLabel: "text markers section",
-            ariaLabel: "Show the Text markers section in the Environment panel",
           })}
 
           {renderBooleanSettingRow({
@@ -948,7 +1014,7 @@ function SettingsRouteView() {
                 }}
                 aria-label="Base font size in pixels"
               />
-              <span className="text-xs text-muted-foreground">px</span>
+              <span className="text-ui leading-snug text-muted-foreground">px</span>
             </div>
           }
         />
@@ -989,7 +1055,7 @@ function SettingsRouteView() {
                 }}
                 aria-label="Terminal font size in pixels"
               />
-              <span className="text-xs text-muted-foreground">px</span>
+              <span className="text-ui leading-snug text-muted-foreground">px</span>
             </div>
           }
         />
@@ -1153,6 +1219,15 @@ function SettingsRouteView() {
         })}
 
         {renderBooleanSettingRow({
+          settingKey: "composerEffortSlider",
+          title: "Effort slider",
+          description:
+            "Show effort as a slider at the bottom of the composer's model picker, with fast mode and reset alongside it, instead of separate Effort and Speed rows.",
+          resetLabel: "effort slider",
+          ariaLabel: "Show effort slider in the composer",
+        })}
+
+        {renderBooleanSettingRow({
           settingKey: "autoOpenDevicePane",
           title: "Automatically open simulator",
           description:
@@ -1272,10 +1347,18 @@ function SettingsRouteView() {
               {activeSection !== "profile" ? (
                 <div className="mb-8 flex items-start justify-between gap-4">
                   <div className="min-w-0">
-                    <h1 className="text-xl font-medium tracking-tight text-foreground">
+                    <h1 className="flex items-center gap-2 text-xl font-medium tracking-tight text-foreground">
                       {activeSectionItem.label}
+                      {activeSectionItem.badge ? (
+                        <Badge
+                          variant="outline"
+                          className="rounded-full px-2 font-normal tracking-normal text-muted-foreground"
+                        >
+                          {activeSectionItem.badge}
+                        </Badge>
+                      ) : null}
                     </h1>
-                    <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
+                    <p className="mt-1.5 text-ui leading-relaxed text-muted-foreground">
                       {activeSectionItem.description}
                     </p>
                   </div>
@@ -1286,7 +1369,7 @@ function SettingsRouteView() {
                     disabled={changedSettingLabels.length === 0}
                     onClick={() => void restoreDefaults()}
                   >
-                    <RotateCcwIcon className="size-3.5" />
+                    <ResetIcon className="size-3.5" />
                     Restore defaults
                   </Button>
                 </div>
@@ -1304,6 +1387,12 @@ function SettingsRouteView() {
                 />
                 <AppSnapSettingsPanel
                   active={activeSection === "appsnap"}
+                  settings={settings}
+                  defaults={defaults}
+                  updateSettings={updateSettings}
+                />
+                <ComputerSettingsPanel
+                  active={activeSection === "computer"}
                   settings={settings}
                   defaults={defaults}
                   updateSettings={updateSettings}

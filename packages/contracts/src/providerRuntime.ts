@@ -1,4 +1,5 @@
 import { Option, Schema } from "effect";
+import { AsyncUserInputQuestions } from "./asyncUserInput";
 import {
   EventId,
   IsoDateTime,
@@ -13,6 +14,7 @@ import {
   TurnId,
 } from "./baseSchemas";
 import { ProviderKind } from "./orchestration";
+import { ClaudeCacheObservation } from "./claudeCache";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -146,6 +148,7 @@ export const CanonicalRequestType = Schema.Literals([
   "apply_patch_approval",
   "exec_command_approval",
   "tool_user_input",
+  "tool_approval",
   "dynamic_tool_call",
   "auth_tokens_refresh",
   "unknown",
@@ -317,11 +320,23 @@ const ThreadMetadataUpdatedPayload = Schema.Struct({
 export type ThreadMetadataUpdatedPayload = typeof ThreadMetadataUpdatedPayload.Type;
 
 export const ThreadTokenUsageSnapshot = Schema.Struct({
+  claudeCache: Schema.optional(ClaudeCacheObservation),
+  // Provider session totals, distinct from the latest request/context snapshot.
+  cumulativeUsage: Schema.optional(
+    Schema.Struct({
+      inputTokens: NonNegativeInt,
+      outputTokens: NonNegativeInt,
+      cachedInputTokens: Schema.optional(NonNegativeInt),
+      cacheCreationInputTokens: Schema.optional(NonNegativeInt),
+    }),
+  ),
   usedTokens: NonNegativeInt,
   usedPercent: Schema.optional(
     Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)).check(Schema.isLessThanOrEqualTo(100)),
   ),
   totalProcessedTokens: Schema.optional(NonNegativeInt),
+  // Claude v1 counts API responses once; unversioned Claude totals are unreliable.
+  tokenAccountingVersion: Schema.optional(Schema.Literal(1)),
   maxTokens: Schema.optional(PositiveInt),
   inputTokens: Schema.optional(NonNegativeInt),
   cachedInputTokens: Schema.optional(NonNegativeInt),
@@ -376,9 +391,14 @@ export type TurnStartedPayload = typeof TurnStartedPayload.Type;
 
 const TurnCompletedPayload = Schema.Struct({
   state: RuntimeTurnState,
+  // Present only for an explicitly requested native compaction operation.
+  contextCompacted: Schema.optional(Schema.Boolean),
   stopReason: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
   usage: Schema.optional(Schema.Unknown),
   modelUsage: Schema.optional(UnknownRecordSchema),
+  tokenAccountingVersion: Schema.optional(Schema.Literal(1)),
+  // Per-turn main-loop usage, including observed usage when no result arrives.
+  mainLoopTokens: Schema.optional(NonNegativeInt),
   totalCostUsd: Schema.optional(Schema.Number),
   cumulativeCostUsd: Schema.optional(Schema.Number),
   errorMessage: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -418,6 +438,7 @@ const TurnDiffUpdatedPayload = Schema.Struct({
 export type TurnDiffUpdatedPayload = typeof TurnDiffUpdatedPayload.Type;
 
 export const ItemLifecyclePayload = Schema.Struct({
+  asyncQuestions: Schema.optional(AsyncUserInputQuestions),
   itemType: CanonicalItemType,
   status: Schema.optional(RuntimeItemStatus),
   title: Schema.optional(TrimmedNonEmptyStringSchema),

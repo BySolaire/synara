@@ -31,6 +31,7 @@ export {
   OpenAIIcon as OpenAI,
   OpenCodeIcon,
   PiIcon,
+  OmpIcon,
 } from "@synara/profile-ui/provider-icon";
 
 // Adapts Simple Icons components to the app's SVG icon shape without changing call sites.

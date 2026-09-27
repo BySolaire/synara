@@ -18,6 +18,7 @@ import type { HostIdentity } from "../hostIdentity";
 import { JwtReplayCache } from "./replayCache";
 
 export interface VerifiedSessionCredential {
+  readonly trustGeneration: number;
   readonly userId: string;
   readonly deviceJkt: string;
   readonly expiresAtSeconds: number;
@@ -100,6 +101,7 @@ export async function verifySessionCredential(input: {
   }
   input.replayCache?.consume(dpop.jti, now + JWT_CLOCK_TOLERANCE_SECONDS, now);
   return {
+    trustGeneration: credential.trustGeneration,
     userId: credential.sub,
     deviceJkt: credential.cnf.jkt,
     expiresAtSeconds: credential.exp,

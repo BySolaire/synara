@@ -126,14 +126,13 @@ describe("HostMintService", () => {
 
   function service(overrides: Partial<ConstructorParameters<typeof HostMintService>[0]> = {}) {
     return new HostMintService({
+      authorizeDevice: async () => 1,
       identity: hostIdentity,
       apiIssuer: API_ISSUER,
       environmentId: ENVIRONMENT_ID,
       hostId: HOST_ID,
       keyGeneration: 4,
-      // The default fixture is the ORG-MEMBER path: the connecting user is
-      // not the link-time owner, so the live authorization call still runs.
-      ownerUserId: "owner_1",
+      ownerUserId: USER_ID,
       getApiJwks: async () => jwks,
       getAuthorization: async () => ({
         discoverable: true,
@@ -193,25 +192,6 @@ describe("HostMintService", () => {
         await mintRequest(await grant({ subject: "victim" }), { subject: "attacker" }),
       ),
     ).rejects.toThrow(/not bound to this host, user, and device key/);
-  });
-
-  it.each([
-    ["discoverability was turned off", { discoverable: false, ownerInOrg: true }],
-    ["the owner left the org", { discoverable: true, ownerInOrg: false }],
-  ])("refuses an org member after %s", async (_label, policy) => {
-    // Either failure alone must refuse — sessionRegistry.reverify uses the
-    // OR form, so an AND here would kill live sessions while still handing
-    // out fresh credentials.
-    await expect(
-      service({
-        getAuthorization: async () => ({
-          ...policy,
-          ownerUserId: "owner_1",
-          orgId: "org_1",
-          revokedDeviceJkts: [],
-        }),
-      }).mint(await mintRequest(await grant())),
-    ).rejects.toMatchObject({ code: "not_authorized" });
   });
 
   it("refuses a mint request whose protected header claims another typ", async () => {
@@ -317,7 +297,12 @@ describe("HostMintService", () => {
         replayCache: new JwtReplayCache(),
         nowSeconds: NOW,
       }),
-    ).resolves.toEqual({ userId: USER_ID, deviceJkt, expiresAtSeconds: NOW + 3600 });
+    ).resolves.toEqual({
+      userId: USER_ID,
+      deviceJkt,
+      expiresAtSeconds: NOW + 3600,
+      trustGeneration: 1,
+    });
   });
 
   it("mints for the link-time owner without consulting the account API", async () => {
@@ -336,16 +321,27 @@ describe("HostMintService", () => {
     expect(authorizationCalls).toBe(0);
   });
 
-  it("refuses an org member whose device was revoked while its grant was in flight", async () => {
+  it("refuses a non-owner even when the cloud reports org membership", async () => {
     await expect(
       service({
+        ownerUserId: "owner_1",
         getAuthorization: async () => ({
           discoverable: true,
           ownerUserId: "owner_1",
           orgId: "org_1",
-          revokedDeviceJkts: [deviceJkt],
+          revokedDeviceJkts: [],
           ownerInOrg: true,
         }),
+      }).mint(await mintRequest(await grant())),
+    ).rejects.toMatchObject({ code: "not_authorized" });
+  });
+
+  it("refuses a cloud-signed owner grant when the device lacks local approval", async () => {
+    await expect(
+      service({
+        authorizeDevice: async () => {
+          throw new Error("No local approval");
+        },
       }).mint(await mintRequest(await grant())),
     ).rejects.toMatchObject({ code: "not_authorized" });
   });

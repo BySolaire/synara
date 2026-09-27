@@ -50,6 +50,11 @@ describe("providerStartOptionsFromServerSettings", () => {
           ...DEFAULT_SERVER_SETTINGS.providers.devin,
           binaryPath: "",
         },
+        omp: {
+          ...DEFAULT_SERVER_SETTINGS.providers.omp,
+          binaryPath: "",
+          agentDir: "",
+        },
       },
     };
 
@@ -64,7 +69,7 @@ describe("providerStartOptionsFromServerSettings", () => {
       }),
     ).not.toThrow();
     expect(providerOptions.codex).toEqual({});
-    expect(providerOptions.claudeAgent).toEqual({});
+    expect(providerOptions.claudeAgent).toEqual({ enableArtifacts: false });
     expect(providerOptions.cursor).toEqual({});
     expect(providerOptions.antigravity).toEqual({});
     expect(providerOptions.grok).toEqual({});
@@ -72,6 +77,7 @@ describe("providerStartOptionsFromServerSettings", () => {
     expect(providerOptions.opencode).toEqual({ experimentalWebSockets: false });
     expect(providerOptions.pi).toEqual({});
     expect(providerOptions.devin).toEqual({});
+    expect(providerOptions.omp).toEqual({});
   });
 
   it("preserves configured launch settings", () => {

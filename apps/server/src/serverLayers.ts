@@ -1,3 +1,5 @@
+import { RemoteHostTrustRepositoryLive } from "./persistence/Layers/RemoteHostTrust";
+import { RemoteDeviceTrustRepositoryLive } from "./persistence/Layers/RemoteDeviceTrust";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Layer } from "effect";
 
@@ -25,6 +27,7 @@ import { OrchestrationLayerLive } from "./orchestration/runtimeLayer";
 import { DevServerManagerLive } from "./devServerManager";
 import { DeviceServiceLive } from "./device/Layers/DeviceService";
 import type { DeviceService } from "./device/Services/DeviceService";
+import { ComputerServiceLive } from "./computer/Layers/ComputerService";
 import { KeybindingsLive } from "./keybindings";
 import { GitCoreLive } from "./git/Layers/GitCore";
 import { GitLayerLive, TextGenerationLayerLive } from "./git/runtimeLayer";
@@ -101,6 +104,7 @@ export function makeServerRuntimeServicesLayer(
   );
   const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),
+    Layer.provideMerge(ComputerServiceLive),
   );
   const studioOutputReactorLayer = StudioOutputReactorLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),
@@ -213,6 +217,7 @@ export function makeServerRuntimeServicesLayer(
     // The gateway exposes device_* tools only where a backend can exist, but it
     // resolves the service on every platform to make that decision.
     Layer.provideMerge(DeviceServiceLive),
+    Layer.provideMerge(ComputerServiceLive),
   );
   const pullRequestServiceLayer = PullRequestServiceLive.pipe(
     Layer.provideMerge(GitLayerLive),
@@ -243,6 +248,7 @@ export function makeServerRuntimeServicesLayer(
     threadDeletionReactorLayer,
     devServerManagerLayer,
     DeviceServiceLive,
+    ComputerServiceLive,
     GitLayerLive,
     TextGenerationLayerLive,
     TerminalLayerLive,
@@ -256,6 +262,8 @@ export function makeServerRuntimeServicesLayer(
     WorkspaceLayerLive,
     ProjectFaviconResolverLive,
     RemoteSessionRegistryLive,
+    RemoteDeviceTrustRepositoryLive,
+    RemoteHostTrustRepositoryLive,
     HostConnectionRegistryLive,
   ).pipe(Layer.provideMerge(NodeServices.layer));
 }
