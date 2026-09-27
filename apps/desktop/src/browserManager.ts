@@ -2894,6 +2894,8 @@ export class DesktopBrowserManager {
       ...(popupOptions?.webContents ? { webContents: popupOptions.webContents } : {}),
       webPreferences: {
         ...popupOptions?.webPreferences,
+        // Navigation must preserve shell keyboard focus, including hidden previews.
+        focusOnNavigation: false,
         partition: BROWSER_SESSION_PARTITION,
         contextIsolation: true,
         nodeIntegration: false,
