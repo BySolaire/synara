@@ -1095,7 +1095,12 @@ test("preserves composer keyboard ownership during browser navigation", async ()
             url("/focus-autofocus"),
           );
           assert.equal(await contents.executeJavaScript("document.hasFocus()"), true);
-          if (native) assert.equal(webContents.getFocusedWebContents()?.id, contents.id);
+          if (native)
+            assert.equal(
+              webContents.getFocusedWebContents()?.id,
+              contents.id,
+              `${surface}/intentional focus after navigation`,
+            );
           else
             assert.equal(
               await host.executeJavaScript(
