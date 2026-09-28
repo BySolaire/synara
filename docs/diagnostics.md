@@ -95,6 +95,14 @@ folder and repository names are not sent. Redaction is best-effort — error
 text can still include fragments of whatever was on screen. The worker runs
 the same redaction again before storing.
 
+Renderer error fields use the same shared redactor before crossing the bounded
+IPC bridge. PEM blocks are removed whole before the field length limit is
+applied, so truncation cannot leave a key fragment for the main process to
+misclassify. The main process redacts these fields again before queueing them.
+Loopback HTTP/WebSocket URL hosts become `localhost`, keeping their ports
+readable and recognizable for fingerprint grouping across both redaction passes.
+External IP addresses remain redacted and external ports remain distinct.
+
 ## Transport and storage
 
 Events are buffered to `~/.synara-beta/diagnostics/events.jsonl` and flushed in

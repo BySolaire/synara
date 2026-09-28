@@ -3,6 +3,7 @@ import {
   DESKTOP_RENDERER_ERROR_STACK_MAX_LENGTH,
   type DesktopRendererError,
 } from "@synara/contracts";
+import { redactDiagnosticText } from "@synara/shared/diagnosticsRedaction";
 
 /** Stable and browser clients have no diagnostics bridge and attach no listeners. */
 export function installRendererErrorDiagnostics(): (() => void) | undefined {
@@ -17,8 +18,16 @@ export function installRendererErrorDiagnostics(): (() => void) | undefined {
     if (!message) return;
     try {
       diagnostics.reportError({
-        message: message.slice(0, DESKTOP_RENDERER_ERROR_MESSAGE_MAX_LENGTH),
-        ...(stack ? { stack: stack.slice(0, DESKTOP_RENDERER_ERROR_STACK_MAX_LENGTH) } : {}),
+        message: redactDiagnosticText(message, {
+          maxLength: DESKTOP_RENDERER_ERROR_MESSAGE_MAX_LENGTH,
+        }),
+        ...(stack
+          ? {
+              stack: redactDiagnosticText(stack, {
+                maxLength: DESKTOP_RENDERER_ERROR_STACK_MAX_LENGTH,
+              }),
+            }
+          : {}),
       });
     } catch {
       // Diagnostics must never change exception handling or app behavior.
