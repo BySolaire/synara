@@ -46,6 +46,9 @@ backend processes deliberately stopped for an updater handoff. An unexpected
 `update.check` records the start of a check, not a successful result. Its
 `outcome: "ok"` means the attempt started. Failures emit `update.error` with the
 check/download/install context and a redacted updater message.
+Download and install failures emit this event even when the UI keeps the
+`available` or `downloaded` status so the user can retry. Repeated broadcasts of
+the same failure do not emit another event; a new failed attempt does.
 
 `usage.daily` works differently from the other events: the main process cannot
 read the projection database, so the server writes

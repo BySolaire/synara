@@ -38,6 +38,7 @@ import {
   DESKTOP_RENDERER_ERROR_MESSAGE_MAX_LENGTH,
   DESKTOP_RENDERER_ERROR_STACK_MAX_LENGTH,
   type DesktopRendererError,
+  type DesktopUpdateState,
   LEGACY_PROVIDER_MIGRATIONS,
   ProviderKind,
 } from "@synara/contracts";
@@ -503,6 +504,42 @@ export class BetaDiagnostics {
       this.trimQueueIfNeeded();
     } catch {
       // Diagnostics must never break the app.
+    }
+  }
+
+  /** Records update transitions using only the diagnostics payload allowlist. */
+  trackUpdateStateChange(previous: DesktopUpdateState, next: DesktopUpdateState): void {
+    // Retryable failures retain available/downloaded instead of becoming error.
+    if (next.status === "error" || next.errorContext !== null) {
+      if (
+        next.status !== previous.status ||
+        next.errorContext !== previous.errorContext ||
+        next.message !== previous.message
+      )
+        this.track("update.error", {
+          kind: "update",
+          outcome: "error",
+          ...(next.errorContext ? { errorContext: next.errorContext } : {}),
+          ...(next.message ? { message: next.message } : {}),
+        });
+      return;
+    }
+    if (next.status === previous.status) return;
+    const status = next.status;
+    if (status === "checking") {
+      this.track("update.check", { kind: "update", outcome: "ok" });
+    } else if (status === "available") {
+      this.track("update.available", {
+        kind: "update",
+        outcome: "ok",
+        ...(next.availableVersion ? { targetVersion: next.availableVersion } : {}),
+      });
+    } else if (status === "downloaded") {
+      this.track("update.downloaded", {
+        kind: "update",
+        outcome: "ok",
+        ...(next.downloadedVersion ? { targetVersion: next.downloadedVersion } : {}),
+      });
     }
   }
 

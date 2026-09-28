@@ -17,6 +17,17 @@ import {
   sanitizeBetaDiagnosticsPayload,
   BETA_DIAGNOSTICS_ENDPOINT,
 } from "./betaDiagnostics";
+import {
+  createInitialDesktopUpdateState,
+  reduceDesktopUpdateStateOnCheckFailure,
+  reduceDesktopUpdateStateOnCheckStart,
+  reduceDesktopUpdateStateOnDownloadComplete,
+  reduceDesktopUpdateStateOnDownloadFailure,
+  reduceDesktopUpdateStateOnDownloadStart,
+  reduceDesktopUpdateStateOnInstallFailure,
+  reduceDesktopUpdateStateOnInstallStart,
+  reduceDesktopUpdateStateOnUpdateAvailable,
+} from "./updateMachine";
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -238,10 +249,67 @@ describe("readLogTail", () => {
 
 describe("BetaDiagnostics error tracking", () => {
   const readQueue = (root: string) =>
-    readFileSync(join(root, "diagnostics", "events.jsonl"), "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
+    (existsSync(join(root, "diagnostics", "events.jsonl"))
+      ? readFileSync(join(root, "diagnostics", "events.jsonl"), "utf8")
+          .trim()
+          .split("\n")
+      : []
+    ).map((line) => JSON.parse(line));
+
+  it.each(["check", "download", "install"] as const)(
+    "reports %s failures once per attempt even when the updater keeps a retryable status",
+    (context) => {
+      const root = makeRoot();
+      const diag = makeDiagnostics(root);
+      const initial = createInitialDesktopUpdateState(
+        "9.9.9-beta.1",
+        { hostArch: "arm64", appArch: "arm64", runningUnderArm64Translation: false },
+        "beta",
+      );
+      const checkedAt = "2026-09-28T00:00:00Z";
+      const available = reduceDesktopUpdateStateOnUpdateAvailable(
+        initial,
+        "9.9.9-beta.2",
+        checkedAt,
+      );
+      const begin =
+        context === "check"
+          ? (state: typeof initial) => reduceDesktopUpdateStateOnCheckStart(state, checkedAt)
+          : context === "download"
+            ? reduceDesktopUpdateStateOnDownloadStart
+            : reduceDesktopUpdateStateOnInstallStart;
+      const fail =
+        context === "check"
+          ? (state: typeof initial, message: string) =>
+              reduceDesktopUpdateStateOnCheckFailure(state, message, checkedAt)
+          : context === "download"
+            ? reduceDesktopUpdateStateOnDownloadFailure
+            : reduceDesktopUpdateStateOnInstallFailure;
+      const previous = begin(
+        context === "install"
+          ? reduceDesktopUpdateStateOnDownloadComplete(available, "9.9.9-beta.2")
+          : available,
+      );
+      const failed = fail(previous, "Updater failure for user@example.com");
+      diag.trackUpdateStateChange(previous, failed);
+      diag.trackUpdateStateChange(failed, { ...failed, installFailureCount: 1 });
+      expect(readQueue(root)).toMatchObject([
+        {
+          event: "update.error",
+          payload: {
+            kind: "update",
+            outcome: "error",
+            errorContext: context,
+            message: "Updater failure for <email>",
+          },
+        },
+      ]);
+      const retry = begin(failed);
+      diag.trackUpdateStateChange(failed, retry);
+      diag.trackUpdateStateChange(retry, fail(retry, "Updater failure for user@example.com"));
+      expect(readQueue(root).filter((event) => event.event === "update.error")).toHaveLength(2);
+    },
+  );
 
   it("preserves a renderer exception stack without accepting extra IPC fields", () => {
     const root = makeRoot();

@@ -2856,34 +2856,10 @@ function emitUpdateState(): void {
 }
 
 function setUpdateState(patch: Partial<DesktopUpdateState>): void {
-  const previousStatus = updateState.status;
+  const previous = updateState;
   updateState = { ...updateState, ...patch };
   emitUpdateState();
-  if (betaDiagnostics && updateState.status !== previousStatus) {
-    const status = updateState.status;
-    if (status === "checking") {
-      trackBetaDiagnostics("update.check", { kind: "update", outcome: "ok" });
-    } else if (status === "available") {
-      trackBetaDiagnostics("update.available", {
-        kind: "update",
-        outcome: "ok",
-        ...(updateState.availableVersion ? { targetVersion: updateState.availableVersion } : {}),
-      });
-    } else if (status === "downloaded") {
-      trackBetaDiagnostics("update.downloaded", {
-        kind: "update",
-        outcome: "ok",
-        ...(updateState.downloadedVersion ? { targetVersion: updateState.downloadedVersion } : {}),
-      });
-    } else if (status === "error") {
-      trackBetaDiagnostics("update.error", {
-        kind: "update",
-        outcome: "error",
-        ...(updateState.errorContext ? { errorContext: updateState.errorContext } : {}),
-        ...(updateState.message ? { message: updateState.message } : {}),
-      });
-    }
-  }
+  betaDiagnostics?.trackUpdateStateChange(previous, updateState);
 }
 
 function shouldEnableAutoUpdates(): boolean {
