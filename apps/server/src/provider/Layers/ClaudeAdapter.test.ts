@@ -11952,6 +11952,8 @@ describe("Claude explicit native compaction", () => {
     "cancel",
     "cancel-before-discovery",
     "cancel-after-discovery",
+    "cancel-during-progress",
+    "interrupt-publication",
   ] as const) {
     it.effect(
       discoveryOutcome === "stop"
@@ -11962,7 +11964,11 @@ describe("Claude explicit native compaction", () => {
             ? "honors cancellation supplied before compaction discovery starts"
             : discoveryOutcome === "cancel-after-discovery"
               ? "cancels compaction before enqueue while turn-start publication is delayed"
-              : "waits for cold Claude initialization before native compaction",
+              : discoveryOutcome === "cancel-during-progress"
+                ? "cancels compaction while its progress publication is stalled"
+                : discoveryOutcome === "interrupt-publication"
+                  ? "settles a reserved compaction when its dispatch fiber is interrupted"
+                  : "waits for cold Claude initialization before native compaction",
       () => {
         const harness = makeHarness();
         return Effect.gen(function* () {
@@ -11970,7 +11976,11 @@ describe("Claude explicit native compaction", () => {
           const discovery = yield* Deferred.make<ReturnType<typeof fakeSlashCommand>[]>();
           const publicationEntered = yield* Deferred.make<void>();
           const publicationReleased = yield* Deferred.make<void>();
-          if (discoveryOutcome === "cancel-after-discovery") {
+          const delayedPublication =
+            discoveryOutcome === "cancel-after-discovery" ||
+            discoveryOutcome === "cancel-during-progress" ||
+            discoveryOutcome === "interrupt-publication";
+          if (delayedPublication) {
             const offer = Queue.offer;
             const publication = vi.spyOn(Queue, "offer").mockImplementation((queue, event) => {
               const offered = offer(queue, event);
@@ -11978,7 +11988,8 @@ describe("Claude explicit native compaction", () => {
                 typeof event === "object" &&
                 event !== null &&
                 "type" in event &&
-                event.type === "turn.started"
+                event.type ===
+                  (discoveryOutcome === "cancel-during-progress" ? "item.updated" : "turn.started")
               ) {
                 return Deferred.succeed(publicationEntered, undefined).pipe(
                   Effect.andThen(Deferred.await(publicationReleased)),
@@ -11997,6 +12008,16 @@ describe("Claude explicit native compaction", () => {
             runtimeMode: "full-access",
             resumeCursor: { resume: nativeSessionId },
           });
+          const cancellationTerminal = delayedPublication
+            ? yield* adapter.streamEvents.pipe(
+                Stream.filter(
+                  (event) => event.type === "turn.completed" && event.turnId === compactionTurnId,
+                ),
+                Stream.take(1),
+                Stream.runHead,
+                Effect.forkChild,
+              )
+            : undefined;
           const cancellation = yield* Deferred.make<void>();
           if (discoveryOutcome === "cancel-before-discovery") {
             yield* Deferred.succeed(cancellation, undefined);
@@ -12012,31 +12033,60 @@ describe("Claude explicit native compaction", () => {
           );
           yield* TestClock.adjust("2 seconds");
           if (discoveryOutcome !== "ready") {
-            if (discoveryOutcome === "cancel-after-discovery") {
+            if (delayedPublication) {
               yield* Deferred.succeed(discovery, [fakeSlashCommand("compact")]);
               yield* Deferred.await(publicationEntered);
             }
             if (discoveryOutcome === "stop") {
               yield* adapter.stopSession(THREAD_ID);
+            } else if (discoveryOutcome === "interrupt-publication") {
+              yield* Fiber.interrupt(operation);
             } else if (discoveryOutcome !== "cancel-before-discovery") {
               yield* adapter.cancelClaudeCompactionDiscovery?.(THREAD_ID) ?? Effect.void;
             }
-            yield* Deferred.succeed(publicationReleased, undefined);
-            const stoppedOperation = yield* Fiber.join(operation).pipe(
-              Effect.timeoutOption("1 second"),
-              Effect.forkChild,
-            );
+            const stoppedOperation = yield* (
+              discoveryOutcome === "interrupt-publication"
+                ? Fiber.await(operation).pipe(Effect.asVoid)
+                : Fiber.join(operation).pipe(Effect.asVoid)
+            ).pipe(Effect.timeoutOption("1 second"), Effect.forkChild);
             yield* TestClock.adjust("1 second");
             const stoppedResult = yield* Fiber.join(stoppedOperation);
+            if (delayedPublication && Option.isSome(stoppedResult)) {
+              const pendingRetry = yield* adapter.startClaudeCompaction!({
+                threadId: THREAD_ID,
+                turnId: compactionTurnId,
+              }).pipe(Effect.result);
+              assert.equal(pendingRetry._tag, "Failure");
+            }
+            yield* Deferred.succeed(publicationReleased, undefined);
             yield* Deferred.succeed(discovery, [fakeSlashCommand("compact")]);
             assert.isTrue(Option.isSome(stoppedResult), "Compaction must settle without discovery");
           } else {
             yield* Deferred.succeed(discovery, [fakeSlashCommand("compact")]);
           }
-          const result = yield* Fiber.join(operation);
+          const result =
+            discoveryOutcome === "interrupt-publication" ? undefined : yield* Fiber.join(operation);
+          if (discoveryOutcome === "interrupt-publication") {
+            assert.isTrue(Exit.isFailure(yield* Fiber.await(operation)));
+            assert.isUndefined((yield* adapter.listSessions())[0]?.activeTurnId);
+          }
+          if (cancellationTerminal) {
+            const terminal = yield* Fiber.join(cancellationTerminal);
+            assert.isTrue(Option.isSome(terminal));
+            assert.deepInclude(Option.getOrUndefined(terminal), {
+              type: "turn.completed",
+              turnId: compactionTurnId,
+            });
+            if (Option.isSome(terminal) && terminal.value.type === "turn.completed") {
+              assert.deepInclude(terminal.value.payload, {
+                state: "interrupted",
+                contextCompacted: false,
+              });
+            }
+          }
           if (discoveryOutcome !== "ready") {
-            assert.equal(result._tag, "Failure");
-            if (result._tag === "Failure") {
+            if (result) assert.equal(result._tag, "Failure");
+            if (result?._tag === "Failure") {
               assert.include(
                 providerValidationIssue(result.failure),
                 discoveryOutcome === "stop" ? "session changed" : "cancelled",
@@ -12059,12 +12109,13 @@ describe("Claude explicit native compaction", () => {
             assert.equal(retry.turnId, compactionTurnId);
           }
           if (discoveryOutcome === "ready") {
+            assert.isDefined(result);
             assert.equal(
-              result._tag,
+              result!._tag,
               "Success",
-              result._tag === "Failure" ? providerValidationIssue(result.failure) : undefined,
+              result!._tag === "Failure" ? providerValidationIssue(result!.failure) : undefined,
             );
-            if (result._tag === "Success") assert.equal(result.success.turnId, compactionTurnId);
+            if (result!._tag === "Success") assert.equal(result!.success.turnId, compactionTurnId);
           }
           const prompt = yield* Effect.promise(() =>
             harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]().next(),
@@ -12091,10 +12142,20 @@ describe("Claude explicit native compaction", () => {
       vi.spyOn(harness.query, "supportedCommands")
         .mockResolvedValueOnce([fakeSlashCommand("compact")])
         .mockImplementation(() => Effect.runPromise(Deferred.await(repeatedLookup)));
+      const progress = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "item.updated" && event.payload.itemType === "context_compaction",
+        ),
+        Stream.take(1),
+        Stream.runHead,
+        Effect.forkChild,
+      );
       const operation = yield* adapter.startClaudeCompaction!({
         threadId: THREAD_ID,
         turnId: compactionTurnId,
       }).pipe(Effect.forkChild);
+      yield* Fiber.join(progress);
       const bounded = yield* Fiber.join(operation).pipe(
         Effect.timeoutOption("1 second"),
         Effect.forkChild,

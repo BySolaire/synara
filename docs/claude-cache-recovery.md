@@ -63,13 +63,17 @@ so initialization does not hold the ordered provider dispatch source for a minut
 a retryable discovery failure rather than claiming the runtime does not support compaction; the
 same runtime can finish initializing before a retry. A UI stop, interrupt, archive, or delete cancels
 active discovery through a separate local signal, so it does not wait behind discovery in the
-ordered delivery queue.
+ordered delivery queue. Conversation rollback and edit-and-resend use the same signal before
+changing history.
 The compaction response owns its signal before the provider handoff. Startup replay checks the
 durable journal for cancellations after that response, so an old choice cannot dispatch after an
 interrupt and a later retry remains valid. The signal stays active through preparation until prompt
 enqueue; session teardown and native interrupts still run in their original order. Compaction reuses its validated command list rather
-than issuing another lookup after turn admission. A cancellation during runtime-event publication
-settles the local turn without dispatching the prompt. Stopping the session also ends discovery immediately.
+than issuing another lookup after turn admission. Cancellation or dispatch interruption during
+runtime-event publication settles the local reservation without dispatching the prompt. An
+adapter-owned producer retains the ordered start, progress, and cancelled terminal events until
+the bounded event queue can accept them. Further dispatch and reconfiguration wait for that
+publication, keeping it bounded. Stopping the session also ends discovery immediately.
 The adapter treats discovery failures as pre-dispatch rejections, so they leave the saved send retryable. The
 adapter requires an idle session with no pending interactions or tasks that share the context, and
 rechecks that condition after asynchronous preparation. It preserves the current model, permission

@@ -104,6 +104,8 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { TurnCheckpointCoordinatorLive } from "./TurnCheckpointCoordinator.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
+import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import {
   awaitInflightClaimSettlement,
   classifyProviderAttemptOutcome,
@@ -299,6 +301,7 @@ describe("ProviderCommandReactor", () => {
       ProviderServiceShape["getClaudeCacheObservation"]
     >;
     readonly startClaudeCompaction?: NonNullable<ProviderServiceShape["startClaudeCompaction"]>;
+    readonly ingestRuntimeEvents?: boolean;
     readonly cancelClaudeCompactionDiscovery?: NonNullable<
       ProviderServiceShape["cancelClaudeCompactionDiscovery"]
     >;
@@ -659,11 +662,12 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(OrchestrationEventStoreLive),
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
     );
-    const layer = makeProviderCommandReactorLive(
+    const reactorLayer = makeProviderCommandReactorLive(
       input?.commandEventTimeout === undefined
         ? undefined
         : { commandEventTimeout: input.commandEventTimeout },
-    ).pipe(
+    );
+    const layer = Layer.mergeAll(reactorLayer, ProviderRuntimeIngestionLive).pipe(
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
       Layer.provideMerge(TurnCheckpointCoordinatorLive),
@@ -758,6 +762,10 @@ describe("ProviderCommandReactor", () => {
       Effect.service(AgentGatewayOperationRepository),
     );
     scope = await Effect.runPromise(Scope.make("sequential"));
+    if (input?.ingestRuntimeEvents) {
+      const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
+      await Effect.runPromise(ingestion.start.pipe(Scope.provide(scope)));
+    }
     let reactorStarted = false;
     const startReactor = async () => {
       if (reactorStarted) return;
@@ -1329,6 +1337,7 @@ describe("ProviderCommandReactor", () => {
       cancelClaudeCompactionDiscovery?: NonNullable<
         ProviderServiceShape["cancelClaudeCompactionDiscovery"]
       >,
+      ingestRuntimeEvents = false,
     ) {
       let observation = expiredCacheObservation();
       const startClaudeCompaction = vi.fn<
@@ -1339,6 +1348,7 @@ describe("ProviderCommandReactor", () => {
         threadModelSelection: { provider: "claudeAgent", model: "claude-opus-4-6" },
         getClaudeCacheObservation,
         startClaudeCompaction,
+        ingestRuntimeEvents,
         ...(cancelClaudeCompactionDiscovery ? { cancelClaudeCompactionDiscovery } : {}),
       });
       return {
@@ -1406,6 +1416,8 @@ describe("ProviderCommandReactor", () => {
       "thread.turn.interrupt",
       "thread.archive",
       "thread.delete",
+      "thread.conversation.rollback",
+      "thread.message.edit-and-resend",
     ] as const)("cancels discovery before delivering a queued UI %s", async (commandType) => {
       let releaseDiscovery!: () => void;
       const discovery = new Promise<void>((resolve) => {
@@ -1417,8 +1429,31 @@ describe("ProviderCommandReactor", () => {
           releaseDiscovery();
         }),
       );
-      const { harness, startClaudeCompaction } = await createCompactionHarness(cancelDiscovery);
-      startClaudeCompaction.mockImplementation(() =>
+      const { harness, startClaudeCompaction, getClaudeCacheObservation } =
+        await createCompactionHarness(
+          cancelDiscovery,
+          commandType === "thread.message.edit-and-resend",
+        );
+      const editsNativeCommand = commandType === "thread.message.edit-and-resend";
+      if (editsNativeCommand) {
+        getClaudeCacheObservation.mockReturnValue(
+          Effect.succeed({
+            ...expiredCacheObservation(),
+            state: "likely-warm",
+            contextTokens: 16_000,
+            lastResponseAt: new Date().toISOString(),
+          }),
+        );
+      }
+      if (commandType === "thread.conversation.rollback") {
+        await seedRollbackTarget(harness, {
+          messageId: asMessageId("before-compaction-history"),
+          turnId: asTurnId("before-compaction-turn"),
+          createdAt: new Date().toISOString(),
+        });
+      }
+      const preparation = editsNativeCommand ? harness.sendTurn : startClaudeCompaction;
+      preparation.mockImplementationOnce(() =>
         Effect.promise(() => discovery).pipe(
           Effect.andThen(
             Effect.fail(
@@ -1431,20 +1466,49 @@ describe("ProviderCommandReactor", () => {
           ),
         ),
       );
-      const review = await sendHeldMessage(harness);
+      const review = editsNativeCommand ? undefined : await sendHeldMessage(harness);
       try {
-        await Effect.runPromise(
-          harness.engine.dispatch({
-            type: "thread.claude-cache.respond",
-            commandId: CommandId.makeUnsafe("cmd-queued-stop-compact"),
-            threadId: ThreadId.makeUnsafe("thread-1"),
-            reviewId: review.reviewId,
-            messageId: review.messageId,
-            decision: "compact",
+        if (editsNativeCommand) {
+          await dispatchHarnessUserTurn(harness, {
+            messageId: "native-compaction-command",
+            text: "/compact",
             createdAt: new Date().toISOString(),
-          }),
-        );
-        await waitFor(() => startClaudeCompaction.mock.calls.length === 1);
+          });
+        } else {
+          await Effect.runPromise(
+            harness.engine.dispatch({
+              type: "thread.claude-cache.respond",
+              commandId: CommandId.makeUnsafe("cmd-queued-stop-compact"),
+              threadId: ThreadId.makeUnsafe("thread-1"),
+              reviewId: review!.reviewId,
+              messageId: review!.messageId,
+              decision: "compact",
+              createdAt: new Date().toISOString(),
+            }),
+          );
+        }
+        await waitFor(() => preparation.mock.calls.length === 1);
+        if (editsNativeCommand) {
+          const turnId = asTurnId("native-compaction-preparation");
+          harness.setRuntimeSessionTurnState({
+            threadId: "thread-1",
+            status: "running",
+            activeTurnId: turnId,
+          });
+          await harness.emitRuntimeEvent({
+            type: "turn.started",
+            eventId: asEventId("native-compaction-started"),
+            provider: "claudeAgent",
+            createdAt: new Date().toISOString(),
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            turnId,
+            payload: {},
+            providerRefs: {},
+          });
+          await waitFor(
+            async () => (await readHarnessThread(harness))?.session?.activeTurnId === turnId,
+          );
+        }
         // Fill the ordered source's bounded handoff with unrelated events.
         for (const index of [1, 2, 3]) {
           await Effect.runPromise(
@@ -1456,22 +1520,64 @@ describe("ProviderCommandReactor", () => {
             }),
           );
         }
-        await Effect.runPromise(
-          harness.engine.dispatch({
-            type: commandType,
-            commandId: CommandId.makeUnsafe("cmd-stop-during-discovery"),
-            threadId: ThreadId.makeUnsafe("thread-1"),
-            createdAt: new Date().toISOString(),
-          }),
-        );
+        const cancellationCommand: OrchestrationCommand =
+          commandType === "thread.conversation.rollback"
+            ? {
+                type: commandType,
+                commandId: CommandId.makeUnsafe("cmd-stop-during-discovery"),
+                threadId: ThreadId.makeUnsafe("thread-1"),
+                messageId: asMessageId("before-compaction-history"),
+                numTurns: 1,
+                createdAt: new Date().toISOString(),
+              }
+            : commandType === "thread.message.edit-and-resend"
+              ? {
+                  type: commandType,
+                  commandId: CommandId.makeUnsafe("cmd-edit-during-compaction"),
+                  threadId: ThreadId.makeUnsafe("thread-1"),
+                  messageId: asMessageId("native-compaction-command"),
+                  text: "Replace the compaction command",
+                  runtimeMode: "full-access",
+                  interactionMode: "default",
+                  createdAt: new Date().toISOString(),
+                }
+              : {
+                  type: commandType,
+                  commandId: CommandId.makeUnsafe("cmd-stop-during-discovery"),
+                  threadId: ThreadId.makeUnsafe("thread-1"),
+                  createdAt: new Date().toISOString(),
+                };
+        await Effect.runPromise(harness.engine.dispatch(cancellationCommand));
         await expect.poll(() => cancelDiscovery.mock.calls.length).toBe(1);
         await harness.drain();
         if (commandType === "thread.turn.interrupt") {
           expect(harness.interruptTurn).toHaveBeenCalledTimes(1);
-        } else if (commandType !== "thread.delete") {
+        } else if (commandType === "thread.conversation.rollback") {
+          expect(harness.rollbackConversation).toHaveBeenCalledTimes(1);
+        } else if (commandType === "thread.session.stop" || commandType === "thread.archive") {
           expect(harness.stopRuntimeSession).toHaveBeenCalledTimes(1);
         }
-        expect(harness.sendTurn).not.toHaveBeenCalled();
+        if (editsNativeCommand) {
+          harness.setRuntimeSessionTurnState({ threadId: "thread-1", status: "ready" });
+          await harness.emitRuntimeEvent({
+            type: "turn.completed",
+            eventId: asEventId("native-compaction-cancelled"),
+            provider: "claudeAgent",
+            createdAt: new Date().toISOString(),
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            turnId: asTurnId("native-compaction-preparation"),
+            payload: { state: "interrupted", contextCompacted: false },
+            providerRefs: {},
+          });
+          await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+          await harness.drain();
+          expect(harness.sendTurn.mock.calls.map(([input]) => input.input)).toEqual([
+            "/compact",
+            "Replace the compaction command",
+          ]);
+        } else {
+          expect(harness.sendTurn).not.toHaveBeenCalled();
+        }
       } finally {
         releaseDiscovery();
       }
@@ -2263,6 +2369,7 @@ describe("ProviderCommandReactor", () => {
       "cancelled-interrupt",
       "cancelled-archive",
       "cancelled-delete",
+      "cancelled-rollback",
     ] as const)("replays compaction choices with ordered cancellation (%s)", async (settlement) => {
       let observation = expiredCacheObservation();
       const now = new Date().toISOString();
@@ -2286,6 +2393,13 @@ describe("ProviderCommandReactor", () => {
           return input;
         }),
       );
+      if (settlement === "cancelled-rollback") {
+        await seedRollbackTarget(harness, {
+          messageId: asMessageId("before-replay-history"),
+          turnId: asTurnId("before-replay-turn"),
+          createdAt: now,
+        });
+      }
       const source = await dispatchHarnessUserTurn(harness, {
         messageId: "startup-replay-user",
         text: "Continue after this live compaction",
@@ -2340,22 +2454,35 @@ describe("ProviderCommandReactor", () => {
       );
 
       if (settlement.startsWith("cancelled-")) {
-        const commandType =
-          settlement === "cancelled-stop"
-            ? "thread.session.stop"
-            : settlement === "cancelled-interrupt"
-              ? "thread.turn.interrupt"
-              : settlement === "cancelled-archive"
-                ? "thread.archive"
-                : "thread.delete";
-        await Effect.runPromise(
-          harness.engine.dispatch({
-            type: commandType,
-            commandId: CommandId.makeUnsafe("cmd-cancel-before-replay"),
-            threadId,
-            createdAt: now,
-          }),
-        );
+        if (settlement === "cancelled-rollback") {
+          await Effect.runPromise(
+            harness.engine.dispatch({
+              type: "thread.conversation.rollback",
+              commandId: CommandId.makeUnsafe("cmd-cancel-before-replay"),
+              threadId,
+              messageId: asMessageId("before-replay-history"),
+              numTurns: 1,
+              createdAt: now,
+            }),
+          );
+        } else {
+          const commandType =
+            settlement === "cancelled-stop"
+              ? "thread.session.stop"
+              : settlement === "cancelled-interrupt"
+                ? "thread.turn.interrupt"
+                : settlement === "cancelled-archive"
+                  ? "thread.archive"
+                  : "thread.delete";
+          await Effect.runPromise(
+            harness.engine.dispatch({
+              type: commandType,
+              commandId: CommandId.makeUnsafe("cmd-cancel-before-replay"),
+              threadId,
+              createdAt: now,
+            }),
+          );
+        }
       }
 
       await harness.startReactor();

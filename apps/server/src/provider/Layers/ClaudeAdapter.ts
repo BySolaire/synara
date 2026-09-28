@@ -354,6 +354,7 @@ interface ClaudeSessionContext {
   stopDeferred?: Deferred.Deferred<void, ProviderAdapterProcessError>;
   // Controls/attachment reads can yield before turnState is installed.
   pendingDispatches?: number;
+  pendingCompactionPublication?: boolean;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
   readonly startedAt: string;
   readonly basePermissionMode: PermissionMode | undefined;
@@ -1996,6 +1997,7 @@ function subagentRunForTask(
 
 function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
   return Effect.gen(function* () {
+    const adapterScope = yield* Effect.scope;
     const fileSystem = yield* FileSystem.FileSystem;
     const serverConfig = yield* ServerConfig;
     // Optional so adapter tests can run without the gateway layer; when
@@ -2610,9 +2612,11 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
     // Claude reports only the compact boundary, so publish the progress row the
     // transcript shows while native compaction is still running.
-    const emitCompactionProgress = (context: ClaudeSessionContext): Effect.Effect<void> =>
+    const emitCompactionProgress = (
+      context: ClaudeSessionContext,
+      turnState = context.turnState,
+    ): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const turnState = context.turnState;
         if (!turnState || turnState.compactionInProgress) return;
         turnState.compactionInProgress = true;
         const stamp = yield* makeEventStamp();
@@ -2631,6 +2635,78 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           },
           providerRefs: nativeProviderRefs(context),
         });
+      });
+
+    const emitFailedCompactionProgress = (
+      context: ClaudeSessionContext,
+      turnState: ClaudeTurnState,
+    ) =>
+      Effect.gen(function* () {
+        const stamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent(context, {
+          type: "item.completed",
+          eventId: stamp.eventId,
+          provider: PROVIDER,
+          createdAt: stamp.createdAt,
+          threadId: context.session.threadId,
+          turnId: asCanonicalTurnId(turnState.turnId),
+          itemId: asRuntimeItemId(`claude-compaction-${turnState.turnId}`),
+          payload: {
+            itemType: "context_compaction",
+            status: "failed",
+            title: "Context compaction failed",
+          },
+          providerRefs: nativeProviderRefs(context),
+        });
+      });
+
+    const cancelReservedCompaction = (
+      context: ClaudeSessionContext,
+      turnState: ClaudeTurnState,
+      publication: Fiber.Fiber<void>,
+    ) =>
+      Effect.gen(function* () {
+        if (context.turnState !== turnState) return;
+        const stamp = yield* makeEventStamp();
+        context.turnState = undefined;
+        context.session = {
+          ...context.session,
+          status: context.stopped ? context.session.status : "ready",
+          activeTurnId: undefined,
+          updatedAt: stamp.createdAt,
+        };
+        // Retain bounded, ordered publication after releasing the command. This
+        // producer only owns the captured control turn and never mutates a later
+        // turn or delivers a native prompt. Pending publication blocks another
+        // dispatch/reconfiguration rather than accumulating detached producers.
+        context.pendingCompactionPublication = true;
+        context.pendingDispatches = (context.pendingDispatches ?? 0) + 1;
+        yield* Fiber.join(publication).pipe(
+          Effect.andThen(emitFailedCompactionProgress(context, turnState)),
+          Effect.andThen(
+            offerRuntimeEvent(context, {
+              type: "turn.completed",
+              eventId: stamp.eventId,
+              provider: PROVIDER,
+              createdAt: stamp.createdAt,
+              threadId: context.session.threadId,
+              turnId: turnState.turnId,
+              payload: {
+                state: "interrupted",
+                contextCompacted: false,
+                errorMessage: "Compaction cancelled before dispatch.",
+              },
+              providerRefs: nativeProviderRefs(context),
+            }),
+          ),
+          Effect.ensuring(
+            Effect.sync(() => {
+              context.pendingCompactionPublication = false;
+              context.pendingDispatches = (context.pendingDispatches ?? 1) - 1;
+            }),
+          ),
+          Effect.forkIn(adapterScope),
+        );
       });
 
     // Warn once per session per threshold when the logical prompt is large. Cache
@@ -3289,22 +3365,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         // A compaction that ended without its boundary must not leave a spinner row.
         if (turnState.compactionInProgress) {
-          const compactionStamp = yield* makeEventStamp();
-          yield* offerRuntimeEvent(context, {
-            type: "item.completed",
-            eventId: compactionStamp.eventId,
-            provider: PROVIDER,
-            createdAt: compactionStamp.createdAt,
-            threadId: context.session.threadId,
-            turnId: asCanonicalTurnId(turnState.turnId),
-            itemId: asRuntimeItemId(`claude-compaction-${turnState.turnId}`),
-            payload: {
-              itemType: "context_compaction",
-              status: "failed",
-              title: "Context compaction failed",
-            },
-            providerRefs: nativeProviderRefs(context),
-          });
+          yield* emitFailedCompactionProgress(context, turnState);
         }
 
         const stamp = yield* makeEventStamp();
@@ -6571,30 +6632,54 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         };
 
         const turnStartedStamp = yield* makeEventStamp();
-        yield* offerRuntimeEvent(context, {
-          type: "turn.started",
-          eventId: turnStartedStamp.eventId,
-          provider: PROVIDER,
-          createdAt: turnStartedStamp.createdAt,
-          threadId: context.session.threadId,
-          turnId,
-          payload: context.currentApiModelId
-            ? { model: stripClaudeContextWindowSuffix(context.currentApiModelId) }
-            : modelSelection?.model
-              ? { model: modelSelection.model }
-              : {},
-          providerRefs: {},
-        });
-
-        if (isCompaction) yield* emitCompactionProgress(context);
-
-        if (hasUnfinishedClaudeTasks(context.trackedTasks)) {
-          yield* emitTrackedTasksUpdated(context, {
-            rawPayload: {
-              source: "claude.resume-cursor",
-              trackedTaskCount: context.trackedTasks.size,
-            },
+        const publication = Effect.gen(function* () {
+          yield* offerRuntimeEvent(context, {
+            type: "turn.started",
+            eventId: turnStartedStamp.eventId,
+            provider: PROVIDER,
+            createdAt: turnStartedStamp.createdAt,
+            threadId: context.session.threadId,
+            turnId,
+            payload: context.currentApiModelId
+              ? { model: stripClaudeContextWindowSuffix(context.currentApiModelId) }
+              : modelSelection?.model
+                ? { model: modelSelection.model }
+                : {},
+            providerRefs: {},
           });
+
+          if (isCompaction) yield* emitCompactionProgress(context, turnState);
+
+          if (hasUnfinishedClaudeTasks(context.trackedTasks)) {
+            yield* emitTrackedTasksUpdated(context, {
+              rawPayload: {
+                source: "claude.resume-cursor",
+                trackedTaskCount: context.trackedTasks.size,
+              },
+            });
+          }
+        });
+        let compactionPublication: Fiber.Fiber<void> | undefined;
+        if (isCompaction) {
+          compactionPublication = yield* publication.pipe(Effect.forkIn(adapterScope));
+          const published = yield* Fiber.join(compactionPublication).pipe(
+            Effect.as(true),
+            Effect.raceFirst(Deferred.await(cancelled!).pipe(Effect.as(false))),
+            Effect.raceFirst(Deferred.await(context.stoppedSignal).pipe(Effect.as(false))),
+            Effect.onInterrupt(() =>
+              cancelReservedCompaction(context, turnState, compactionPublication!),
+            ),
+          );
+          if (!published) {
+            yield* cancelReservedCompaction(context, turnState, compactionPublication);
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startClaudeCompaction",
+              issue: "Claude compaction preparation was cancelled. Try again.",
+            });
+          }
+        } else {
+          yield* publication;
         }
 
         const message = yield* buildUserMessageEffect(input, {
@@ -6613,9 +6698,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             context.stopped ||
             sessions.get(input.threadId) !== context)
         ) {
-          if (context.turnState?.turnId === turnId) {
-            yield* completeTurn(context, "interrupted", "Compaction cancelled before dispatch.");
-          }
+          yield* cancelReservedCompaction(context, turnState, compactionPublication!);
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
             operation: "startClaudeCompaction",
@@ -6650,6 +6733,15 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     ): ReturnType<ClaudeAdapterShape["sendTurn"]> =>
       Effect.gen(function* () {
         const context = yield* requireSession(input.threadId);
+        if (context.pendingCompactionPublication) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: isClaudeCompactionCommand(input.input)
+              ? "startClaudeCompaction"
+              : "sendTurn",
+            issue: "Claude's cancelled compaction events are still being published. Try again.",
+          });
+        }
         const selection = input.modelSelection;
         if (
           selection?.provider === "claudeAgent" &&

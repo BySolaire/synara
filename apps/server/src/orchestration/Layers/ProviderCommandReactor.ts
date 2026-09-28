@@ -440,6 +440,8 @@ const CLAUDE_COMPACTION_CANCELLATION_EVENTS = [
   "thread.turn-interrupt-requested",
   "thread.archived",
   "thread.deleted",
+  "thread.conversation-rollback-requested",
+  "thread.message-edit-resend-requested",
 ] as const;
 
 const isClaudeCompactionCancellationEvent = (
