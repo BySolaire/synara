@@ -1583,153 +1583,203 @@ describe("ProviderCommandReactor", () => {
       }
     });
 
-    it.each(["startup", "preflight", "replay", "queued-stop", "subscriber-lag"] as const)(
-      "retains direct /compact cancellation during %s",
-      async (phase) => {
-        let releasePreparation!: () => void;
-        const preparation = new Promise<void>((resolve) => {
-          releasePreparation = resolve;
+    it.each([
+      "startup",
+      "preflight",
+      "replay",
+      "queued-stop",
+      "subscriber-lag",
+      "idle-interrupt",
+      "queued-rollback",
+    ] as const)("retains direct /compact cancellation during %s", async (phase) => {
+      let releasePreparation!: () => void;
+      const preparation = new Promise<void>((resolve) => {
+        releasePreparation = resolve;
+      });
+      const cancelDiscovery = vi.fn(() => Effect.void);
+      const observation = {
+        ...expiredCacheObservation(),
+        state: "likely-warm" as const,
+        contextTokens: 16_000,
+        lastResponseAt: new Date().toISOString(),
+      };
+      const getObservation = vi.fn(() => Effect.succeed(observation));
+      let releaseSubscriber!: () => void;
+      let subscriberEntered = false;
+      const subscriberGate = new Promise<void>((resolve) => {
+        releaseSubscriber = resolve;
+      });
+      const harness = await createHarness({
+        threadModelSelection: { provider: "claudeAgent", model: "claude-opus-4-6" },
+        startReactor: phase !== "replay" && phase !== "subscriber-lag",
+        getClaudeCacheObservation: getObservation,
+        cancelClaudeCompactionDiscovery: cancelDiscovery,
+      });
+      if (phase === "idle-interrupt") {
+        await dispatchHarnessUserTurn(harness, {
+          messageId: "before-idle-compact",
+          text: "Initial task",
+          createdAt: new Date().toISOString(),
         });
-        const cancelDiscovery = vi.fn(() => Effect.void);
-        const observation = {
-          ...expiredCacheObservation(),
-          state: "likely-warm" as const,
-          contextTokens: 16_000,
-          lastResponseAt: new Date().toISOString(),
-        };
-        const getObservation = vi.fn(() => Effect.succeed(observation));
-        let releaseSubscriber!: () => void;
-        let subscriberEntered = false;
-        const subscriberGate = new Promise<void>((resolve) => {
-          releaseSubscriber = resolve;
+        await harness.drain();
+        harness.sendTurn.mockClear();
+        getObservation.mockClear();
+      }
+      if (phase === "queued-rollback") {
+        await seedRollbackTarget(harness, {
+          messageId: asMessageId("prior-rollback-history"),
+          turnId: asTurnId("prior-rollback-turn"),
+          createdAt: new Date().toISOString(),
         });
-        const harness = await createHarness({
-          threadModelSelection: { provider: "claudeAgent", model: "claude-opus-4-6" },
-          startReactor: phase !== "replay" && phase !== "subscriber-lag",
-          getClaudeCacheObservation: getObservation,
-          cancelClaudeCompactionDiscovery: cancelDiscovery,
-        });
-        if (phase === "startup") {
-          const startSession = harness.startSession.getMockImplementation()!;
-          harness.startSession.mockImplementationOnce((...args) =>
-            Effect.promise(() => preparation).pipe(Effect.flatMap(() => startSession(...args))),
-          );
-        } else if (phase !== "replay") {
-          getObservation.mockImplementationOnce(() =>
-            Effect.promise(() => preparation).pipe(Effect.as(observation)),
-          );
-        }
-        if (phase === "subscriber-lag") {
-          const subscribe = harness.engine.subscribeDomainEvents;
-          let subscriptions = 0;
-          Object.assign(harness.engine, {
-            subscribeDomainEvents: Effect.suspend(() => {
-              const delaysCancellation = subscriptions++ === 0;
-              return subscribe.pipe(
-                Effect.map((events) =>
-                  delaysCancellation
-                    ? events.pipe(
-                        Stream.mapEffect((event) =>
-                          Effect.gen(function* () {
-                            if (event.type === "thread.turn-interrupt-requested") {
-                              subscriberEntered = true;
-                              yield* Effect.promise(() => subscriberGate);
-                            }
-                            return event;
-                          }),
-                        ),
-                      )
-                    : events,
-                ),
-              );
-            }),
-          });
-          await harness.startReactor();
-        }
-        try {
-          await dispatchHarnessUserTurn(harness, {
-            messageId: "direct-compact-before-cancel",
-            text: "/compact Preserve project decisions",
-            createdAt: new Date().toISOString(),
-          });
-          if (phase !== "replay") {
-            await waitFor(() =>
-              phase === "startup"
-                ? harness.startSession.mock.calls.length === 1
-                : getObservation.mock.calls.length === 1,
-            );
-          }
-          if (phase === "queued-stop") {
-            const createdAt = new Date().toISOString();
-            await Effect.runPromise(
-              harness.engine.dispatch({
-                type: "thread.session.set",
-                commandId: CommandId.makeUnsafe("cmd-compact-preparing-session"),
-                threadId: ThreadId.makeUnsafe("thread-1"),
-                session: {
-                  threadId: ThreadId.makeUnsafe("thread-1"),
-                  providerName: "claudeAgent",
-                  runtimeMode: "approval-required",
-                  status: "running",
-                  activeTurnId: asTurnId("preparing-native-compact"),
-                  lastError: null,
-                  updatedAt: createdAt,
-                },
-                createdAt,
-              }),
-            );
-            await dispatchHarnessUserTurn(harness, {
-              messageId: "queued-behind-cancelled-compact",
-              text: "This queued message must stay cancelled",
-              createdAt: new Date().toISOString(),
-            });
-            const events = await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0)));
-            expect(
-              events.some(
-                (event) =>
-                  event.type === "thread.turn-queued" &&
-                  event.payload.messageId === "queued-behind-cancelled-compact",
+      }
+      if (phase === "startup") {
+        const startSession = harness.startSession.getMockImplementation()!;
+        harness.startSession.mockImplementationOnce((...args) =>
+          Effect.promise(() => preparation).pipe(Effect.flatMap(() => startSession(...args))),
+        );
+      } else if (phase !== "replay") {
+        getObservation.mockImplementationOnce(() =>
+          Effect.promise(() => preparation).pipe(Effect.as(observation)),
+        );
+      }
+      if (phase === "subscriber-lag") {
+        const subscribe = harness.engine.subscribeDomainEvents;
+        let subscriptions = 0;
+        Object.assign(harness.engine, {
+          subscribeDomainEvents: Effect.suspend(() => {
+            const delaysCancellation = subscriptions++ === 0;
+            return subscribe.pipe(
+              Effect.map((events) =>
+                delaysCancellation
+                  ? events.pipe(
+                      Stream.mapEffect((event) =>
+                        Effect.gen(function* () {
+                          if (event.type === "thread.turn-interrupt-requested") {
+                            subscriberEntered = true;
+                            yield* Effect.promise(() => subscriberGate);
+                          }
+                          return event;
+                        }),
+                      ),
+                    )
+                  : events,
               ),
-            ).toBe(true);
-          }
+            );
+          }),
+        });
+        await harness.startReactor();
+      }
+      let queuedSequence: number | undefined;
+      try {
+        await dispatchHarnessUserTurn(harness, {
+          messageId: "direct-compact-before-cancel",
+          text: "/compact Preserve project decisions",
+          createdAt: new Date().toISOString(),
+        });
+        if (phase !== "replay") {
+          await waitFor(() =>
+            phase === "startup"
+              ? harness.startSession.mock.calls.length === 1
+              : getObservation.mock.calls.length === 1,
+          );
+        }
+        if (phase === "queued-stop" || phase === "queued-rollback") {
+          const createdAt = new Date().toISOString();
           await Effect.runPromise(
             harness.engine.dispatch({
-              type:
-                phase === "preflight" || phase === "subscriber-lag"
-                  ? "thread.turn.interrupt"
-                  : "thread.session.stop",
-              commandId: CommandId.makeUnsafe(`cmd-direct-compact-cancel-${phase}`),
+              type: "thread.session.set",
+              commandId: CommandId.makeUnsafe("cmd-compact-preparing-session"),
               threadId: ThreadId.makeUnsafe("thread-1"),
-              createdAt: new Date().toISOString(),
+              session: {
+                threadId: ThreadId.makeUnsafe("thread-1"),
+                providerName: "claudeAgent",
+                runtimeMode: "approval-required",
+                status: "running",
+                activeTurnId: asTurnId("preparing-native-compact"),
+                lastError: null,
+                updatedAt: createdAt,
+              },
+              createdAt,
             }),
           );
-          if (phase === "replay") await harness.startReactor();
-          else if (phase === "subscriber-lag") await waitFor(() => subscriberEntered);
-          else await waitFor(() => cancelDiscovery.mock.calls.length === 1);
-          releasePreparation();
-          await harness.drain();
-          expect(harness.sendTurn).not.toHaveBeenCalled();
-          releaseSubscriber();
           await dispatchHarnessUserTurn(harness, {
-            messageId: "direct-compact-new-choice",
-            text: "/compact Keep the active task",
+            messageId: "queued-behind-cancelled-compact",
+            text: "This queued message must stay cancelled",
             createdAt: new Date().toISOString(),
           });
-          await waitFor(() => harness.sendTurn.mock.calls.length === 1);
-          await harness.drain();
-          expect(harness.sendTurn).toHaveBeenCalledTimes(1);
-          expect(harness.sendTurn.mock.calls[0]?.[0].input).toBe("/compact Keep the active task");
-          const options = harness.sendTurn.mock.calls[0]?.[1];
-          expect(options?.claudeCompactionCancellation).toBeDefined();
-          expect(Effect.runSync(Deferred.isDone(options!.claudeCompactionCancellation!))).toBe(
-            false,
+          const events = await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0)));
+          const queuedEvent = events.find(
+            (event) =>
+              event.type === "thread.turn-queued" &&
+              event.payload.messageId === "queued-behind-cancelled-compact",
           );
-        } finally {
-          releasePreparation();
-          releaseSubscriber();
+          expect(queuedEvent).toBeDefined();
+          queuedSequence = queuedEvent!.sequence;
         }
-      },
-    );
+        await Effect.runPromise(
+          harness.engine.dispatch(
+            phase === "queued-rollback"
+              ? {
+                  type: "thread.conversation.rollback",
+                  commandId: CommandId.makeUnsafe("cmd-cancel-compact-rollback"),
+                  threadId: ThreadId.makeUnsafe("thread-1"),
+                  messageId: asMessageId("prior-rollback-history"),
+                  numTurns: 1,
+                  createdAt: new Date().toISOString(),
+                }
+              : {
+                  type:
+                    phase === "preflight" ||
+                    phase === "subscriber-lag" ||
+                    phase === "idle-interrupt"
+                      ? "thread.turn.interrupt"
+                      : "thread.session.stop",
+                  commandId: CommandId.makeUnsafe(`cmd-direct-compact-cancel-${phase}`),
+                  threadId: ThreadId.makeUnsafe("thread-1"),
+                  createdAt: new Date().toISOString(),
+                },
+          ),
+        );
+        if (phase === "replay") await harness.startReactor();
+        else if (phase === "subscriber-lag") await waitFor(() => subscriberEntered);
+        else await waitFor(() => cancelDiscovery.mock.calls.length === 1);
+        releasePreparation();
+        await harness.drain();
+        expect(harness.sendTurn).not.toHaveBeenCalled();
+        if (phase === "idle-interrupt") {
+          expect(harness.stopRuntimeSession).not.toHaveBeenCalled();
+          expect((await readHarnessThread(harness))?.session?.status).toBe("ready");
+        }
+        if (phase === "queued-rollback") {
+          const promotion = await Effect.runPromise(
+            harness.queuedTurnPromotionRepository.getBySequence(queuedSequence!),
+          );
+          expect(Option.getOrThrow(promotion).state).toBe("queued");
+          expect(
+            (await readHarnessThread(harness))?.activities.some(
+              (activity) => activity.kind === "provider.turn.start.failed",
+            ),
+          ).toBe(false);
+        }
+        releaseSubscriber();
+        await dispatchHarnessUserTurn(harness, {
+          messageId: "direct-compact-new-choice",
+          text: "/compact Keep the active task",
+          createdAt: new Date().toISOString(),
+        });
+        await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+        await harness.drain();
+        expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+        if (phase === "idle-interrupt") expect(harness.startSession).toHaveBeenCalledTimes(1);
+        expect(harness.sendTurn.mock.calls[0]?.[0].input).toBe("/compact Keep the active task");
+        const options = harness.sendTurn.mock.calls[0]?.[1];
+        expect(options?.claudeCompactionCancellation).toBeDefined();
+        expect(Effect.runSync(Deferred.isDone(options!.claudeCompactionCancellation!))).toBe(false);
+      } finally {
+        releasePreparation();
+        releaseSubscriber();
+      }
+    });
 
     it.each(["queue", "steer"] as const)(
       "defers spawn-fixed selections during direct /compact (%s)",

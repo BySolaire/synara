@@ -79,6 +79,9 @@ choices are also deferred before session preparation, so native compaction does 
 them. The journal fence is refreshed at provider dispatch to cover a delayed live subscriber; the
 adapter checks the signal and enqueues native compaction in one synchronous admission step.
 Cancelled direct compaction defers queue promotion until the ordered cancelling control settles.
+Its optimistic session status is restored from the runtime before interrupt handling, preserving
+an established idle session for retry. Rollback keeps its existing queue policy and does not trigger
+an additional cancellation-recovery drain.
 Session teardown and native interrupts still run in their original order. Compaction reuses its validated command list rather
 than issuing another lookup after turn admission. Cancellation or dispatch interruption during
 runtime-event publication settles the local reservation without dispatching the prompt. An

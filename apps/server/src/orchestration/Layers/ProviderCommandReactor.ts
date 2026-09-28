@@ -3788,31 +3788,29 @@ const make = Effect.gen(function* () {
             ? Effect.failCause(cause)
             : Effect.gen(function* () {
                 const failure = Option.getOrUndefined(Cause.findErrorOption(cause));
-                if (
+                const cancelledCompaction =
                   failure instanceof ProviderAdapterValidationError &&
-                  failure.operation === "startClaudeCompaction.cancelled"
-                ) {
-                  // The ordered cancelling control owns the queue's next step.
-                  // Promoting here could append a dispatch behind that stop.
-                  if (isPendingQueuedDispatch) yield* clearPendingQueuedDispatch;
-                  return yield* Effect.failCause(cause);
-                }
+                  failure.operation === "startClaudeCompaction.cancelled";
                 const detail = Cause.pretty(cause);
-                yield* appendProviderFailureActivity({
-                  threadId: event.payload.threadId,
-                  kind: "provider.turn.start.failed",
-                  summary: "Provider turn start failed",
-                  detail,
-                  turnId: null,
-                  createdAt: event.payload.createdAt,
-                });
-                // A refused configuration change leaves the existing runtime and
-                // its live turn intact. Do not project a false terminal state.
+                if (!cancelledCompaction)
+                  yield* appendProviderFailureActivity({
+                    threadId: event.payload.threadId,
+                    kind: "provider.turn.start.failed",
+                    summary: "Provider turn start failed",
+                    detail,
+                    turnId: null,
+                    createdAt: event.payload.createdAt,
+                  });
+                // Restore the runtime's state after a refused reconfiguration or
+                // cancelled native control. An optimistic starting row must not
+                // make the ordered interrupt tear down an established runtime.
                 if (
                   failure instanceof ProviderAdapterValidationError &&
-                  failure.operation === "session/reconfigure"
+                  (failure.operation === "session/reconfigure" || cancelledCompaction)
                 ) {
-                  const optimisticSession = turnStartSession ?? thread.session;
+                  const optimisticSession = cancelledCompaction
+                    ? (yield* resolveThread(event.payload.threadId))?.session
+                    : (turnStartSession ?? thread.session);
                   const runtime = (yield* providerService.listSessions()).find(
                     (session) => session.threadId === event.payload.threadId,
                   );
@@ -3842,7 +3840,15 @@ const make = Effect.gen(function* () {
                         updatedAt: optimisticSession.updatedAt,
                       },
                       createdAt: event.payload.createdAt,
-                    });
+                    }).pipe(
+                      Effect.catchTag("OrchestrationCommandInvariantError", (error) =>
+                        cancelledCompaction &&
+                        error.detail ===
+                          `Thread '${event.payload.threadId}' session changed before the conditional update.`
+                          ? Effect.void
+                          : Effect.fail(error),
+                      ),
+                    );
                   }
                   if (isPendingQueuedDispatch) yield* clearPendingQueuedDispatch;
                   return yield* Effect.failCause(cause);
@@ -6028,7 +6034,10 @@ const make = Effect.gen(function* () {
           const sourceSequence = deferredClaudeCompactionQueueDrains.get(event.payload.threadId);
           if (sourceSequence === undefined || event.sequence <= sourceSequence) return;
           deferredClaudeCompactionQueueDrains.delete(event.payload.threadId);
-          if (!(yield* hasLiveProviderTurn(event.payload.threadId))) {
+          if (
+            event.type !== "thread.conversation-rollback-requested" &&
+            !(yield* hasLiveProviderTurn(event.payload.threadId))
+          ) {
             yield* drainQueuedTurnsForSession(event.payload.threadId);
           }
         }),
