@@ -74,7 +74,11 @@ against later cancellations. The signal is never serialized into provider input 
 Steered `/compact` requests retain the same signal when a live turn settles during preparation.
 All native compaction entry points preserve the established model, settings, and permission mode;
 pending selection changes apply to the next ordinary prompt. Compaction does not wait on model or
-settings control requests or persist an unapplied selection as the active runtime model.
+settings control requests or persist an unapplied selection as the active runtime model. Spawn-fixed
+choices are also deferred before session preparation, so native compaction does not restart to apply
+them. The journal fence is refreshed at provider dispatch to cover a delayed live subscriber; the
+adapter checks the signal and enqueues native compaction in one synchronous admission step.
+Cancelled direct compaction defers queue promotion until the ordered cancelling control settles.
 Session teardown and native interrupts still run in their original order. Compaction reuses its validated command list rather
 than issuing another lookup after turn admission. Cancellation or dispatch interruption during
 runtime-event publication settles the local reservation without dispatching the prompt. An

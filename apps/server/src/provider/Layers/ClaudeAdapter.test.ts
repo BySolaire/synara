@@ -12270,7 +12270,7 @@ describe("Claude explicit native compaction", () => {
           modelSelection: {
             provider: "claudeAgent" as const,
             model: "claude-sonnet-4-6",
-            options: { thinking: true, effort: "high" as const },
+            options: { thinking: true, effort: "max" as const, autoCompactWindow: "200k" },
           },
         };
         const result = yield* (

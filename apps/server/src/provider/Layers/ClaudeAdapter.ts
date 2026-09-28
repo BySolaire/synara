@@ -6695,14 +6695,20 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             nativeCommandNames ?? (yield* resolveNativeCommandNames(context, input.input)),
         });
 
-        // Runtime event publication can yield under backpressure after the turn
-        // is reserved. Settle that local turn before rejecting a cancelled send.
-        if (
-          isCompaction &&
-          ((cancelled && (yield* Deferred.isDone(cancelled))) ||
-            context.stopped ||
-            sessions.get(input.threadId) !== context)
-        ) {
+        // The prompt queue is unbounded. Check cancellation and admit native
+        // compaction synchronously so cooperative yielding cannot split them.
+        const enqueued = isCompaction
+          ? yield* Effect.sync(
+              () =>
+                !Deferred.isDoneUnsafe(cancelled!) &&
+                !context.stopped &&
+                sessions.get(input.threadId) === context &&
+                Queue.offerUnsafe(context.promptQueue, { type: "message", message }),
+            )
+          : yield* Queue.offer(context.promptQueue, { type: "message", message }).pipe(
+              Effect.mapError((cause) => toRequestError(input.threadId, "turn/start", cause)),
+            );
+        if (isCompaction && !enqueued) {
           yield* cancelReservedCompaction(context, turnState, compactionPublication!);
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
@@ -6710,11 +6716,6 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             issue: "Claude compaction preparation was cancelled. Try again.",
           });
         }
-
-        yield* Queue.offer(context.promptQueue, {
-          type: "message",
-          message,
-        }).pipe(Effect.mapError((cause) => toRequestError(input.threadId, "turn/start", cause)));
 
         // The first prompt has been dispatched; the CLI's spawn mode is no longer
         // provably its current mode, so subsequent turns re-send unconditionally.
@@ -6747,7 +6748,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             issue: "Claude's cancelled compaction events are still being published. Try again.",
           });
         }
-        const selection = input.modelSelection;
+        const selection = isClaudeCompactionCommand(input.input) ? undefined : input.modelSelection;
         if (
           selection?.provider === "claudeAgent" &&
           resolveSelectedClaudeAutoCompactWindow(

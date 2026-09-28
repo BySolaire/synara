@@ -2220,6 +2220,7 @@ const make = Effect.gen(function* () {
     ThreadId,
     { readonly sourceEventSequence: number; readonly cancellation: Deferred.Deferred<void> }
   >();
+  const deferredClaudeCompactionQueueDrains = new Map<ThreadId, number>();
   const cancelClaudeCompactionFromJournal = Effect.fnUntraced(function* (
     threadId: ThreadId,
     sourceEventSequence: number,
@@ -2248,7 +2249,7 @@ const make = Effect.gen(function* () {
           ? Effect.fail(
               new ProviderAdapterValidationError({
                 provider: "claudeAgent",
-                operation: "startClaudeCompaction",
+                operation: "startClaudeCompaction.cancelled",
                 issue: "Claude compaction preparation was cancelled. Try again.",
               }),
             )
@@ -2856,6 +2857,11 @@ const make = Effect.gen(function* () {
           });
         }
         if (input.claudeCompactionCancellation) {
+          yield* cancelClaudeCompactionFromJournal(
+            input.threadId,
+            input.sourceEventSequence,
+            input.claudeCompactionCancellation,
+          );
           yield* requireClaudeCompactionPreparationActive(input.claudeCompactionCancellation);
         }
         const turnInput = {
@@ -2936,6 +2942,11 @@ const make = Effect.gen(function* () {
         .pipe(Effect.onError(() => cancelPendingStudioBaseline));
     } else if (input.dispatchMode === "steer") {
       if (input.claudeCompactionCancellation) {
+        yield* cancelClaudeCompactionFromJournal(
+          input.threadId,
+          input.sourceEventSequence,
+          input.claudeCompactionCancellation,
+        );
         yield* requireClaudeCompactionPreparationActive(input.claudeCompactionCancellation);
       }
       const turnInput = {
@@ -3287,6 +3298,8 @@ const make = Effect.gen(function* () {
     if (provider !== "claudeAgent" || !/^\/compact(?:\s|$)/.test(input.messageText.trim())) {
       return yield* dispatchTurnForThreadCore(input);
     }
+    const establishedSelection =
+      threadSessionModelSelections.get(input.threadId) ?? thread?.modelSelection;
     const cancellation = yield* Deferred.make<void>();
     pendingClaudeCompactionPreparations.set(input.threadId, {
       sourceEventSequence: input.sourceEventSequence,
@@ -3301,9 +3314,31 @@ const make = Effect.gen(function* () {
       yield* requireClaudeCompactionPreparationActive(cancellation);
       return yield* dispatchTurnForThreadCore({
         ...input,
+        // Native controls operate on the established session. Spawn-fixed
+        // choices carried by this message apply to the next ordinary prompt.
+        ...(establishedSelection?.provider === "claudeAgent"
+          ? { modelSelection: establishedSelection }
+          : {}),
         claudeCompactionCancellation: cancellation,
       });
     }).pipe(
+      Effect.catchTag("ProviderAdapterValidationError", (error) =>
+        Deferred.isDone(cancellation).pipe(
+          Effect.flatMap((cancelled) => {
+            if (cancelled)
+              deferredClaudeCompactionQueueDrains.set(input.threadId, input.sourceEventSequence);
+            return Effect.fail(
+              cancelled
+                ? new ProviderAdapterValidationError({
+                    provider: "claudeAgent",
+                    operation: "startClaudeCompaction.cancelled",
+                    issue: error.issue,
+                  })
+                : error,
+            );
+          }),
+        ),
+      ),
       Effect.ensuring(
         Effect.sync(() => {
           if (
@@ -3752,6 +3787,16 @@ const make = Effect.gen(function* () {
           Cause.hasInterruptsOnly(cause)
             ? Effect.failCause(cause)
             : Effect.gen(function* () {
+                const failure = Option.getOrUndefined(Cause.findErrorOption(cause));
+                if (
+                  failure instanceof ProviderAdapterValidationError &&
+                  failure.operation === "startClaudeCompaction.cancelled"
+                ) {
+                  // The ordered cancelling control owns the queue's next step.
+                  // Promoting here could append a dispatch behind that stop.
+                  if (isPendingQueuedDispatch) yield* clearPendingQueuedDispatch;
+                  return yield* Effect.failCause(cause);
+                }
                 const detail = Cause.pretty(cause);
                 yield* appendProviderFailureActivity({
                   threadId: event.payload.threadId,
@@ -3761,7 +3806,6 @@ const make = Effect.gen(function* () {
                   turnId: null,
                   createdAt: event.payload.createdAt,
                 });
-                const failure = Option.getOrUndefined(Cause.findErrorOption(cause));
                 // A refused configuration change leaves the existing runtime and
                 // its live turn intact. Do not project a false terminal state.
                 if (
@@ -4251,6 +4295,7 @@ const make = Effect.gen(function* () {
                 issue: "The saved message is no longer available for compaction.",
               });
             }
+            yield* cancelClaudeCompactionFromJournal(threadId, event.sequence, cancellation!);
             yield* requirePreparationActive;
             yield* providerService
               .startClaudeCompaction({ threadId, turnId, cancellation: cancellation! })
@@ -4355,6 +4400,7 @@ const make = Effect.gen(function* () {
     const sessionThreadId = (yield* resolveProviderSessionThread(threadId))?.id ?? threadId;
     if ((yield* resolveThread(sessionThreadId))?.claudeCacheReview) return;
     if (
+      deferredClaudeCompactionQueueDrains.has(sessionThreadId) ||
       drainingQueuedTurns.has(threadId) ||
       pendingQueuedDispatchBySessionThread.has(sessionThreadId)
     ) {
@@ -5975,7 +6021,19 @@ const make = Effect.gen(function* () {
           yield* processSessionStopRequested(event);
           return;
       }
-    });
+    }).pipe(
+      Effect.tap(() =>
+        Effect.gen(function* () {
+          if (!isClaudeCompactionCancellationEvent(event)) return;
+          const sourceSequence = deferredClaudeCompactionQueueDrains.get(event.payload.threadId);
+          if (sourceSequence === undefined || event.sequence <= sourceSequence) return;
+          deferredClaudeCompactionQueueDrains.delete(event.payload.threadId);
+          if (!(yield* hasLiveProviderTurn(event.payload.threadId))) {
+            yield* drainQueuedTurnsForSession(event.payload.threadId);
+          }
+        }),
+      ),
+    );
 
   const processDomainEventSafely = (event: ProviderIntentEvent) =>
     processDomainEvent(event).pipe(
