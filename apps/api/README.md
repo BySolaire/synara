@@ -368,14 +368,19 @@ serves a JWKS from a freshly generated key pair, mints access tokens signed by
 it, and answers the OTP, PKCE, and refresh grants, so the auth path is
 exercised end to end with no network. The same module backs the dev stub above.
 
+Create the separate `synara_accounts_test` database before running:
+
 ```sh
 docker compose -f docker-compose.yml up -d
-TEST_DATABASE_URL=postgres://synara:synara@localhost:5432/synara_accounts bun run test
+TEST_DATABASE_URL=postgres://synara:synara@localhost:5432/synara_accounts_test bun run test
 ```
 
-Pointing the tests at the same database as dev is safe — there is no shared key
-material for the two to fight over.
+Use a disposable test database, separate from personal development and production
+state. Fixture setup can remove or replace registry rows; API and E2E suites
+sharing that test database must run sequentially.
 
 ## Managed remote access
 
 The current app uses [managed Cloudflare tunnels](../../docs/cloudflare-remote.md). No relay secret is required for WorkOS startup or normal remote access. Configure the four Cloudflare variables together and explicit remote test users. Tunnel allocation and code rendezvous migrations are additive; admin tokens remain in the account service. Legacy relay-ticket/internal routes are retained only in directly injected protocol fixtures and are unavailable in the deployed app.
+
+The [remote MVP handoff](../../docs/implementation/cloudflare-remote/READINESS.md) lists the service configuration, client settings and live acceptance checks in dependency order.

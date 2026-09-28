@@ -51,7 +51,7 @@ export type RemoteAccessManagement = (
 export function makeRemoteAccessManagement(
   options: RemoteAccessManagementOptions,
 ): RemoteAccessManagement {
-  const pairing = new Map<string, AbortController>();
+  const pairing = new Map<string, { lifetime: AbortController; settled: Promise<void> }>();
   const previews = new Map<string, { bundle: RemotePairingBundle; binding: string }>();
   const readContext = async () => {
     const account = await readAccountFile(
@@ -144,7 +144,14 @@ export function makeRemoteAccessManagement(
       };
     }
     if (request.operation === "forget-host") {
-      pairing.get(JSON.stringify([binding, request.environmentId]))?.abort();
+      for (const [id, preview] of previews) {
+        if (preview.bundle.environmentId === request.environmentId) previews.delete(id);
+      }
+      const pending = pairing.get(JSON.stringify([binding, request.environmentId]));
+      pending?.lifetime.abort(new Error("Pairing cancelled"));
+      // A cancelled setup must finish before deleting trust, or an in-flight
+      // import/confirmation could recreate it after the user forgot the host.
+      await pending?.settled;
       const trusted = await Effect.runPromise(options.hosts.get(binding, request.environmentId));
       if (trusted) options.connections.remove(trusted.hostId);
       await Effect.runPromise(options.hosts.forget(binding, request.environmentId));
@@ -161,30 +168,38 @@ export function makeRemoteAccessManagement(
             request.rootFingerprint !== bundle.rootFingerprint))
       )
         throw new Error("Review a fresh pairing code and compare the host fingerprint");
-      previews.delete(bundle.inviteId);
-      await Effect.runPromise(options.hosts.importInvitation(binding, bundle));
-      const { hosts } = await options.account.listHosts();
-      const host = hosts.find(
-        (candidate) =>
-          candidate.id === bundle.hostId && candidate.environmentId === bundle.environmentId,
-      );
-      if (!host) throw new Error("The invitation host is not available in this account");
-      const identity = await options.account.dialIdentity();
       const key = JSON.stringify([binding, bundle.environmentId]);
       if (pairing.has(key)) throw new Error("Pairing is already in progress for this host");
       const lifetime = new AbortController();
-      pairing.set(key, lifetime);
+      const pairSignal = AbortSignal.any([signal, lifetime.signal]);
+      const settled = Promise.withResolvers<void>();
+      const pending = { lifetime, settled: settled.promise };
+      pairing.set(key, pending);
       try {
+        pairSignal.throwIfAborted();
+        await Effect.runPromise(options.hosts.importInvitation(binding, bundle));
+        pairSignal.throwIfAborted();
+        const { hosts } = await options.account.listHosts();
+        pairSignal.throwIfAborted();
+        const host = hosts.find(
+          (candidate) =>
+            candidate.id === bundle.hostId && candidate.environmentId === bundle.environmentId,
+        );
+        if (!host) throw new Error("The invitation host is not available in this account");
+        const identity = await options.account.dialIdentity();
+        pairSignal.throwIfAborted();
         await pairRemoteHost({
           host,
           anchor: bundle,
           bundle,
           identity,
           label: local.label,
-          signal: AbortSignal.any([signal, lifetime.signal]),
+          signal: pairSignal,
           requestGrant: async () => (await options.account.requestGrant({ hostId: host.id })).grant,
         });
+        pairSignal.throwIfAborted();
         const current = await readContext();
+        pairSignal.throwIfAborted();
         if (JSON.stringify(current.binding) !== JSON.stringify(binding))
           throw new Error("Account changed during pairing");
         const confirmed = await Effect.runPromise(
@@ -195,10 +210,15 @@ export function makeRemoteAccessManagement(
             new Date().toISOString(),
           ),
         );
+        pairSignal.throwIfAborted();
         if (!confirmed) throw new Error("Local trust changed during pairing");
+        // Keep the server-only bundle across transient failures. The public code
+        // is still single-use; retries remain bound to this account and device.
+        previews.delete(bundle.inviteId);
         return { kind: "paired", environmentId: bundle.environmentId, hostId: host.id };
       } finally {
-        if (pairing.get(key) === lifetime) pairing.delete(key);
+        if (pairing.get(key) === pending) pairing.delete(key);
+        settled.resolve();
       }
     }
     if (!account.hostId || account.hostOwnerUserId !== binding.userId)

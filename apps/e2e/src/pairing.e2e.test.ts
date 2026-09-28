@@ -22,7 +22,7 @@ async function settings(page: Page, origin: string) {
 }
 
 it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
-  "pairs through both browser screens with a code and exact key approval",
+  "retries pairing after a connector outage through both browser screens and exact key approval",
   async () => {
     if (!process.env.TEST_DATABASE_URL) throw new Error("Isolated TEST_DATABASE_URL required");
     await using fixture = await createE2eFixture(process.env.TEST_DATABASE_URL);
@@ -79,6 +79,17 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
           fullPage: true,
         });
       }
+      // A redeemed code must survive a failed dial: users should be able to
+      // retry the same reviewed identity after connectivity returns.
+      await fixture.stopConnector();
+      await controllerPage.getByRole("button", { name: "Request access", exact: true }).click();
+      await controllerPage.getByRole("alert").waitFor();
+      await expect
+        .poll(async () =>
+          controllerPage.getByRole("button", { name: "Request access", exact: true }).isEnabled(),
+        )
+        .toBe(true);
+      await fixture.restartConnector();
       await controllerPage.getByRole("button", { name: "Request access", exact: true }).click();
       const device = await requestLocalRemoteAccess(controller.baseDir, {
         operation: "device-info",

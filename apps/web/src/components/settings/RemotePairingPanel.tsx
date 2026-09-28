@@ -88,6 +88,12 @@ function EnabledRemotePairingPanel() {
         setPreview(result);
         setCompared(false);
       }
+      if (request.operation === "forget-host") {
+        setCode("");
+        setPreview(null);
+        setCompared(false);
+        setNotice("Saved pairing removed. Create a new code on the other computer to pair again.");
+      }
       if (result.kind === "paired") {
         setCode("");
         setPreview(null);
@@ -349,8 +355,18 @@ function EnabledRemotePairingPanel() {
                       void call({
                         operation: "forget-host",
                         environmentId: preview.environmentId,
-                      }).catch(() =>
-                        setError("Could not cancel. Reject the invitation on the host."),
+                      }).then(
+                        () => {
+                          if (!mounted.current) return;
+                          setCode("");
+                          setPreview(null);
+                          setCompared(false);
+                          setError(null);
+                          setNotice(
+                            "Pairing cancelled on this computer. Reject the pending request on the host.",
+                          );
+                        },
+                        () => setError("Could not cancel. Reject the invitation on the host."),
                       )
                     }
                   >
