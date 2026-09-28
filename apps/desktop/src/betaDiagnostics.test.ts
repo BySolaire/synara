@@ -257,27 +257,27 @@ describe("BetaDiagnostics error tracking", () => {
     expect(JSON.stringify(event)).not.toMatch(/alice|private-project|private chat content/);
   });
 
-  it("groups the same loopback failure across ports without grouping external ports", () => {
-    const root = makeRoot();
-    const diag = makeDiagnostics(root);
-    for (const port of [56268, 57314]) {
-      diag.trackError(
-        "renderer",
-        `Access to fetch at 'http://127.0.0.1:${port}/private-route' blocked by CORS`,
-      );
-    }
-    expect(readQueue(root)).toHaveLength(1);
-    for (const port of [8443, 9443]) {
-      diag.trackError(
-        "renderer",
-        `Access to fetch at 'https://example.com:${port}/private-route' blocked by CORS`,
-      );
-    }
-    const events = readQueue(root);
-    expect(events).toHaveLength(3);
-    expect(events[0].payload.message).toContain(":56268/");
-    expect(JSON.stringify(events)).not.toContain("private-route");
-  });
+  it.each(["http://127.0.0.1", "https://localhost", "ws://127.0.0.1", "wss://[::1]"])(
+    "groups %s failures across loopback ports without grouping external ports",
+    (origin) => {
+      const root = makeRoot();
+      const diag = makeDiagnostics(root);
+      for (const port of [56268, 57314]) {
+        diag.trackError("renderer", `Connection to '${origin}:${port}/private-route' failed`);
+      }
+      expect(readQueue(root)).toHaveLength(1);
+      for (const port of [8443, 9443]) {
+        diag.trackError(
+          "renderer",
+          `Connection to '${origin.split(":")[0]}://example.com:${port}/private-route' failed`,
+        );
+      }
+      const events = readQueue(root);
+      expect(events).toHaveLength(3);
+      expect(events[0].payload.message).toContain(":56268/");
+      expect(JSON.stringify(events)).not.toContain("private-route");
+    },
+  );
 
   it("records redacted app.error events with a fingerprint", () => {
     const root = makeRoot();

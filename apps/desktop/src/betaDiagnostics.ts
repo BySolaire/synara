@@ -334,7 +334,7 @@ function errorFingerprint(message: string, stack: string | undefined, homeDir: s
   const normalize = (text: string, maxLength: number): string =>
     redactDiagnosticText(
       text.replace(
-        /\b(https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])):\d{1,5}(?=[/\s'"?#]|$)/gi,
+        /\b((?:https?|wss?):\/\/(?:localhost|127\.0\.0\.1|\[::1\])):\d{1,5}(?=[/\s'"?#]|$)/gi,
         "$1:0",
       ),
       { homeDir, maxLength },

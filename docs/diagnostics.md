@@ -31,12 +31,13 @@ renderer throws an uncaught exception or rejects a promise, or the renderer
 logs a console error. Renderer exceptions retain their original stacks through
 a fixed, bounded IPC payload. The bridge is exposed only when the Beta main
 process enables it, and reports from other windows or subframes are rejected.
+Malformed exception fields produce a generic report without serializing objects.
 Console errors remain a fallback during startup and for browser errors such as
 CORS failures. Once the renderer listeners are ready, their uncaught exceptions
 are not also counted through that fallback. The same fingerprint is sent at
 most once per 10 minutes and at most 30 errors per hour per session. Loopback
-URL ports are normalized only for fingerprinting; the redacted message keeps
-the original port so it can still help diagnosis.
+HTTP and WebSocket URL ports are normalized only for fingerprinting; the redacted
+message keeps the original port so it can still help diagnosis.
 
 Crash events exclude clean process exits and known app shutdowns, including
 backend processes deliberately stopped for an updater handoff. An unexpected

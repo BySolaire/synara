@@ -9,6 +9,11 @@ export function installRendererErrorDiagnostics(): (() => void) | undefined {
   const diagnostics = window.desktopBridge?.betaDiagnostics;
   if (!diagnostics) return undefined;
   const report = ({ message, stack }: DesktopRendererError): void => {
+    // Error fields are writable at runtime, even when TypeScript declares strings.
+    if (typeof message !== "string" || (stack !== undefined && typeof stack !== "string")) {
+      message = "Renderer error details unavailable";
+      stack = undefined;
+    }
     if (!message) return;
     try {
       diagnostics.reportError({
