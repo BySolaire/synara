@@ -263,6 +263,9 @@ export interface ProviderAdapterShape<TError> {
     readonly turnId: TurnId;
   }) => Effect.Effect<ProviderTurnStartResult, TError>;
 
+  /** Cancel only an active, read-only compaction discovery wait before prompt dispatch. */
+  readonly cancelClaudeCompactionDiscovery?: (threadId: ThreadId) => Effect.Effect<void>;
+
   /** Read bounded native/local cache evidence without delivering a model prompt. */
   readonly getClaudeCacheObservation?: (
     threadId: ThreadId,

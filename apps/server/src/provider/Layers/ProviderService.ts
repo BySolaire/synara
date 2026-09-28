@@ -3306,6 +3306,17 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         }),
       );
 
+    const cancelClaudeCompactionDiscovery: NonNullable<
+      ProviderServiceShape["cancelClaudeCompactionDiscovery"]
+    > = (threadId) =>
+      registry
+        .getByProvider("claudeAgent")
+        .pipe(
+          Effect.flatMap(
+            (adapter) => adapter.cancelClaudeCompactionDiscovery?.(threadId) ?? Effect.void,
+          ),
+        );
+
     const getClaudeCacheObservation: NonNullable<
       ProviderServiceShape["getClaudeCacheObservation"]
     > = (threadId) =>
@@ -3552,6 +3563,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       getCapabilities,
       getClaudeCacheObservation,
       startClaudeCompaction,
+      cancelClaudeCompactionDiscovery,
       rollbackConversation,
       compactThread,
       closeRuntimeEvents,

@@ -5904,6 +5904,33 @@ const make = Effect.gen(function* () {
   // canary classes settle before cursor advancement. Remaining classes execute
   // serially in the same source but do not acquire delivery claims yet.
   const startProviderIntentSource = Effect.gen(function* () {
+    if (providerService.cancelClaudeCompactionDiscovery) {
+      // Stop/interrupt intents can be queued behind discovery under the ordered
+      // delivery lock. Observe their local cancellation signal independently;
+      // teardown and provider commands still execute through the ordered source.
+      // A separate subscription also avoids its bounded handoff queue blocking
+      // this signal behind unrelated events.
+      const cancellationEvents = yield* orchestrationEngine.subscribeDomainEvents;
+      yield* Stream.runForEach(cancellationEvents, (event) => {
+        if (
+          event.type !== "thread.session-stop-requested" &&
+          event.type !== "thread.turn-interrupt-requested"
+        ) {
+          return Effect.void;
+        }
+        return providerService.cancelClaudeCompactionDiscovery!(event.payload.threadId).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.failCause(cause)
+              : Effect.logWarning("provider compaction discovery cancellation failed", {
+                  eventType: event.type,
+                  threadId: event.payload.threadId,
+                  cause: Cause.pretty(cause),
+                }),
+          ),
+        );
+      }).pipe(Effect.forkScoped);
+    }
     const liveEventSource = yield* orchestrationEngine.subscribeDomainEvents;
     // Preserve the source/consumer handoff without retaining an unbounded event
     // mirror while startup or a provider call runs. The engine replays overflow.

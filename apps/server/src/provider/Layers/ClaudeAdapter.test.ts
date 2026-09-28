@@ -11946,11 +11946,13 @@ describe("Claude explicit native compaction", () => {
     );
   });
 
-  for (const stopDuringDiscovery of [false, true]) {
+  for (const discoveryOutcome of ["ready", "stop", "cancel"] as const) {
     it.effect(
-      stopDuringDiscovery
+      discoveryOutcome === "stop"
         ? "does not dispatch compaction after a session stops during command discovery"
-        : "waits for cold Claude initialization before native compaction",
+        : discoveryOutcome === "cancel"
+          ? "cancels only compaction discovery and allows a retry in the same session"
+          : "waits for cold Claude initialization before native compaction",
       () => {
         const harness = makeHarness();
         return Effect.gen(function* () {
@@ -11969,8 +11971,12 @@ describe("Claude explicit native compaction", () => {
             turnId: compactionTurnId,
           }).pipe(Effect.result, Effect.forkChild);
           yield* TestClock.adjust("2 seconds");
-          if (stopDuringDiscovery) {
-            yield* adapter.stopSession(THREAD_ID);
+          if (discoveryOutcome !== "ready") {
+            if (discoveryOutcome === "stop") {
+              yield* adapter.stopSession(THREAD_ID);
+            } else {
+              yield* adapter.cancelClaudeCompactionDiscovery?.(THREAD_ID) ?? Effect.void;
+            }
             const stoppedOperation = yield* Fiber.join(operation).pipe(
               Effect.timeoutOption("1 second"),
               Effect.forkChild,
@@ -11983,19 +11989,38 @@ describe("Claude explicit native compaction", () => {
             yield* Deferred.succeed(discovery, [fakeSlashCommand("compact")]);
           }
           const result = yield* Fiber.join(operation);
-          if (stopDuringDiscovery) {
+          if (discoveryOutcome !== "ready") {
             assert.equal(result._tag, "Failure");
-            if (result._tag === "Failure")
-              assert.include(providerValidationIssue(result.failure), "session changed");
-            assert.lengthOf(yield* adapter.listSessions(), 0);
-            return;
+            if (result._tag === "Failure") {
+              assert.include(
+                providerValidationIssue(result.failure),
+                discoveryOutcome === "stop" ? "session changed" : "cancelled",
+              );
+            }
+            if (discoveryOutcome === "stop") {
+              assert.lengthOf(yield* adapter.listSessions(), 0);
+              return;
+            }
+            const [session] = yield* adapter.listSessions();
+            assert.equal(
+              (session?.resumeCursor as { resume?: string } | undefined)?.resume,
+              nativeSessionId,
+            );
+            assert.isUndefined(session?.activeTurnId);
+            const retry = yield* adapter.startClaudeCompaction!({
+              threadId: THREAD_ID,
+              turnId: compactionTurnId,
+            });
+            assert.equal(retry.turnId, compactionTurnId);
           }
-          assert.equal(
-            result._tag,
-            "Success",
-            result._tag === "Failure" ? providerValidationIssue(result.failure) : undefined,
-          );
-          if (result._tag === "Success") assert.equal(result.success.turnId, compactionTurnId);
+          if (discoveryOutcome === "ready") {
+            assert.equal(
+              result._tag,
+              "Success",
+              result._tag === "Failure" ? providerValidationIssue(result.failure) : undefined,
+            );
+            if (result._tag === "Success") assert.equal(result.success.turnId, compactionTurnId);
+          }
           const prompt = yield* Effect.promise(() =>
             harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]().next(),
           );

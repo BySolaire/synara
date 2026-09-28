@@ -350,6 +350,7 @@ interface ClaudeSessionContext {
   readonly messageStream?: AsyncIterable<SDKMessage>;
   readonly processOwner: ClaudeProcessOwner;
   readonly stoppedSignal: Deferred.Deferred<void>;
+  readonly pendingCompactionDiscoveries: Set<Deferred.Deferred<void>>;
   stopDeferred?: Deferred.Deferred<void, ProviderAdapterProcessError>;
   // Controls/attachment reads can yield before turnState is installed.
   pendingDispatches?: number;
@@ -3380,6 +3381,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           artifactsEnabled: context.artifactsEnabled,
           processOwner: context.processOwner,
           stoppedSignal: context.stoppedSignal,
+          pendingCompactionDiscoveries: new Set(),
           streamFiber: undefined,
           startedAt: context.startedAt,
           basePermissionMode: context.basePermissionMode,
@@ -6045,6 +6047,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ...(messageStream ? { messageStream } : {}),
             processOwner,
             stoppedSignal: Deferred.makeUnsafe<void>(),
+            pendingCompactionDiscoveries: new Set(),
             streamFiber: undefined,
             startedAt,
             basePermissionMode: permissionMode,
@@ -6295,6 +6298,8 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           });
         }
         if (isCompaction) {
+          const cancelled = yield* Deferred.make<void>();
+          context.pendingCompactionDiscoveries.add(cancelled);
           const commands = yield* Effect.tryPromise({
             try: () => context.query.supportedCommands(),
             // Discovery is read-only and precedes prompt enqueue. A failed
@@ -6322,7 +6327,25 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 ),
               ),
             ),
+            Effect.raceFirst(
+              Deferred.await(cancelled).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new ProviderAdapterValidationError({
+                      provider: PROVIDER,
+                      operation: "startClaudeCompaction",
+                      issue: "Claude compaction preparation was cancelled. Try again.",
+                    }),
+                  ),
+                ),
+              ),
+            ),
             Effect.timeoutOption(Duration.seconds(5)),
+            Effect.ensuring(
+              Effect.sync(() => {
+                context.pendingCompactionDiscoveries.delete(cancelled);
+              }),
+            ),
           );
           if (Option.isNone(commands)) {
             return yield* new ProviderAdapterValidationError({
@@ -6639,6 +6662,17 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           input.turnId,
         ),
       );
+
+    const cancelClaudeCompactionDiscovery: NonNullable<
+      ClaudeAdapterShape["cancelClaudeCompactionDiscovery"]
+    > = (threadId) =>
+      Effect.gen(function* () {
+        const context = sessions.get(threadId);
+        if (!context) return;
+        for (const cancelled of Array.from(context.pendingCompactionDiscoveries)) {
+          yield* Deferred.succeed(cancelled, undefined);
+        }
+      });
 
     // A steer rides the live SDK agent loop: the message is pushed into the
     // session's streaming prompt input and the work continues as the same
@@ -7420,6 +7454,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       prepareSessionReplacement,
       getClaudeCacheObservation,
       startClaudeCompaction,
+      cancelClaudeCompactionDiscovery,
       sendTurn,
       steerTurn,
       interruptTurn,

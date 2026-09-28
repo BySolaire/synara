@@ -299,6 +299,9 @@ describe("ProviderCommandReactor", () => {
       ProviderServiceShape["getClaudeCacheObservation"]
     >;
     readonly startClaudeCompaction?: NonNullable<ProviderServiceShape["startClaudeCompaction"]>;
+    readonly cancelClaudeCompactionDiscovery?: NonNullable<
+      ProviderServiceShape["cancelClaudeCompactionDiscovery"]
+    >;
   }) {
     const now = new Date().toISOString();
     const baseDir = input?.baseDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "synara-reactor-"));
@@ -642,6 +645,9 @@ describe("ProviderCommandReactor", () => {
         : {}),
       ...(input?.startClaudeCompaction
         ? { startClaudeCompaction: input.startClaudeCompaction }
+        : {}),
+      ...(input?.cancelClaudeCompactionDiscovery
+        ? { cancelClaudeCompactionDiscovery: input.cancelClaudeCompactionDiscovery }
         : {}),
       closeRuntimeEvents: Effect.void,
       streamEvents: Stream.fromPubSub(runtimeEventPubSub),
@@ -1319,7 +1325,11 @@ describe("ProviderCommandReactor", () => {
       return command;
     }
 
-    async function createCompactionHarness() {
+    async function createCompactionHarness(
+      cancelClaudeCompactionDiscovery?: NonNullable<
+        ProviderServiceShape["cancelClaudeCompactionDiscovery"]
+      >,
+    ) {
       let observation = expiredCacheObservation();
       const startClaudeCompaction = vi.fn<
         NonNullable<ProviderServiceShape["startClaudeCompaction"]>
@@ -1328,6 +1338,7 @@ describe("ProviderCommandReactor", () => {
         threadModelSelection: { provider: "claudeAgent", model: "claude-opus-4-6" },
         getClaudeCacheObservation: () => Effect.sync(() => observation),
         startClaudeCompaction,
+        ...(cancelClaudeCompactionDiscovery ? { cancelClaudeCompactionDiscovery } : {}),
       });
       return {
         harness,
@@ -1387,6 +1398,80 @@ describe("ProviderCommandReactor", () => {
       expect(harness.sendTurn.mock.calls[0]?.[0].input).toContain("delegated result");
       expect((await harness.completionState())[0]?.context_consumed).toBe(1);
     });
+
+    it.each(["thread.session.stop", "thread.turn.interrupt"] as const)(
+      "cancels discovery before delivering a queued UI %s",
+      async (commandType) => {
+        let releaseDiscovery!: () => void;
+        const discovery = new Promise<void>((resolve) => {
+          releaseDiscovery = resolve;
+        });
+        const cancelDiscovery = vi.fn((threadId: ThreadId) =>
+          Effect.sync(() => {
+            expect(threadId).toBe("thread-1");
+            releaseDiscovery();
+          }),
+        );
+        const { harness, startClaudeCompaction } = await createCompactionHarness(cancelDiscovery);
+        startClaudeCompaction.mockImplementation(() =>
+          Effect.promise(() => discovery).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new ProviderAdapterValidationError({
+                  provider: "claudeAgent",
+                  operation: "startClaudeCompaction",
+                  issue: "Compaction discovery cancelled before dispatch.",
+                }),
+              ),
+            ),
+          ),
+        );
+        const review = await sendHeldMessage(harness);
+        try {
+          await Effect.runPromise(
+            harness.engine.dispatch({
+              type: "thread.claude-cache.respond",
+              commandId: CommandId.makeUnsafe("cmd-queued-stop-compact"),
+              threadId: ThreadId.makeUnsafe("thread-1"),
+              reviewId: review.reviewId,
+              messageId: review.messageId,
+              decision: "compact",
+              createdAt: new Date().toISOString(),
+            }),
+          );
+          await waitFor(() => startClaudeCompaction.mock.calls.length === 1);
+          // Fill the ordered source's bounded handoff with unrelated events.
+          for (const index of [1, 2, 3]) {
+            await Effect.runPromise(
+              harness.engine.dispatch({
+                type: "thread.meta.update",
+                commandId: CommandId.makeUnsafe(`cmd-discovery-title-${index}`),
+                threadId: ThreadId.makeUnsafe("thread-1"),
+                title: `Title ${index}`,
+              }),
+            );
+          }
+          await Effect.runPromise(
+            harness.engine.dispatch({
+              type: commandType,
+              commandId: CommandId.makeUnsafe("cmd-stop-during-discovery"),
+              threadId: ThreadId.makeUnsafe("thread-1"),
+              createdAt: new Date().toISOString(),
+            }),
+          );
+          await expect.poll(() => cancelDiscovery.mock.calls.length).toBe(1);
+          await harness.drain();
+          if (commandType === "thread.session.stop") {
+            expect(harness.stopRuntimeSession).toHaveBeenCalledTimes(1);
+          } else {
+            expect(harness.interruptTurn).toHaveBeenCalledTimes(1);
+          }
+          expect(harness.sendTurn).not.toHaveBeenCalled();
+        } finally {
+          releaseDiscovery();
+        }
+      },
+    );
 
     it("discovery error leaves the held message retryable", async () => {
       const { harness, startClaudeCompaction } = await createCompactionHarness();
