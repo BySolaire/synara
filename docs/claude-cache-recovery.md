@@ -68,7 +68,10 @@ changing history.
 The compaction response owns its signal before the provider handoff. Startup replay checks the
 durable journal for cancellations after that response, so an old choice cannot dispatch after an
 interrupt and a later retry remains valid. The signal stays active through preparation until prompt
-enqueue; session teardown and native interrupts still run in their original order. Compaction reuses its validated command list rather
+enqueue. Direct `/compact` turns use the same request-owned signal before session startup and
+cache preflight, pass it through local dispatch options to the adapter, and fence startup replay
+against later cancellations. The signal is never serialized into provider input or saved history.
+Session teardown and native interrupts still run in their original order. Compaction reuses its validated command list rather
 than issuing another lookup after turn admission. Cancellation or dispatch interruption during
 runtime-event publication settles the local reservation without dispatching the prompt. An
 adapter-owned producer retains the ordered start, progress, and cancelled terminal events until

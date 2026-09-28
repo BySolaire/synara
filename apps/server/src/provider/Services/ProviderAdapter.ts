@@ -66,6 +66,10 @@ export interface ProviderSteerSubagentPayload {
   readonly skills?: ProviderSendTurnInput["skills"];
   readonly mentions?: ProviderSendTurnInput["mentions"];
 }
+/** Local preparation controls; never serialized into provider input or persisted history. */
+export interface ProviderTurnDispatchOptions {
+  readonly claudeCompactionCancellation?: Deferred.Deferred<void>;
+}
 export type ProviderConversationRollbackMode = "native" | "restart-session";
 
 export interface ProviderAdapterCapabilities {
@@ -136,6 +140,7 @@ export interface ProviderAdapterShape<TError> {
    */
   readonly sendTurn: (
     input: ProviderSendTurnInput,
+    options?: ProviderTurnDispatchOptions,
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
 
   /**

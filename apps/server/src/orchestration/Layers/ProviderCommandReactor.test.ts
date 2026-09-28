@@ -1583,6 +1583,82 @@ describe("ProviderCommandReactor", () => {
       }
     });
 
+    it.each(["startup", "preflight", "replay"] as const)(
+      "retains direct /compact cancellation during %s",
+      async (phase) => {
+        let releasePreparation!: () => void;
+        const preparation = new Promise<void>((resolve) => {
+          releasePreparation = resolve;
+        });
+        const cancelDiscovery = vi.fn(() => Effect.void);
+        const observation = {
+          ...expiredCacheObservation(),
+          state: "likely-warm" as const,
+          contextTokens: 16_000,
+          lastResponseAt: new Date().toISOString(),
+        };
+        const getObservation = vi.fn(() => Effect.succeed(observation));
+        const harness = await createHarness({
+          threadModelSelection: { provider: "claudeAgent", model: "claude-opus-4-6" },
+          startReactor: phase !== "replay",
+          getClaudeCacheObservation: getObservation,
+          cancelClaudeCompactionDiscovery: cancelDiscovery,
+        });
+        if (phase === "startup") {
+          const startSession = harness.startSession.getMockImplementation()!;
+          harness.startSession.mockImplementationOnce((...args) =>
+            Effect.promise(() => preparation).pipe(Effect.flatMap(() => startSession(...args))),
+          );
+        } else if (phase === "preflight") {
+          getObservation.mockImplementationOnce(() =>
+            Effect.promise(() => preparation).pipe(Effect.as(observation)),
+          );
+        }
+        try {
+          await dispatchHarnessUserTurn(harness, {
+            messageId: "direct-compact-before-cancel",
+            text: "/compact Preserve project decisions",
+            createdAt: new Date().toISOString(),
+          });
+          if (phase !== "replay") {
+            await waitFor(() =>
+              phase === "startup"
+                ? harness.startSession.mock.calls.length === 1
+                : getObservation.mock.calls.length === 1,
+            );
+          }
+          await Effect.runPromise(
+            harness.engine.dispatch({
+              type: phase === "preflight" ? "thread.turn.interrupt" : "thread.session.stop",
+              commandId: CommandId.makeUnsafe(`cmd-direct-compact-cancel-${phase}`),
+              threadId: ThreadId.makeUnsafe("thread-1"),
+              createdAt: new Date().toISOString(),
+            }),
+          );
+          if (phase === "replay") await harness.startReactor();
+          else await waitFor(() => cancelDiscovery.mock.calls.length === 1);
+          releasePreparation();
+          await harness.drain();
+          expect(harness.sendTurn).not.toHaveBeenCalled();
+          await dispatchHarnessUserTurn(harness, {
+            messageId: "direct-compact-new-choice",
+            text: "/compact Keep the active task",
+            createdAt: new Date().toISOString(),
+          });
+          await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+          await harness.drain();
+          expect(harness.sendTurn.mock.calls[0]?.[0].input).toBe("/compact Keep the active task");
+          const options = harness.sendTurn.mock.calls[0]?.[1];
+          expect(options?.claudeCompactionCancellation).toBeDefined();
+          expect(Effect.runSync(Deferred.isDone(options!.claudeCompactionCancellation!))).toBe(
+            false,
+          );
+        } finally {
+          releasePreparation();
+        }
+      },
+    );
+
     it("cancels a compaction response while provider handoff is still preparing", async () => {
       let releaseObservation!: () => void;
       const observationGate = new Promise<void>((resolve) => {

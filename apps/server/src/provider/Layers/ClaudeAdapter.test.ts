@@ -11951,6 +11951,7 @@ describe("Claude explicit native compaction", () => {
     "stop",
     "cancel",
     "cancel-before-discovery",
+    "direct-cancel-before-discovery",
     "cancel-after-discovery",
     "cancel-during-progress",
     "interrupt-publication",
@@ -11960,15 +11961,17 @@ describe("Claude explicit native compaction", () => {
         ? "does not dispatch compaction after a session stops during command discovery"
         : discoveryOutcome === "cancel"
           ? "cancels only compaction discovery and allows a retry in the same session"
-          : discoveryOutcome === "cancel-before-discovery"
-            ? "honors cancellation supplied before compaction discovery starts"
-            : discoveryOutcome === "cancel-after-discovery"
-              ? "cancels compaction before enqueue while turn-start publication is delayed"
-              : discoveryOutcome === "cancel-during-progress"
-                ? "cancels compaction while its progress publication is stalled"
-                : discoveryOutcome === "interrupt-publication"
-                  ? "settles a reserved compaction when its dispatch fiber is interrupted"
-                  : "waits for cold Claude initialization before native compaction",
+          : discoveryOutcome === "direct-cancel-before-discovery"
+            ? "honors direct compaction cancellation before adapter preparation registers"
+            : discoveryOutcome === "cancel-before-discovery"
+              ? "honors cancellation supplied before compaction discovery starts"
+              : discoveryOutcome === "cancel-after-discovery"
+                ? "cancels compaction before enqueue while turn-start publication is delayed"
+                : discoveryOutcome === "cancel-during-progress"
+                  ? "cancels compaction while its progress publication is stalled"
+                  : discoveryOutcome === "interrupt-publication"
+                    ? "settles a reserved compaction when its dispatch fiber is interrupted"
+                    : "waits for cold Claude initialization before native compaction",
       () => {
         const harness = makeHarness();
         return Effect.gen(function* () {
@@ -12019,7 +12022,10 @@ describe("Claude explicit native compaction", () => {
               )
             : undefined;
           const cancellation = yield* Deferred.make<void>();
-          if (discoveryOutcome === "cancel-before-discovery") {
+          const cancelledBeforeDiscovery =
+            discoveryOutcome === "cancel-before-discovery" ||
+            discoveryOutcome === "direct-cancel-before-discovery";
+          if (cancelledBeforeDiscovery) {
             yield* Deferred.succeed(cancellation, undefined);
           }
           const input = {
@@ -12027,10 +12033,18 @@ describe("Claude explicit native compaction", () => {
             turnId: compactionTurnId,
             cancellation,
           };
-          const operation = yield* adapter.startClaudeCompaction!(input).pipe(
-            Effect.result,
-            Effect.forkChild,
-          );
+          const operation = yield* (
+            discoveryOutcome === "direct-cancel-before-discovery"
+              ? adapter.sendTurn(
+                  {
+                    threadId: THREAD_ID,
+                    input: "/compact Preserve project decisions",
+                    attachments: [],
+                  },
+                  { claudeCompactionCancellation: cancellation },
+                )
+              : adapter.startClaudeCompaction!(input)
+          ).pipe(Effect.result, Effect.forkChild);
           yield* TestClock.adjust("2 seconds");
           if (discoveryOutcome !== "ready") {
             if (delayedPublication) {
@@ -12041,7 +12055,7 @@ describe("Claude explicit native compaction", () => {
               yield* adapter.stopSession(THREAD_ID);
             } else if (discoveryOutcome === "interrupt-publication") {
               yield* Fiber.interrupt(operation);
-            } else if (discoveryOutcome !== "cancel-before-discovery") {
+            } else if (!cancelledBeforeDiscovery) {
               yield* adapter.cancelClaudeCompactionDiscovery?.(THREAD_ID) ?? Effect.void;
             }
             const stoppedOperation = yield* (

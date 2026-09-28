@@ -6779,8 +6779,12 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         );
       });
 
-    const sendTurn: ClaudeAdapterShape["sendTurn"] = (input) =>
-      withPendingDispatch(input, (cancelled) => sendTurnCore(input, undefined, cancelled));
+    const sendTurn: ClaudeAdapterShape["sendTurn"] = (input, options) =>
+      withPendingDispatch(
+        input,
+        (cancelled) => sendTurnCore(input, undefined, cancelled),
+        options?.claudeCompactionCancellation,
+      );
 
     const startClaudeCompaction: NonNullable<ClaudeAdapterShape["startClaudeCompaction"]> = (
       input,

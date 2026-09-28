@@ -2377,6 +2377,38 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  for (const cancelled of [false, true]) {
+    it.effect(`routes direct compaction's local cancellation signal (cancelled=${cancelled})`, () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const threadId = asThreadId(`thread-direct-compact-${cancelled}`);
+        yield* provider.startSession(threadId, {
+          provider: "claudeAgent",
+          threadId,
+          runtimeMode: "full-access",
+        });
+        const cancellation = yield* Deferred.make<void>();
+        if (cancelled) yield* Deferred.succeed(cancellation, undefined);
+        const dispatch = vi.spyOn(routing.claude.adapter, "sendTurn").mockClear();
+        const result = yield* provider
+          .sendTurn(
+            { threadId, input: "/compact Preserve project decisions", attachments: [] },
+            { claudeCompactionCancellation: cancellation },
+          )
+          .pipe(Effect.result);
+        assert.equal(result._tag, cancelled ? "Failure" : "Success");
+        if (cancelled) assert.equal(dispatch.mock.calls.length, 0);
+        else {
+          assert.strictEqual(
+            dispatch.mock.calls[0]?.[1]?.claudeCompactionCancellation,
+            cancellation,
+          );
+          assert.notProperty(dispatch.mock.calls[0]?.[0], "claudeCompactionCancellation");
+        }
+      }),
+    );
+  }
+
   it.effect("uses the authoritative active turn when an interrupt carries stale UI state", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;

@@ -2452,7 +2452,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         );
       });
 
-    const sendTurn: ProviderServiceShape["sendTurn"] = (rawInput) =>
+    const sendTurn: ProviderServiceShape["sendTurn"] = (rawInput, options) =>
       Effect.gen(function* () {
         const parsed = yield* decodeInputOrValidationError({
           operation: "ProviderService.sendTurn",
@@ -2472,12 +2472,24 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         }
         return yield* runTurnDispatch(input.threadId, (generation) =>
           Effect.gen(function* () {
+            if (
+              options?.claudeCompactionCancellation &&
+              /^\/compact(?:\s|$)/.test(input.input?.trim() ?? "") &&
+              (yield* Deferred.isDone(options.claudeCompactionCancellation))
+            ) {
+              return yield* toValidationError(
+                "ProviderService.sendTurn",
+                "Claude compaction preparation was cancelled. Try again.",
+              );
+            }
             const routed = yield* resolveRoutableSession({
               threadId: input.threadId,
               operation: "ProviderService.sendTurn",
               allowRecovery: true,
             });
-            const turn = yield* routed.adapter.sendTurn(input);
+            const turn = yield* options
+              ? routed.adapter.sendTurn(input, options)
+              : routed.adapter.sendTurn(input);
             const persistenceInput: StartedTurnPersistenceInput = {
               threadId: input.threadId,
               provider: routed.adapter.provider,

@@ -2216,7 +2216,47 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const dispatchTurnForThread = Effect.fnUntraced(function* (input: {
+  const pendingClaudeCompactionPreparations = new Map<
+    ThreadId,
+    { readonly sourceEventSequence: number; readonly cancellation: Deferred.Deferred<void> }
+  >();
+  const cancelClaudeCompactionFromJournal = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    sourceEventSequence: number,
+    cancellation: Deferred.Deferred<void>,
+  ) {
+    const highWater = yield* orchestrationEngine.getEventHighWaterSequence;
+    const wasCancelled = yield* orchestrationEngine
+      .readThreadEventsThrough(
+        threadId,
+        sourceEventSequence,
+        highWater,
+        CLAUDE_COMPACTION_CANCELLATION_EVENTS,
+      )
+      .pipe(
+        Stream.runFold(
+          () => false,
+          () => true,
+        ),
+      );
+    if (wasCancelled) yield* Deferred.succeed(cancellation, undefined);
+  });
+  const requireClaudeCompactionPreparationActive = (cancellation: Deferred.Deferred<void>) =>
+    Deferred.isDone(cancellation).pipe(
+      Effect.flatMap((cancelled) =>
+        cancelled
+          ? Effect.fail(
+              new ProviderAdapterValidationError({
+                provider: "claudeAgent",
+                operation: "startClaudeCompaction",
+                issue: "Claude compaction preparation was cancelled. Try again.",
+              }),
+            )
+          : Effect.void,
+      ),
+    );
+
+  const dispatchTurnForThreadCore = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly sourceEventSequence: number;
     readonly completionEventSequence?: number;
@@ -2242,6 +2282,7 @@ const make = Effect.gen(function* () {
       { type: "thread.turn-start-requested" }
     >;
     readonly acceptedCacheReview?: PendingClaudeCacheReview;
+    readonly claudeCompactionCancellation?: Deferred.Deferred<void>;
   }) {
     const thread = yield* resolveThread(input.threadId);
     if (!thread) {
@@ -2814,10 +2855,18 @@ const make = Effect.gen(function* () {
             issue: "The saved send was cancelled before delivery.",
           });
         }
-        return yield* providerService.sendTurn({
+        if (input.claudeCompactionCancellation) {
+          yield* requireClaudeCompactionPreparationActive(input.claudeCompactionCancellation);
+        }
+        const turnInput = {
           ...providerTurnInput,
           ...(messageText ? { input: messageText } : {}),
-        });
+        };
+        return yield* input.claudeCompactionCancellation
+          ? providerService.sendTurn(turnInput, {
+              claudeCompactionCancellation: input.claudeCompactionCancellation,
+            })
+          : providerService.sendTurn(turnInput);
       });
 
     const captureMessageStartCheckpoint = Effect.gen(function* () {
@@ -3216,6 +3265,47 @@ const make = Effect.gen(function* () {
         (message.source === "native" || message.source === "async-user-input"),
     );
     return userMessages.length === 1 && userMessages[0]?.id === messageId ? thread : null;
+  });
+
+  const dispatchTurnForThread = Effect.fnUntraced(function* (
+    input: Parameters<typeof dispatchTurnForThreadCore>[0],
+  ) {
+    const thread = yield* resolveThread(input.threadId);
+    const provider =
+      input.modelSelection?.provider ??
+      threadSessionModelSelections.get(input.threadId)?.provider ??
+      thread?.session?.providerName ??
+      thread?.modelSelection.provider;
+    if (provider !== "claudeAgent" || !/^\/compact(?:\s|$)/.test(input.messageText.trim())) {
+      return yield* dispatchTurnForThreadCore(input);
+    }
+    const cancellation = yield* Deferred.make<void>();
+    pendingClaudeCompactionPreparations.set(input.threadId, {
+      sourceEventSequence: input.sourceEventSequence,
+      cancellation,
+    });
+    return yield* Effect.gen(function* () {
+      yield* cancelClaudeCompactionFromJournal(
+        input.threadId,
+        input.sourceEventSequence,
+        cancellation,
+      );
+      yield* requireClaudeCompactionPreparationActive(cancellation);
+      return yield* dispatchTurnForThreadCore({
+        ...input,
+        claudeCompactionCancellation: cancellation,
+      });
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (
+            pendingClaudeCompactionPreparations.get(input.threadId)?.cancellation === cancellation
+          ) {
+            pendingClaudeCompactionPreparations.delete(input.threadId);
+          }
+        }),
+      ),
+    );
   });
 
   const maybeGenerateAndRenameWorktreeBranchForFirstTurn = Effect.fnUntraced(function* (input: {
@@ -3793,10 +3883,6 @@ const make = Effect.gen(function* () {
 
   const earlyClaudeCompactionTerminals = new Map<ThreadId, ProviderQueueDrainEvent>();
   const pendingClaudeCompactionIngestion = new Set<ThreadId>();
-  const pendingClaudeCompactionPreparations = new Map<
-    ThreadId,
-    { readonly responseEventSequence: number; readonly cancellation: Deferred.Deferred<void> }
-  >();
   const startupClaudeCompactionTurns = new Set<TurnId>();
   let isRecoveringClaudeCompactions = true;
 
@@ -4019,24 +4105,12 @@ const make = Effect.gen(function* () {
         event.payload.decision === "compact" ? yield* Deferred.make<void>() : undefined;
       if (cancellation) {
         pendingClaudeCompactionPreparations.set(event.payload.threadId, {
-          responseEventSequence: event.sequence,
+          sourceEventSequence: event.sequence,
           cancellation,
         });
       }
       const requirePreparationActive = cancellation
-        ? Deferred.isDone(cancellation).pipe(
-            Effect.flatMap((cancelled) =>
-              cancelled
-                ? Effect.fail(
-                    new ProviderAdapterValidationError({
-                      provider: "claudeAgent",
-                      operation: "thread.claude-cache.compact",
-                      issue: "Claude compaction preparation was cancelled. Try again.",
-                    }),
-                  )
-                : Effect.void,
-            ),
-          )
+        ? requireClaudeCompactionPreparationActive(cancellation)
         : Effect.void;
       return yield* withProviderSessionLease(
         event.payload.threadId,
@@ -4089,21 +4163,7 @@ const make = Effect.gen(function* () {
           if (decision === "compact") {
             // The live observer starts at the current head. Fence replay and any
             // cancellation published before this request registered its signal.
-            const highWater = yield* orchestrationEngine.getEventHighWaterSequence;
-            const wasCancelled = yield* orchestrationEngine
-              .readThreadEventsThrough(
-                threadId,
-                event.sequence,
-                highWater,
-                CLAUDE_COMPACTION_CANCELLATION_EVENTS,
-              )
-              .pipe(
-                Stream.runFold(
-                  () => false,
-                  () => true,
-                ),
-              );
-            if (wasCancelled) yield* Deferred.succeed(cancellation!, undefined);
+            yield* cancelClaudeCompactionFromJournal(threadId, event.sequence, cancellation!);
             yield* requirePreparationActive;
             const message = thread.messages.find((entry) => entry.id === review.messageId);
             const busyTasks = providerService.hasLiveRuntimeTasks
@@ -5997,7 +6057,7 @@ const make = Effect.gen(function* () {
         return Effect.gen(function* () {
           const preparation = pendingClaudeCompactionPreparations.get(event.payload.threadId);
           if (preparation) {
-            if (event.sequence <= preparation.responseEventSequence) return;
+            if (event.sequence <= preparation.sourceEventSequence) return;
             yield* Deferred.succeed(preparation.cancellation, undefined);
           }
           yield* (
