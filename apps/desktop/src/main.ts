@@ -4655,6 +4655,7 @@ async function stopBackendAndWaitForExit(): Promise<void> {
       });
       requireWindowsBackendExit(result);
     } catch (error) {
+      expectedBackendExits.delete(backendChild);
       backendProcess = retainLiveBackendAfterShutdownFailure(backendProcess, backendChild);
       throw error;
     }
@@ -4671,6 +4672,7 @@ async function stopBackendAndWaitForExit(): Promise<void> {
       timeoutMs: POSIX_BACKEND_SHUTDOWN_TIMEOUT_MS,
     });
   } catch (error) {
+    expectedBackendExits.delete(backendChild);
     backendProcess = retainLiveBackendAfterShutdownFailure(backendProcess, backendChild);
     throw error;
   }
