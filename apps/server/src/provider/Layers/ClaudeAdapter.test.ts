@@ -11952,6 +11952,7 @@ describe("Claude explicit native compaction", () => {
     "cancel",
     "cancel-before-discovery",
     "direct-cancel-before-discovery",
+    "steer-cancel-before-discovery",
     "cancel-after-discovery",
     "cancel-during-progress",
     "interrupt-publication",
@@ -11961,17 +11962,19 @@ describe("Claude explicit native compaction", () => {
         ? "does not dispatch compaction after a session stops during command discovery"
         : discoveryOutcome === "cancel"
           ? "cancels only compaction discovery and allows a retry in the same session"
-          : discoveryOutcome === "direct-cancel-before-discovery"
-            ? "honors direct compaction cancellation before adapter preparation registers"
-            : discoveryOutcome === "cancel-before-discovery"
-              ? "honors cancellation supplied before compaction discovery starts"
-              : discoveryOutcome === "cancel-after-discovery"
-                ? "cancels compaction before enqueue while turn-start publication is delayed"
-                : discoveryOutcome === "cancel-during-progress"
-                  ? "cancels compaction while its progress publication is stalled"
-                  : discoveryOutcome === "interrupt-publication"
-                    ? "settles a reserved compaction when its dispatch fiber is interrupted"
-                    : "waits for cold Claude initialization before native compaction",
+          : discoveryOutcome === "steer-cancel-before-discovery"
+            ? "honors steered compaction cancellation before adapter preparation registers"
+            : discoveryOutcome === "direct-cancel-before-discovery"
+              ? "honors direct compaction cancellation before adapter preparation registers"
+              : discoveryOutcome === "cancel-before-discovery"
+                ? "honors cancellation supplied before compaction discovery starts"
+                : discoveryOutcome === "cancel-after-discovery"
+                  ? "cancels compaction before enqueue while turn-start publication is delayed"
+                  : discoveryOutcome === "cancel-during-progress"
+                    ? "cancels compaction while its progress publication is stalled"
+                    : discoveryOutcome === "interrupt-publication"
+                      ? "settles a reserved compaction when its dispatch fiber is interrupted"
+                      : "waits for cold Claude initialization before native compaction",
       () => {
         const harness = makeHarness();
         return Effect.gen(function* () {
@@ -12024,7 +12027,8 @@ describe("Claude explicit native compaction", () => {
           const cancellation = yield* Deferred.make<void>();
           const cancelledBeforeDiscovery =
             discoveryOutcome === "cancel-before-discovery" ||
-            discoveryOutcome === "direct-cancel-before-discovery";
+            discoveryOutcome === "direct-cancel-before-discovery" ||
+            discoveryOutcome === "steer-cancel-before-discovery";
           if (cancelledBeforeDiscovery) {
             yield* Deferred.succeed(cancellation, undefined);
           }
@@ -12034,8 +12038,8 @@ describe("Claude explicit native compaction", () => {
             cancellation,
           };
           const operation = yield* (
-            discoveryOutcome === "direct-cancel-before-discovery"
-              ? adapter.sendTurn(
+            discoveryOutcome === "steer-cancel-before-discovery"
+              ? adapter.steerTurn!(
                   {
                     threadId: THREAD_ID,
                     input: "/compact Preserve project decisions",
@@ -12043,7 +12047,16 @@ describe("Claude explicit native compaction", () => {
                   },
                   { claudeCompactionCancellation: cancellation },
                 )
-              : adapter.startClaudeCompaction!(input)
+              : discoveryOutcome === "direct-cancel-before-discovery"
+                ? adapter.sendTurn(
+                    {
+                      threadId: THREAD_ID,
+                      input: "/compact Preserve project decisions",
+                      attachments: [],
+                    },
+                    { claudeCompactionCancellation: cancellation },
+                  )
+                : adapter.startClaudeCompaction!(input)
           ).pipe(Effect.result, Effect.forkChild);
           yield* TestClock.adjust("2 seconds");
           if (discoveryOutcome !== "ready") {
@@ -12211,44 +12224,82 @@ describe("Claude explicit native compaction", () => {
     );
   });
 
-  it.effect("preserves the selected model and permission mode while compacting", () => {
-    const harness = makeHarness();
-    harness.query.supportedCommandList = [
-      { name: "compact", description: "Compact context", argumentHint: "" },
-    ];
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-      yield* adapter.startSession({
-        threadId: THREAD_ID,
-        runtimeMode: "full-access",
-        resumeCursor: { resume: nativeSessionId },
-      });
-      const completed = yield* adapter.streamEvents.pipe(
-        Stream.filter((event) => event.type === "turn.completed"),
-        Stream.take(1),
-        Stream.runCollect,
-        Effect.forkChild,
+  for (const entryPoint of ["cache-review", "direct", "steer"] as const) {
+    it.effect(`preserves established settings during ${entryPoint} compaction`, () => {
+      const harness = makeHarness();
+      harness.query.supportedCommandList = [
+        { name: "compact", description: "Compact context", argumentHint: "" },
+      ];
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          runtimeMode: "full-access",
+          resumeCursor: { resume: nativeSessionId },
+          modelSelection: { provider: "claudeAgent", model: "claude-opus-4-6" },
+        });
+        const completed = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "turn.completed"),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "Plan",
+          attachments: [],
+          interactionMode: "plan",
+        });
+        const prompts = harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]();
+        yield* Effect.promise(() => prompts.next());
+        emitSuccessResult(harness.query, nativeSessionId, "planned", {});
+        yield* Fiber.join(completed);
+        const permissionsBefore = [...harness.query.setPermissionModeCalls];
+        const settingsBefore = [...harness.query.applyFlagSettingsCalls];
+        const modelsBefore = [...harness.query.setModelCalls];
+        const setModel = vi
+          .spyOn(harness.query, "setModel")
+          .mockRejectedValue(new Error("Native compaction must preserve the model"));
+        const applySettings = vi
+          .spyOn(harness.query, "applyFlagSettings")
+          .mockRejectedValue(new Error("Native compaction must preserve settings"));
+        const input = {
+          threadId: THREAD_ID,
+          input: "/compact Keep the active task",
+          attachments: [],
+          modelSelection: {
+            provider: "claudeAgent" as const,
+            model: "claude-sonnet-4-6",
+            options: { thinking: true, effort: "high" as const },
+          },
+        };
+        const result = yield* (
+          entryPoint === "cache-review"
+            ? adapter.startClaudeCompaction!({ threadId: THREAD_ID, turnId: compactionTurnId })
+            : entryPoint === "direct"
+              ? adapter.sendTurn(input)
+              : adapter.steerTurn!(input)
+        ).pipe(Effect.result);
+        assert.equal(result._tag, "Success");
+        assert.equal(setModel.mock.calls.length, 0);
+        assert.equal(applySettings.mock.calls.length, 0);
+        const prompt = yield* Effect.promise(() => prompts.next());
+        assert.deepEqual(prompt.value?.message.content, [
+          {
+            type: "text",
+            text: entryPoint === "cache-review" ? "/compact" : "/compact Keep the active task",
+          },
+        ]);
+        assert.equal(harness.query.setModelCalls.length, modelsBefore.length);
+        assert.deepEqual(harness.query.setPermissionModeCalls, permissionsBefore);
+        assert.deepEqual(harness.query.applyFlagSettingsCalls, settingsBefore);
+        assert.deepEqual(harness.query.setModelCalls, modelsBefore);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
       );
-      yield* adapter.sendTurn({
-        threadId: THREAD_ID,
-        input: "Plan",
-        attachments: [],
-        interactionMode: "plan",
-      });
-      emitSuccessResult(harness.query, nativeSessionId, "planned", {});
-      yield* Fiber.join(completed);
-      const permissionsBefore = [...harness.query.setPermissionModeCalls];
-      const settingsBefore = [...harness.query.applyFlagSettingsCalls];
-      const modelsBefore = [...harness.query.setModelCalls];
-      yield* adapter.startClaudeCompaction!({ threadId: THREAD_ID, turnId: compactionTurnId });
-      assert.deepEqual(harness.query.setPermissionModeCalls, permissionsBefore);
-      assert.deepEqual(harness.query.applyFlagSettingsCalls, settingsBefore);
-      assert.deepEqual(harness.query.setModelCalls, modelsBefore);
-    }).pipe(
-      Effect.provideService(Random.Random, makeDeterministicRandomService()),
-      Effect.provide(harness.layer),
-    );
-  });
+    });
+  }
 
   it.effect(
     "rejects attachments on native compaction before creating a turn or reading files",

@@ -62,7 +62,10 @@ import {
   ProviderAdapterProcessError,
   ProviderValidationError,
 } from "../Errors.ts";
-import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import type {
+  ProviderAdapterShape,
+  ProviderTurnDispatchOptions,
+} from "../Services/ProviderAdapter.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderService, type ProviderServiceShape } from "../Services/ProviderService.ts";
 import {
@@ -2452,6 +2455,26 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         );
       });
 
+    const isNativeClaudeCompaction = (provider: ProviderKind, text: string | undefined) =>
+      provider === "claudeAgent" && /^\/compact(?:\s|$)/.test(text?.trim() ?? "");
+    const requireClaudeCompactionPreparationActive = (
+      text: string | undefined,
+      options: ProviderTurnDispatchOptions | undefined,
+      operation: string,
+    ) =>
+      Effect.gen(function* () {
+        if (
+          options?.claudeCompactionCancellation &&
+          /^\/compact(?:\s|$)/.test(text?.trim() ?? "") &&
+          (yield* Deferred.isDone(options.claudeCompactionCancellation))
+        ) {
+          return yield* toValidationError(
+            operation,
+            "Claude compaction preparation was cancelled. Try again.",
+          );
+        }
+      });
+
     const sendTurn: ProviderServiceShape["sendTurn"] = (rawInput, options) =>
       Effect.gen(function* () {
         const parsed = yield* decodeInputOrValidationError({
@@ -2472,16 +2495,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         }
         return yield* runTurnDispatch(input.threadId, (generation) =>
           Effect.gen(function* () {
-            if (
-              options?.claudeCompactionCancellation &&
-              /^\/compact(?:\s|$)/.test(input.input?.trim() ?? "") &&
-              (yield* Deferred.isDone(options.claudeCompactionCancellation))
-            ) {
-              return yield* toValidationError(
-                "ProviderService.sendTurn",
-                "Claude compaction preparation was cancelled. Try again.",
-              );
-            }
+            yield* requireClaudeCompactionPreparationActive(
+              input.input,
+              options,
+              "ProviderService.sendTurn",
+            );
             const routed = yield* resolveRoutableSession({
               threadId: input.threadId,
               operation: "ProviderService.sendTurn",
@@ -2499,7 +2517,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 ? { lifecycleGeneration: routed.lifecycleGeneration }
                 : {}),
               ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
-              ...(input.modelSelection !== undefined
+              ...(input.modelSelection !== undefined &&
+              !isNativeClaudeCompaction(routed.adapter.provider, input.input)
                 ? { modelSelection: input.modelSelection }
                 : {}),
               lastRuntimeEvent: "provider.sendTurn",
@@ -2520,7 +2539,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         );
       });
 
-    const steerTurn: ProviderServiceShape["steerTurn"] = (rawInput) =>
+    const steerTurn: ProviderServiceShape["steerTurn"] = (rawInput, options) =>
       Effect.gen(function* () {
         const parsed = yield* decodeInputOrValidationError({
           operation: "ProviderService.steerTurn",
@@ -2540,6 +2559,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         }
         return yield* runTurnDispatch(input.threadId, (generation) =>
           Effect.gen(function* () {
+            yield* requireClaudeCompactionPreparationActive(
+              input.input,
+              options,
+              "ProviderService.steerTurn",
+            );
             const routed = yield* resolveRoutableSession({
               threadId: input.threadId,
               operation: "ProviderService.steerTurn",
@@ -2554,7 +2578,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 `Provider '${routed.adapter.provider}' does not support steering an active turn.`,
               );
             }
-            const turn = yield* routed.adapter.steerTurn(input);
+            const turn = yield* options
+              ? routed.adapter.steerTurn(input, options)
+              : routed.adapter.steerTurn(input);
             const persistenceInput: StartedTurnPersistenceInput = {
               threadId: input.threadId,
               provider: routed.adapter.provider,
@@ -2564,7 +2590,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 ? { lifecycleGeneration: routed.lifecycleGeneration }
                 : {}),
               ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
-              ...(input.modelSelection !== undefined
+              ...(input.modelSelection !== undefined &&
+              !isNativeClaudeCompaction(routed.adapter.provider, input.input)
                 ? { modelSelection: input.modelSelection }
                 : {}),
               lastRuntimeEvent: "provider.steerTurn",

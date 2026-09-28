@@ -71,6 +71,10 @@ interrupt and a later retry remains valid. The signal stays active through prepa
 enqueue. Direct `/compact` turns use the same request-owned signal before session startup and
 cache preflight, pass it through local dispatch options to the adapter, and fence startup replay
 against later cancellations. The signal is never serialized into provider input or saved history.
+Steered `/compact` requests retain the same signal when a live turn settles during preparation.
+All native compaction entry points preserve the established model, settings, and permission mode;
+pending selection changes apply to the next ordinary prompt. Compaction does not wait on model or
+settings control requests or persist an unapplied selection as the active runtime model.
 Session teardown and native interrupts still run in their original order. Compaction reuses its validated command list rather
 than issuing another lookup after turn admission. Cancellation or dispatch interruption during
 runtime-event publication settles the local reservation without dispatching the prompt. An

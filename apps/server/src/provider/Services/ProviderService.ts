@@ -128,6 +128,7 @@ export interface ProviderServiceShape {
    */
   readonly steerTurn: (
     input: ProviderSteerTurnInput,
+    options?: ProviderTurnDispatchOptions,
   ) => Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
 
   /**

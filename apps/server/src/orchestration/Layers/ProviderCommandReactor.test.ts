@@ -445,7 +445,7 @@ describe("ProviderCommandReactor", () => {
         runtimeSessions.push(next);
       }
     };
-    const steerTurn = vi.fn((_: unknown) =>
+    const steerTurn = vi.fn<ProviderServiceShape["steerTurn"]>((_: unknown) =>
       Effect.succeed({
         threadId: ThreadId.makeUnsafe("thread-1"),
         turnId: asTurnId("turn-steer-1"),
@@ -1658,6 +1658,105 @@ describe("ProviderCommandReactor", () => {
         }
       },
     );
+
+    it("retains compaction cancellation when a native steer settles during preflight", async () => {
+      let releasePreparation!: () => void;
+      let preparationEntered = false;
+      const preparation = new Promise<void>((resolve) => {
+        releasePreparation = resolve;
+      });
+      const cancelDiscovery = vi.fn(() => Effect.void);
+      const harness = await createHarness({
+        threadModelSelection: { provider: "claudeAgent", model: "claude-opus-4-6" },
+        ingestRuntimeEvents: true,
+        cancelClaudeCompactionDiscovery: cancelDiscovery,
+        getClaudeCacheObservation: () =>
+          Effect.succeed({
+            ...expiredCacheObservation(),
+            state: "likely-warm",
+            contextTokens: 16_000,
+          }),
+      });
+      await dispatchHarnessUserTurn(harness, {
+        messageId: "before-native-steer",
+        text: "Initial task",
+        createdAt: new Date().toISOString(),
+      });
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      await harness.drain();
+      const turnId = asTurnId("before-native-steer-turn");
+      harness.setRuntimeSessionTurnState({
+        threadId: "thread-1",
+        status: "running",
+        activeTurnId: turnId,
+      });
+      await harness.emitRuntimeEvent({
+        type: "turn.started",
+        eventId: asEventId("native-steer-started"),
+        provider: "claudeAgent",
+        createdAt: new Date().toISOString(),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        turnId,
+        payload: {},
+        providerRefs: {},
+      });
+      await waitFor(
+        async () => (await readHarnessThread(harness))?.session?.activeTurnId === turnId,
+      );
+      const getSettings = harness.serverSettings.getSettings;
+      Object.assign(harness.serverSettings, {
+        getSettings: Effect.sync(() => {
+          preparationEntered = true;
+        }).pipe(Effect.andThen(Effect.promise(() => preparation)), Effect.andThen(getSettings)),
+      });
+      try {
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.makeUnsafe("cmd-native-steer-compact"),
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            message: {
+              messageId: asMessageId("native-steer-compact"),
+              role: "user",
+              text: "/compact Preserve project decisions",
+              attachments: [],
+            },
+            dispatchMode: "steer",
+            interactionMode: "default",
+            runtimeMode: "approval-required",
+            createdAt: new Date().toISOString(),
+          }),
+        );
+        await waitFor(() => preparationEntered);
+        harness.setRuntimeSessionTurnState({ threadId: "thread-1", status: "ready" });
+        await harness.emitRuntimeEvent({
+          type: "turn.completed",
+          eventId: asEventId("native-steer-settled"),
+          provider: "claudeAgent",
+          createdAt: new Date().toISOString(),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          turnId,
+          payload: { state: "completed" },
+          providerRefs: {},
+        });
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.turn.interrupt",
+            commandId: CommandId.makeUnsafe("cmd-native-steer-cancel"),
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            createdAt: new Date().toISOString(),
+          }),
+        );
+        await waitFor(() => cancelDiscovery.mock.calls.length === 1);
+        releasePreparation();
+        await harness.drain();
+        expect(harness.steerTurn).not.toHaveBeenCalled();
+        expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+      } finally {
+        releasePreparation();
+        Object.assign(harness.serverSettings, { getSettings });
+      }
+    });
 
     it("cancels a compaction response while provider handoff is still preparing", async () => {
       let releaseObservation!: () => void;

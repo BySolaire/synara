@@ -6442,8 +6442,13 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             issue: "Claude's native session identity is unavailable for compaction.",
           });
         }
+        // A native control operates on the established context. Selection
+        // changes belong to the next ordinary prompt, without mutating this
+        // compaction's model or waiting on SDK settings controls.
         const modelSelection =
-          input.modelSelection?.provider === "claudeAgent" ? input.modelSelection : undefined;
+          !isCompaction && input.modelSelection?.provider === "claudeAgent"
+            ? input.modelSelection
+            : undefined;
         const requestedAutoCompactWindow = resolveSelectedClaudeAutoCompactWindow(
           modelSelection?.model,
           normalizeClaudeModelOptions(modelSelection?.model, modelSelection?.options)
@@ -6819,10 +6824,10 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     // interactive Claude Code CLI behaves the same). Only a real user turn
     // can be steered; with no live turn (or only a synthetic one wrapping
     // background agent output) the message dispatches as a normal turn.
-    const steerTurn: ClaudeAdapterShape["steerTurn"] = (input) =>
-      withPendingDispatch(input, () =>
+    const steerTurn: ClaudeAdapterShape["steerTurn"] = (input, options) => {
+      if (isClaudeCompactionCommand(input.input)) return sendTurn(input, options);
+      return withPendingDispatch(input, () =>
         Effect.gen(function* () {
-          if (isClaudeCompactionCommand(input.input)) return yield* sendTurn(input);
           const context = yield* requireSession(input.threadId);
           const liveTurnState = context.turnState;
           if (liveTurnState === undefined || liveTurnState.synthetic === true) {
@@ -6878,6 +6883,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           };
         }),
       );
+    };
 
     const interruptTurn: ClaudeAdapterShape["interruptTurn"] = (
       threadId,

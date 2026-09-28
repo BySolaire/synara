@@ -2935,10 +2935,18 @@ const make = Effect.gen(function* () {
         })
         .pipe(Effect.onError(() => cancelPendingStudioBaseline));
     } else if (input.dispatchMode === "steer") {
-      startedTurn = yield* providerService.steerTurn({
+      if (input.claudeCompactionCancellation) {
+        yield* requireClaudeCompactionPreparationActive(input.claudeCompactionCancellation);
+      }
+      const turnInput = {
         ...providerTurnInput,
         ...(normalizedInput ? { input: normalizedInput } : {}),
-      });
+      };
+      startedTurn = yield* input.claudeCompactionCancellation
+        ? providerService.steerTurn(turnInput, {
+            claudeCompactionCancellation: input.claudeCompactionCancellation,
+          })
+        : providerService.steerTurn(turnInput);
     } else {
       yield* capturePreTurnBaselines;
       const tracksDroidContextAcceptance =
