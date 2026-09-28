@@ -6301,11 +6301,22 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 operation: "startClaudeCompaction",
                 issue: `Could not discover native compaction support: ${toMessage(cause, "Command discovery failed.")}`,
               }),
-          }).pipe(Effect.timeoutOption(CLAUDE_CONTEXT_USAGE_TIMEOUT_MS));
-          if (
-            Option.isNone(commands) ||
-            !commands.value.some((command) => command.name === "compact")
-          ) {
+          }).pipe(
+            // Discovery waits for SDK initialization, including on native resume.
+            // Match the capability startup budget instead of the best-effort
+            // context meter deadline; an initialized runtime uses the short bound.
+            Effect.timeoutOption(
+              Duration.seconds(context.firstTurnSpawnModeAuthoritative ? 55 : 5),
+            ),
+          );
+          if (Option.isNone(commands)) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startClaudeCompaction",
+              issue: "Claude command discovery timed out before compaction. Try again.",
+            });
+          }
+          if (!commands.value.some((command) => command.name === "compact")) {
             return yield* new ProviderAdapterValidationError({
               provider: PROVIDER,
               operation: "startClaudeCompaction",

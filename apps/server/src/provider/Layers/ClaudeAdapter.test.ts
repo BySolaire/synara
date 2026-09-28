@@ -11946,6 +11946,57 @@ describe("Claude explicit native compaction", () => {
     );
   });
 
+  for (const stopDuringDiscovery of [false, true]) {
+    it.effect(
+      stopDuringDiscovery
+        ? "does not dispatch compaction after a session stops during command discovery"
+        : "waits for cold Claude initialization before native compaction",
+      () => {
+        const harness = makeHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const discovery = yield* Deferred.make<ReturnType<typeof fakeSlashCommand>[]>();
+          vi.spyOn(harness.query, "supportedCommands").mockImplementation(() =>
+            Effect.runPromise(Deferred.await(discovery)),
+          );
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            runtimeMode: "full-access",
+            resumeCursor: { resume: nativeSessionId },
+          });
+          const operation = yield* adapter.startClaudeCompaction!({
+            threadId: THREAD_ID,
+            turnId: compactionTurnId,
+          }).pipe(Effect.result, Effect.forkChild);
+          yield* TestClock.adjust("2 seconds");
+          if (stopDuringDiscovery) yield* adapter.stopSession(THREAD_ID);
+          yield* Deferred.succeed(discovery, [fakeSlashCommand("compact")]);
+          const result = yield* Fiber.join(operation);
+          if (stopDuringDiscovery) {
+            assert.equal(result._tag, "Failure");
+            if (result._tag === "Failure")
+              assert.include(providerValidationIssue(result.failure), "session changed");
+            assert.lengthOf(yield* adapter.listSessions(), 0);
+            return;
+          }
+          assert.equal(
+            result._tag,
+            "Success",
+            result._tag === "Failure" ? providerValidationIssue(result.failure) : undefined,
+          );
+          if (result._tag === "Success") assert.equal(result.success.turnId, compactionTurnId);
+          const prompt = yield* Effect.promise(() =>
+            harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]().next(),
+          );
+          assert.deepEqual(prompt.value?.message.content, [{ type: "text", text: "/compact" }]);
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
+    );
+  }
+
   it.effect("bounds native command discovery without queueing a prompt", () => {
     const harness = makeHarness();
     harness.query.supportedCommandsNeverResolves = true;
@@ -11956,8 +12007,11 @@ describe("Claude explicit native compaction", () => {
         threadId: THREAD_ID,
         turnId: compactionTurnId,
       }).pipe(Effect.result, Effect.forkChild);
-      yield* TestClock.adjust("1 second");
-      assert.equal((yield* Fiber.join(operation))._tag, "Failure");
+      yield* TestClock.adjust("55 seconds");
+      const result = yield* Fiber.join(operation);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure")
+        assert.include(providerValidationIssue(result.failure), "command discovery timed out");
       assert.isUndefined((yield* adapter.listSessions())[0]?.activeTurnId);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
