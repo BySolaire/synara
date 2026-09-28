@@ -1592,6 +1592,7 @@ describe("ProviderCommandReactor", () => {
       "idle-interrupt",
       "queued-rollback",
       "service-cancel",
+      "startup-cleanup-failure",
     ] as const)("retains direct /compact cancellation during %s", async (phase) => {
       let releasePreparation!: () => void;
       const preparation = new Promise<void>((resolve) => {
@@ -1633,10 +1634,23 @@ describe("ProviderCommandReactor", () => {
           createdAt: new Date().toISOString(),
         });
       }
-      if (phase === "startup") {
+      if (phase === "startup" || phase === "startup-cleanup-failure") {
         const startSession = harness.startSession.getMockImplementation()!;
         harness.startSession.mockImplementationOnce((...args) =>
-          Effect.promise(() => preparation).pipe(Effect.flatMap(() => startSession(...args))),
+          Effect.promise(() => preparation).pipe(
+            Effect.flatMap(() => startSession(...args)),
+            Effect.onInterrupt(() =>
+              phase === "startup-cleanup-failure"
+                ? Effect.fail(
+                    new ProviderAdapterProcessError({
+                      provider: "claudeAgent",
+                      threadId: "thread-1",
+                      detail: "Cancelled startup cleanup did not prove process-tree exit.",
+                    }),
+                  )
+                : Effect.void,
+            ),
+          ),
         );
       } else if (phase === "service-cancel") {
         harness.sendTurn.mockImplementationOnce((_, options) =>
@@ -1693,7 +1707,7 @@ describe("ProviderCommandReactor", () => {
         });
         if (phase !== "replay") {
           await waitFor(() =>
-            phase === "startup"
+            phase === "startup" || phase === "startup-cleanup-failure"
               ? harness.startSession.mock.calls.length === 1
               : phase === "service-cancel"
                 ? harness.sendTurn.mock.calls.length === 1
@@ -1761,6 +1775,23 @@ describe("ProviderCommandReactor", () => {
         if (phase === "replay") await harness.startReactor();
         else if (phase === "subscriber-lag") await waitFor(() => subscriberEntered);
         else await waitFor(() => cancelDiscovery.mock.calls.length === 1);
+        if (phase === "startup-cleanup-failure") {
+          await waitFor(async () => {
+            const blockers = await Effect.runPromise(
+              harness.reactor.listBlockingDeliveries({ limit: 10 }),
+            );
+            return blockers.some(
+              (blocker) =>
+                blocker.state === "uncertain" &&
+                blocker.lastError?.includes("did not prove process-tree exit"),
+            );
+          });
+          expect(harness.sendTurn).not.toHaveBeenCalled();
+          return;
+        }
+        if (phase === "startup" || phase === "preflight") {
+          await Effect.runPromise(harness.reactor.drain.pipe(Effect.timeout(Duration.seconds(1))));
+        }
         releasePreparation();
         await harness.drain();
         if (phase === "service-cancel") {
@@ -1813,11 +1844,19 @@ describe("ProviderCommandReactor", () => {
       ["steer", "model"],
       ["queue", "runtime"],
       ["steer", "runtime"],
+      ["queue", "computer"],
+      ["steer", "computer"],
     ] as const)(
       "defers spawn-fixed selections during direct /compact (%s, %s)",
       async (dispatchMode, changedSetting) => {
+        const manager = new ComputerManager({ backend: new FakeComputerBackend() });
         const harness = await createHarness({
           threadModelSelection: { provider: "claudeAgent", model: "claude-opus-4-6" },
+          computerService: {
+            supported: true,
+            availability: { kind: "available", backend: "fake" },
+            manager,
+          },
           getClaudeCacheObservation: () =>
             Effect.succeed({
               ...expiredCacheObservation(),
@@ -1825,45 +1864,54 @@ describe("ProviderCommandReactor", () => {
               contextTokens: 16_000,
             }),
         });
-        const send = (id: string, text: string, modelSelection?: ModelSelection) =>
-          Effect.runPromise(
-            harness.engine.dispatch({
-              type: "thread.turn.start",
-              commandId: CommandId.makeUnsafe(id),
-              threadId: ThreadId.makeUnsafe("thread-1"),
-              message: { messageId: asMessageId(id), role: "user", text, attachments: [] },
-              interactionMode: "default",
-              runtimeMode:
-                changedSetting === "runtime" && modelSelection
-                  ? "full-access"
-                  : "approval-required",
-              dispatchMode,
-              ...(modelSelection ? { modelSelection } : {}),
-              createdAt: new Date().toISOString(),
-            }),
+        try {
+          const send = (id: string, text: string, modelSelection?: ModelSelection) =>
+            Effect.runPromise(
+              harness.engine.dispatch({
+                type: "thread.turn.start",
+                commandId: CommandId.makeUnsafe(id),
+                threadId: ThreadId.makeUnsafe("thread-1"),
+                message: { messageId: asMessageId(id), role: "user", text, attachments: [] },
+                interactionMode: "default",
+                runtimeMode:
+                  changedSetting === "runtime" && modelSelection
+                    ? "full-access"
+                    : "approval-required",
+                dispatchMode,
+                ...(modelSelection ? { modelSelection } : {}),
+                ...(changedSetting === "computer" && modelSelection
+                  ? { enableComputerControl: true, computerControlGeneration: 0 }
+                  : {}),
+                createdAt: new Date().toISOString(),
+              }),
+            );
+          await send("before-compact-settings", "Initial task");
+          await harness.drain();
+          const selection: ModelSelection = {
+            provider: "claudeAgent",
+            model: "claude-opus-4-6",
+            options: { effort: "max", autoCompactWindow: "200k" },
+          };
+          await send("compact-pending-settings", "/compact Keep project decisions", selection);
+          await harness.drain();
+          expect(harness.startSession).toHaveBeenCalledTimes(1);
+          expect(harness.stopRuntimeSession).not.toHaveBeenCalled();
+          expect(manager.canContinueChatControl("thread-1")).toBe(false);
+          expect(harness.sendTurn.mock.calls.map(([input]) => input.input)).toEqual([
+            "Initial task",
+            "/compact Keep project decisions",
+          ]);
+          await send("ordinary-pending-settings", "Continue with these settings", selection);
+          await harness.drain();
+          expect(harness.startSession).toHaveBeenCalledTimes(2);
+          expect(harness.startSession.mock.calls[1]?.[1].modelSelection).toEqual(selection);
+          expect(harness.startSession.mock.calls[1]?.[1].runtimeMode).toBe(
+            changedSetting === "runtime" ? "full-access" : "approval-required",
           );
-        await send("before-compact-settings", "Initial task");
-        await harness.drain();
-        const selection: ModelSelection = {
-          provider: "claudeAgent",
-          model: "claude-opus-4-6",
-          options: { effort: "max", autoCompactWindow: "200k" },
-        };
-        await send("compact-pending-settings", "/compact Keep project decisions", selection);
-        await harness.drain();
-        expect(harness.startSession).toHaveBeenCalledTimes(1);
-        expect(harness.stopRuntimeSession).not.toHaveBeenCalled();
-        expect(harness.sendTurn.mock.calls.map(([input]) => input.input)).toEqual([
-          "Initial task",
-          "/compact Keep project decisions",
-        ]);
-        await send("ordinary-pending-settings", "Continue with these settings", selection);
-        await harness.drain();
-        expect(harness.startSession).toHaveBeenCalledTimes(2);
-        expect(harness.startSession.mock.calls[1]?.[1].modelSelection).toEqual(selection);
-        expect(harness.startSession.mock.calls[1]?.[1].runtimeMode).toBe(
-          changedSetting === "runtime" ? "full-access" : "approval-required",
-        );
+          expect(manager.canContinueChatControl("thread-1")).toBe(changedSetting === "computer");
+        } finally {
+          await manager.dispose();
+        }
       },
     );
 

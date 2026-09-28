@@ -2258,6 +2258,40 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  const awaitClaudeCompactionPreparation = <A, E, R>(
+    preparation: Effect.Effect<A, E, R>,
+    cancellation: Deferred.Deferred<void> | undefined,
+  ): Effect.Effect<A, E | ProviderAdapterValidationError, R> =>
+    cancellation
+      ? Effect.suspend(() => {
+          let preparationFailure: Cause.Cause<E> | undefined;
+          return preparation.pipe(
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                if (Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause))
+                  preparationFailure = exit.cause;
+              }),
+            ),
+            Effect.raceFirst(
+              Deferred.await(cancellation).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new ProviderAdapterValidationError({
+                      provider: "claudeAgent",
+                      operation: "startClaudeCompaction.cancelled",
+                      issue: "Claude compaction preparation was cancelled. Try again.",
+                    }),
+                  ),
+                ),
+              ),
+            ),
+            // Cancellation must wait for startup cleanup and preserve an
+            // unproven-exit failure instead of reporting a safe rejection.
+            Effect.catchCause((cause) => Effect.failCause(preparationFailure ?? cause)),
+          );
+        })
+      : preparation;
+
   const dispatchTurnForThreadCore = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly sourceEventSequence: number;
@@ -2410,20 +2444,24 @@ const make = Effect.gen(function* () {
     // uses the existing interrupt-and-queue boundary below.
     const requestedMode = activation.computerControlMode;
     const generation = activation.computerControlGeneration;
-    const enableComputerControl = Option.isNone(computerService)
-      ? activation.enableComputerControl
-      : input.turnKind === "goal-continuation"
-        ? computerService.value.manager.canContinueChatControl(input.threadId)
-        : input.dispatchMode === "steer" && requestedMode === "off"
-          ? false // Ordinary steering does not change the active turn's intent.
-          : yield* Effect.promise(() =>
-              computerService.value.manager.admitControl(
-                input.threadId,
-                requestedMode,
-                generation,
-                requestedMode === "request" && computerInvocation !== null,
-              ),
-            );
+    const enableComputerControl = input.claudeCompactionCancellation
+      ? Option.isSome(gatewaySessions) && gatewaySessions.value.computerControlProvisioned
+        ? gatewaySessions.value.computerControlProvisioned(input.threadId, "claudeAgent")
+        : (threadSessionComputerControl.get(input.threadId) ?? false)
+      : Option.isNone(computerService)
+        ? activation.enableComputerControl
+        : input.turnKind === "goal-continuation"
+          ? computerService.value.manager.canContinueChatControl(input.threadId)
+          : input.dispatchMode === "steer" && requestedMode === "off"
+            ? false // Ordinary steering does not change the active turn's intent.
+            : yield* Effect.promise(() =>
+                computerService.value.manager.admitControl(
+                  input.threadId,
+                  requestedMode,
+                  generation,
+                  requestedMode === "request" && computerInvocation !== null,
+                ),
+              );
     yield* Effect.logDebug("provider command reactor computer inputs", {
       threadId: input.threadId,
       mode: activation.computerControlMode,
@@ -2448,15 +2486,18 @@ const make = Effect.gen(function* () {
       nativeSessionRestarted,
       computerControlRestartDeferred,
       forkComputerControl,
-    } = yield* ensureSessionForThread(input.threadId, input.createdAt, {
-      ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
-      ...(input.providerOptions !== undefined ? { providerOptions: input.providerOptions } : {}),
-      ...(input.dispatchMode === "steer" ? {} : { enableComputerControl }),
-      ...(input.runtimeMode !== undefined ? { runtimeMode: input.runtimeMode } : {}),
-      ...(registerPriorTranscriptBootstrapOnFreshStart
-        ? { registerPriorTranscriptBootstrapOnFreshStart: true }
-        : {}),
-    });
+    } = yield* awaitClaudeCompactionPreparation(
+      ensureSessionForThread(input.threadId, input.createdAt, {
+        ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+        ...(input.providerOptions !== undefined ? { providerOptions: input.providerOptions } : {}),
+        ...(input.dispatchMode === "steer" ? {} : { enableComputerControl }),
+        ...(input.runtimeMode !== undefined ? { runtimeMode: input.runtimeMode } : {}),
+        ...(registerPriorTranscriptBootstrapOnFreshStart
+          ? { registerPriorTranscriptBootstrapOnFreshStart: true }
+          : {}),
+      }),
+      input.claudeCompactionCancellation,
+    );
     if (activeSession.provider === "claudeAgent" && input.dispatchMode !== "steer") {
       const latestThread = yield* resolveThread(input.threadId);
       const pendingReview = latestThread?.claudeCacheReview;
@@ -2471,9 +2512,12 @@ const make = Effect.gen(function* () {
           return;
       } else if (pendingReview) return;
       const nativeObservation = providerService.getClaudeCacheObservation
-        ? yield* providerService
-            .getClaudeCacheObservation(input.threadId)
-            .pipe(Effect.catch(() => Effect.succeed(undefined)))
+        ? yield* awaitClaudeCompactionPreparation(
+            providerService
+              .getClaudeCacheObservation(input.threadId)
+              .pipe(Effect.catch(() => Effect.succeed(undefined))),
+            input.claudeCompactionCancellation,
+          )
         : undefined;
       // In-session model controls run inside sendTurn, after this preflight.
       // Assess the requested model now without changing the native session.
