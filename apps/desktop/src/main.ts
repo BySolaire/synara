@@ -494,7 +494,6 @@ let mainWindow: BrowserWindow | null = null;
 /** Whether the live BrowserWindow was created with `frame: false` (win32/linux). */
 let customTitleBarActive = false;
 let backendProcess: ChildProcess.ChildProcess | null = null;
-const expectedBackendExits = new WeakSet<ChildProcess.ChildProcess>();
 let backendPort = 0;
 let backendAuthToken = "";
 let backendHttpUrl = "";
@@ -4585,7 +4584,7 @@ function startBackend(trigger: BackendStartTrigger = "lifecycle"): void {
 
   child.on("exit", (code, signal) => {
     // Output can drain after a failed stop has restored the app's running state.
-    const expectedExit = expectedBackendExits.has(child);
+    const expectedExit = isQuitting;
     if (backendListeningDetector === listeningDetector) {
       listeningDetector.fail(
         new Error(
@@ -4634,7 +4633,6 @@ function takeBackendProcessForShutdown(): ChildProcess.ChildProcess | null {
   }
 
   const child = backendProcess;
-  if (child) expectedBackendExits.add(child);
   backendProcess = null;
   return child;
 }
@@ -4658,7 +4656,6 @@ async function stopBackendAndWaitForExit(): Promise<void> {
       requireWindowsBackendExit(result);
     } catch (error) {
       backendProcess = retainLiveBackendAfterShutdownFailure(backendProcess, backendChild);
-      if (backendProcess === backendChild) expectedBackendExits.delete(backendChild);
       throw error;
     }
     return;
@@ -4675,7 +4672,6 @@ async function stopBackendAndWaitForExit(): Promise<void> {
     });
   } catch (error) {
     backendProcess = retainLiveBackendAfterShutdownFailure(backendProcess, backendChild);
-    if (backendProcess === backendChild) expectedBackendExits.delete(backendChild);
     throw error;
   }
 }
