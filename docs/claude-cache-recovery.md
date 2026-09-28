@@ -58,9 +58,10 @@ existing edit-and-resend action is available for a message with no provider turn
 ## Native compaction
 
 Command discovery is local and bounded. Unsupported runtimes leave compaction unavailable. The
-adapter allows up to 55 seconds for a fresh or resumed process to initialize, and five seconds
-after a prompt has already been dispatched in that process. A timeout reports a retryable discovery
-failure rather than claiming the runtime does not support compaction.
+adapter allows up to five seconds for command discovery, including fresh or resumed processes,
+so initialization does not hold the ordered provider dispatch source for a minute. A timeout reports
+a retryable discovery failure rather than claiming the runtime does not support compaction; the
+same runtime can finish initializing before a retry. Stopping the session ends the discovery wait immediately.
 The adapter treats discovery failures as pre-dispatch rejections, so they leave the saved send retryable. The
 adapter requires an idle session with no pending interactions or tasks that share the context, and
 rechecks that condition after asynchronous preparation. It preserves the current model, permission

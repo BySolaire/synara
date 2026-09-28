@@ -349,6 +349,7 @@ interface ClaudeSessionContext {
   initToolNames?: ReadonlySet<string>;
   readonly messageStream?: AsyncIterable<SDKMessage>;
   readonly processOwner: ClaudeProcessOwner;
+  readonly stoppedSignal: Deferred.Deferred<void>;
   stopDeferred?: Deferred.Deferred<void, ProviderAdapterProcessError>;
   // Controls/attachment reads can yield before turnState is installed.
   pendingDispatches?: number;
@@ -3378,6 +3379,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           query: context.query,
           artifactsEnabled: context.artifactsEnabled,
           processOwner: context.processOwner,
+          stoppedSignal: context.stoppedSignal,
           streamFiber: undefined,
           startedAt: context.startedAt,
           basePermissionMode: context.basePermissionMode,
@@ -5096,6 +5098,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     ): Effect.Effect<void, ProviderAdapterProcessError> =>
       Effect.gen(function* () {
         context.stopped = true;
+        yield* Deferred.succeed(context.stoppedSignal, undefined);
         yield* cancelAgentGatewayTurn(context.gatewaySessionLease, context.turnState?.turnId);
         context.gatewaySessionLease?.release();
 
@@ -6041,6 +6044,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             query: queryRuntime,
             ...(messageStream ? { messageStream } : {}),
             processOwner,
+            stoppedSignal: Deferred.makeUnsafe<void>(),
             streamFiber: undefined,
             startedAt,
             basePermissionMode: permissionMode,
@@ -6302,12 +6306,23 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 issue: `Could not discover native compaction support: ${toMessage(cause, "Command discovery failed.")}`,
               }),
           }).pipe(
-            // Discovery waits for SDK initialization, including on native resume.
-            // Match the capability startup budget instead of the best-effort
-            // context meter deadline; an initialized runtime uses the short bound.
-            Effect.timeoutOption(
-              Duration.seconds(context.firstTurnSpawnModeAuthoritative ? 55 : 5),
+            // SDK initialization can outlive the context-meter deadline. Keep
+            // this dispatch wait short; the same runtime can finish initializing
+            // before a retry, without holding the ordered delivery source for a minute.
+            Effect.raceFirst(
+              Deferred.await(context.stoppedSignal).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new ProviderAdapterValidationError({
+                      provider: PROVIDER,
+                      operation: "startClaudeCompaction",
+                      issue: "Claude's session changed while preparing compaction. Try again.",
+                    }),
+                  ),
+                ),
+              ),
             ),
+            Effect.timeoutOption(Duration.seconds(5)),
           );
           if (Option.isNone(commands)) {
             return yield* new ProviderAdapterValidationError({

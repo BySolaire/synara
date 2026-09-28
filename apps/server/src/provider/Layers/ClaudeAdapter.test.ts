@@ -23,7 +23,7 @@ import {
 } from "@synara/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import { assessClaudeCache } from "@synara/shared/claudeCache";
-import { Deferred, Effect, Exit, Fiber, Layer, Queue, Random, Stream } from "effect";
+import { Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Random, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { afterEach, beforeEach, vi } from "vitest";
 
@@ -11969,8 +11969,19 @@ describe("Claude explicit native compaction", () => {
             turnId: compactionTurnId,
           }).pipe(Effect.result, Effect.forkChild);
           yield* TestClock.adjust("2 seconds");
-          if (stopDuringDiscovery) yield* adapter.stopSession(THREAD_ID);
-          yield* Deferred.succeed(discovery, [fakeSlashCommand("compact")]);
+          if (stopDuringDiscovery) {
+            yield* adapter.stopSession(THREAD_ID);
+            const stoppedOperation = yield* Fiber.join(operation).pipe(
+              Effect.timeoutOption("1 second"),
+              Effect.forkChild,
+            );
+            yield* TestClock.adjust("1 second");
+            const stoppedResult = yield* Fiber.join(stoppedOperation);
+            yield* Deferred.succeed(discovery, [fakeSlashCommand("compact")]);
+            assert.isTrue(Option.isSome(stoppedResult), "Compaction must settle without discovery");
+          } else {
+            yield* Deferred.succeed(discovery, [fakeSlashCommand("compact")]);
+          }
           const result = yield* Fiber.join(operation);
           if (stopDuringDiscovery) {
             assert.equal(result._tag, "Failure");
@@ -12007,7 +12018,7 @@ describe("Claude explicit native compaction", () => {
         threadId: THREAD_ID,
         turnId: compactionTurnId,
       }).pipe(Effect.result, Effect.forkChild);
-      yield* TestClock.adjust("55 seconds");
+      yield* TestClock.adjust("5 seconds");
       const result = yield* Fiber.join(operation);
       assert.equal(result._tag, "Failure");
       if (result._tag === "Failure")
