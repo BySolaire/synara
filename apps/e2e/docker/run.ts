@@ -1,7 +1,7 @@
 // FILE: run.ts
 // Purpose: Orchestrates a local end-to-end run of the remote-host stack across
 // a real network boundary. The account API, relay, and Postgres run as their
-// production Docker images. A real Synara host (apps/server, from source)
+// production Docker images. A real built Synara host (apps/server, Node 24)
 // runs on THIS machine, enrolls headlessly through the device-code flow, and
 // dials the relay. Then an isolated container — a packet filter lets it reach
 // only the API and relay ports, not the host's port on the same IP, not other
@@ -344,7 +344,12 @@ async function startInfrastructure(): Promise<void> {
 
 // ── Owner sign-in through the real API (dev identity → OTP on stdout) ─
 
-async function signInOwner(): Promise<{ userId: string; accessToken: string; orgId: string }> {
+async function signInOwner(): Promise<{
+  userId: string;
+  accessToken: string;
+  refreshToken: string;
+  orgId: string;
+}> {
   const account = createAccountClient({ baseUrl: API_URL });
   const startedAt = Date.now();
   await account.sendOtp({ email: OWNER_EMAIL });
@@ -382,7 +387,12 @@ async function signInOwner(): Promise<{ userId: string; accessToken: string; org
     { userId: scoped.user.id, email: scoped.user.email, orgId },
     Date.now() - startedAt,
   );
-  return { userId: scoped.user.id, accessToken: scoped.accessToken, orgId };
+  return {
+    userId: scoped.user.id,
+    accessToken: scoped.accessToken,
+    refreshToken: scoped.refreshToken,
+    orgId,
+  };
 }
 
 // ── The real host on this machine ─────────────────────────────────────
@@ -707,7 +717,7 @@ async function main(): Promise<void> {
       userId: owner.userId,
       organizationId: owner.orgId,
       accessToken: owner.accessToken,
-      refreshToken: "unused-fixture-refresh",
+      refreshToken: owner.refreshToken,
     });
     await startHost(hostId);
     await positiveControl();

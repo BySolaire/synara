@@ -33,14 +33,15 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (request.method === "turn/start") {
     turnId = `fixture-turn-${Date.now()}`;
+    const itemId = `${turnId}-message`;
     record({ kind: "turn", turnId, pid: process.pid });
     const approval = JSON.stringify(request.params?.input).includes("APPROVAL FIXTURE");
     reply({ turn: { id: turnId } });
     setTimeout(() => {
       notify("turn/started", { turn: { id: turnId, status: "inProgress", items: [] } });
-      notify("item/started", { item: { type: "agentMessage", id: "fixture-message", text: "" } });
+      notify("item/started", { item: { type: "agentMessage", id: itemId, text: "" } });
       notify("item/agentMessage/delta", {
-        itemId: "fixture-message",
+        itemId,
         delta: "REMOTE STREAM STARTED",
       });
       if (approval) {
@@ -57,18 +58,29 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         });
         return;
       }
+      let text = "REMOTE STREAM STARTED";
+      let relayGapRecorded = false;
       ticker = setInterval(() => {
+        if (!relayGapRecorded && fs.existsSync(path.join(root, "relay-gap-fixture"))) {
+          relayGapRecorded = true;
+          text += " — RECOVERED AFTER RELAY RESTART";
+          notify("item/agentMessage/delta", {
+            itemId,
+            delta: " — RECOVERED AFTER RELAY RESTART",
+          });
+          record({ kind: "relay-gap", turnId, pid: process.pid });
+        }
         if (!fs.existsSync(path.join(root, "finish-fixture-turn"))) return;
         clearInterval(ticker);
         notify("item/agentMessage/delta", {
-          itemId: "fixture-message",
+          itemId,
           delta: " — COMPLETED WHILE CONTROLLER WAS STOPPED",
         });
         notify("item/completed", {
           item: {
             type: "agentMessage",
-            id: "fixture-message",
-            text: "REMOTE STREAM STARTED — COMPLETED WHILE CONTROLLER WAS STOPPED",
+            id: itemId,
+            text: `${text} — COMPLETED WHILE CONTROLLER WAS STOPPED`,
           },
         });
         notify("turn/completed", {

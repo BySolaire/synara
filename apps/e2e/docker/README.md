@@ -62,4 +62,4 @@ leaves them running, printing the `SYNARA_ACCOUNT_URL` / `SYNARA_RELAY_URL`
 to point desktop apps at. Sign-in codes appear in the API container's logs
 (`docker logs -f <printed-api-container-name>`, filtering for `dev-identity`); any email works.
 
-The TLS migration of this Docker harness has passed source typechecking and client bundling. A working Docker daemon is required for runtime qualification; those source checks do not prove the container network boundary.
+The host receives the dev identity API's actual scoped refresh token after headless enrollment, so its owner session can rotate rather than relying on a placeholder token. The TLS migration of this Docker harness has passed source typechecking and client bundling. A working Docker daemon is required for runtime qualification; those source checks do not prove the container network boundary.

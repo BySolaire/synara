@@ -142,16 +142,13 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       },
     );
     try {
-      await page.goto(controller.origin);
+      // Startup announcements can dismiss an open menu. Use the public route
+      // and exercise the real connection control after those dialogs settle.
+      await page.goto(`${controller.origin}/settings?section=connections`);
       await page
         .getByRole("button", { name: /This computer.*Connected/ })
         .first()
         .waitFor();
-      await page
-        .getByRole("button", { name: /This computer.*Connected/ })
-        .first()
-        .click();
-      await page.getByRole("menuitem", { name: "Manage connections", exact: true }).click();
       await page.getByRole("button", { name: "Connect", exact: true }).first().click();
       await page
         .getByRole("button", { name: new RegExp(`${invitation.bundle.label}.*Connected`) })
@@ -163,6 +160,7 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       const connection = await localRpc.request<HostConnection>("hosts.connect", {
         hostId: invitation.bundle.hostId,
       });
+      expect(connection.transport).toBe("relay");
       await using remoteRpc = await workspaceRpc(controller.origin, connection.wsPath);
       expect(
         await remoteRpc.request("projects.readFile", { cwd: roots[0], relativePath: "same.txt" }),
@@ -262,6 +260,31 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         .toBe(true);
       await page.getByText("Remote continuity fixture", { exact: true }).first().click();
       await page.getByText("REMOTE STREAM STARTED", { exact: true }).waitFor();
+      await fixture.stopRelay();
+      await expect
+        .poll(async () => {
+          try {
+            await remoteRpc.request("server.getEnvironment");
+            return false;
+          } catch {
+            return true;
+          }
+        })
+        .toBe(true);
+      // The provider advances with the network down; automatic resubscription
+      // must recover this delta in the existing browser without replaying a turn.
+      await fs.writeFile(path.join(host.baseDir, "relay-gap-fixture"), "emit");
+      await expect
+        .poll(async () =>
+          (await fs.readFile(path.join(host.baseDir, "fixture-provider.jsonl"), "utf8")).includes(
+            '"relay-gap"',
+          ),
+        )
+        .toBe(true);
+      await fixture.restartRelay();
+      await page
+        .getByText("REMOTE STREAM STARTED — RECOVERED AFTER RELAY RESTART", { exact: true })
+        .waitFor({ timeout: 40_000 });
       await controller.stop();
       await fs.writeFile(path.join(host.baseDir, "finish-fixture-turn"), "finish");
       await expect
@@ -278,9 +301,12 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       );
       await page.reload();
       await page
-        .getByText("REMOTE STREAM STARTED — COMPLETED WHILE CONTROLLER WAS STOPPED", {
-          exact: true,
-        })
+        .getByText(
+          "REMOTE STREAM STARTED — RECOVERED AFTER RELAY RESTART — COMPLETED WHILE CONTROLLER WAS STOPPED",
+          {
+            exact: true,
+          },
+        )
         .waitFor();
       const providerEvents = (
         await fs.readFile(path.join(host.baseDir, "fixture-provider.jsonl"), "utf8")
@@ -350,6 +376,26 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
           ),
         )
         .toBe(true);
+      await expect
+        .poll(async () => {
+          const snapshot = await recoveredRemote.request<OrchestrationThreadDetailSnapshot>(
+            "orchestration.getThreadDetailSnapshot",
+            { threadId },
+          );
+          return snapshot.thread.latestTurn?.state;
+        })
+        .toBe("interrupted");
+      // Separate provider turns must not reuse an item id and merge text rows.
+      await page
+        .getByText(
+          "REMOTE STREAM STARTED — RECOVERED AFTER RELAY RESTART — COMPLETED WHILE CONTROLLER WAS STOPPED",
+          { exact: true },
+        )
+        .waitFor();
+      await page
+        .getByRole("button", { name: new RegExp(`${invitation.bundle.label}.*Connected`) })
+        .first()
+        .waitFor();
       const evidenceDir = process.env.SYNARA_E2E_EVIDENCE;
       if (evidenceDir) {
         await fs.mkdir(evidenceDir, { recursive: true });

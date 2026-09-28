@@ -76,6 +76,7 @@ export interface E2eFixture extends AsyncDisposable {
   createHostSecretsCoordinator(deviceId: string): HostSecretsCoordinatorFixture;
   setDiscoverable(hostId: string, discoverable: boolean): Promise<void>;
   stopRelay(): Promise<void>;
+  restartRelay(): Promise<void>;
   stopApi(): Promise<void>;
 }
 
@@ -150,6 +151,15 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
   const userIds = new Set<string>();
   const hosts = new Set<RunningHost>();
   const clients = new Set<HeadlessClient>();
+  const relayServiceToken = `e2e-relay-${randomUUID()}`;
+  const relayConfig = {
+    port: 0,
+    apiBaseUrl: apiHttp.origin,
+    apiIssuer: `${apiHttp.origin}/api/v1`,
+    relayServiceToken,
+    maxPairs: 64,
+    highWaterBytes: 32 * 1024,
+  };
 
   async function dispose(): Promise<void> {
     if (disposed) return;
@@ -202,7 +212,6 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
 
   try {
     workos = await startFakeWorkos();
-    const relayServiceToken = `e2e-relay-${randomUUID()}`;
     api = await createApp(
       workos.config({
         databaseUrl,
@@ -215,14 +224,7 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
     );
     apiHttp.setRequestListener(getRequestListener(api.app.fetch));
 
-    relayHttp = await startBunRelay({
-      port: 0,
-      apiBaseUrl: apiHttp.origin,
-      apiIssuer: `${apiHttp.origin}/api/v1`,
-      relayServiceToken,
-      maxPairs: 64,
-      highWaterBytes: 32 * 1024,
-    });
+    relayHttp = await startBunRelay(relayConfig);
 
     owner = await ownerSession(workos);
     userIds.add(owner.userId);
@@ -411,7 +413,14 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
       await account.updateHost(activeOwner.accessToken, hostId, { discoverable });
     },
     async stopRelay() {
-      await activeRelayHttp.close();
+      await relayHttp?.close();
+    },
+    async restartRelay() {
+      await relayHttp?.close();
+      relayHttp = await startBunRelay({
+        ...relayConfig,
+        port: Number(new URL(activeRelayHttp.origin).port),
+      });
     },
     async stopApi() {
       await apiHttp.close();
