@@ -72,7 +72,7 @@ enqueue. Direct `/compact` turns use the same request-owned signal before sessio
 cache preflight, pass it through local dispatch options to the adapter, and fence startup replay
 against later cancellations. The signal is never serialized into provider input or saved history.
 Steered `/compact` requests retain the same signal when a live turn settles during preparation.
-Direct compaction also cancels pending session startup and cache preflight, waiting for startup
+Direct and cache-review compaction also cancel pending session startup and cache preflight, waiting for startup
 cleanup and preserving unproven-exit failures instead of reporting them as safe rejections.
 All native compaction entry points preserve the established model, settings, and permission mode;
 pending selection, access-mode, and Computer profile changes apply to the next ordinary prompt.

@@ -2014,51 +2014,69 @@ describe("ProviderCommandReactor", () => {
       }
     });
 
-    it("cancels a compaction response while provider handoff is still preparing", async () => {
-      let releaseObservation!: () => void;
-      const observationGate = new Promise<void>((resolve) => {
-        releaseObservation = resolve;
-      });
-      const cancelDiscovery = vi.fn(() => Effect.void);
-      const { harness, startClaudeCompaction, getClaudeCacheObservation } =
-        await createCompactionHarness(cancelDiscovery);
-      const review = await sendHeldMessage(harness);
-      getClaudeCacheObservation.mockImplementationOnce(() =>
-        Effect.promise(() => observationGate).pipe(
-          Effect.andThen(Effect.succeed(review.assessment)),
-        ),
-      );
-      try {
-        await Effect.runPromise(
-          harness.engine.dispatch({
-            type: "thread.claude-cache.respond",
-            commandId: CommandId.makeUnsafe("cmd-compact-before-handoff"),
-            threadId: ThreadId.makeUnsafe("thread-1"),
-            reviewId: review.reviewId,
-            messageId: review.messageId,
-            decision: "compact",
-            createdAt: new Date().toISOString(),
-          }),
-        );
-        await waitFor(() => getClaudeCacheObservation.mock.calls.length === 2);
-        await Effect.runPromise(
-          harness.engine.dispatch({
-            type: "thread.turn.interrupt",
-            commandId: CommandId.makeUnsafe("cmd-interrupt-before-handoff"),
-            threadId: ThreadId.makeUnsafe("thread-1"),
-            createdAt: new Date().toISOString(),
-          }),
-        );
-        await waitFor(() => cancelDiscovery.mock.calls.length === 1);
-        releaseObservation();
-        await harness.drain();
-        expect(startClaudeCompaction).not.toHaveBeenCalled();
-        expect(harness.sendTurn).not.toHaveBeenCalled();
-        expect((await readHarnessThread(harness))?.claudeCacheReview?.status).toBe("failed");
-      } finally {
-        releaseObservation();
-      }
-    });
+    it.each(["startup", "observation"] as const)(
+      "cancels a compaction response during %s without waiting for preflight",
+      async (phase) => {
+        let releaseObservation!: () => void;
+        const observationGate = new Promise<void>((resolve) => {
+          releaseObservation = resolve;
+        });
+        const cancelDiscovery = vi.fn(() => Effect.void);
+        const { harness, startClaudeCompaction, getClaudeCacheObservation } =
+          await createCompactionHarness(cancelDiscovery);
+        const review = await sendHeldMessage(harness);
+        if (phase === "startup") {
+          await Effect.runPromise(
+            harness.stopRuntimeSession({ threadId: ThreadId.makeUnsafe("thread-1") }),
+          );
+          const startSession = harness.startSession.getMockImplementation()!;
+          harness.startSession.mockImplementationOnce((...args) =>
+            Effect.promise(() => observationGate).pipe(Effect.flatMap(() => startSession(...args))),
+          );
+        } else {
+          getClaudeCacheObservation.mockImplementationOnce(() =>
+            Effect.promise(() => observationGate).pipe(
+              Effect.andThen(Effect.succeed(review.assessment)),
+            ),
+          );
+        }
+        try {
+          await Effect.runPromise(
+            harness.engine.dispatch({
+              type: "thread.claude-cache.respond",
+              commandId: CommandId.makeUnsafe("cmd-compact-before-handoff"),
+              threadId: ThreadId.makeUnsafe("thread-1"),
+              reviewId: review.reviewId,
+              messageId: review.messageId,
+              decision: "compact",
+              createdAt: new Date().toISOString(),
+            }),
+          );
+          await waitFor(() =>
+            phase === "startup"
+              ? harness.startSession.mock.calls.length === 2
+              : getClaudeCacheObservation.mock.calls.length === 2,
+          );
+          await Effect.runPromise(
+            harness.engine.dispatch({
+              type: "thread.turn.interrupt",
+              commandId: CommandId.makeUnsafe("cmd-interrupt-before-handoff"),
+              threadId: ThreadId.makeUnsafe("thread-1"),
+              createdAt: new Date().toISOString(),
+            }),
+          );
+          await waitFor(() => cancelDiscovery.mock.calls.length === 1);
+          await Effect.runPromise(harness.reactor.drain.pipe(Effect.timeout(Duration.seconds(1))));
+          releaseObservation();
+          await harness.drain();
+          expect(startClaudeCompaction).not.toHaveBeenCalled();
+          expect(harness.sendTurn).not.toHaveBeenCalled();
+          expect((await readHarnessThread(harness))?.claudeCacheReview?.status).toBe("failed");
+        } finally {
+          releaseObservation();
+        }
+      },
+    );
 
     it("discovery error leaves the held message retryable", async () => {
       const { harness, startClaudeCompaction } = await createCompactionHarness();

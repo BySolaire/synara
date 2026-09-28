@@ -4301,17 +4301,23 @@ const make = Effect.gen(function* () {
               );
               return;
             }
-            yield* ensureSessionForThread(threadId, event.payload.createdAt, {
-              ...(source.payload.modelSelection
-                ? { modelSelection: source.payload.modelSelection }
-                : {}),
-              ...(source.payload.providerOptions
-                ? { providerOptions: source.payload.providerOptions }
-                : {}),
-              runtimeMode: source.payload.runtimeMode,
-            });
+            yield* awaitClaudeCompactionPreparation(
+              ensureSessionForThread(threadId, event.payload.createdAt, {
+                ...(source.payload.modelSelection
+                  ? { modelSelection: source.payload.modelSelection }
+                  : {}),
+                ...(source.payload.providerOptions
+                  ? { providerOptions: source.payload.providerOptions }
+                  : {}),
+                runtimeMode: source.payload.runtimeMode,
+              }),
+              cancellation,
+            );
             const observation = providerService.getClaudeCacheObservation
-              ? yield* providerService.getClaudeCacheObservation(threadId)
+              ? yield* awaitClaudeCompactionPreparation(
+                  providerService.getClaudeCacheObservation(threadId),
+                  cancellation,
+                )
               : undefined;
             yield* requirePreparationActive;
             if (!(yield* isClaudeReviewAuthorized(threadId, review.reviewId, "responding"))) {
