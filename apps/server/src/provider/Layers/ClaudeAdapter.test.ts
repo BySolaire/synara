@@ -11946,18 +11946,41 @@ describe("Claude explicit native compaction", () => {
     );
   });
 
-  for (const discoveryOutcome of ["ready", "stop", "cancel"] as const) {
+  for (const discoveryOutcome of ["ready", "stop", "cancel", "cancel-after-discovery"] as const) {
     it.effect(
       discoveryOutcome === "stop"
         ? "does not dispatch compaction after a session stops during command discovery"
         : discoveryOutcome === "cancel"
           ? "cancels only compaction discovery and allows a retry in the same session"
-          : "waits for cold Claude initialization before native compaction",
+          : discoveryOutcome === "cancel-after-discovery"
+            ? "cancels compaction before enqueue while turn-start publication is delayed"
+            : "waits for cold Claude initialization before native compaction",
       () => {
         const harness = makeHarness();
         return Effect.gen(function* () {
           const adapter = yield* ClaudeAdapter;
           const discovery = yield* Deferred.make<ReturnType<typeof fakeSlashCommand>[]>();
+          const publicationEntered = yield* Deferred.make<void>();
+          const publicationReleased = yield* Deferred.make<void>();
+          if (discoveryOutcome === "cancel-after-discovery") {
+            const offer = Queue.offer;
+            const publication = vi.spyOn(Queue, "offer").mockImplementation((queue, event) => {
+              const offered = offer(queue, event);
+              if (
+                typeof event === "object" &&
+                event !== null &&
+                "type" in event &&
+                event.type === "turn.started"
+              ) {
+                return Deferred.succeed(publicationEntered, undefined).pipe(
+                  Effect.andThen(Deferred.await(publicationReleased)),
+                  Effect.andThen(offered),
+                );
+              }
+              return offered;
+            });
+            yield* Effect.addFinalizer(() => Effect.sync(() => publication.mockRestore()));
+          }
           vi.spyOn(harness.query, "supportedCommands").mockImplementation(() =>
             Effect.runPromise(Deferred.await(discovery)),
           );
@@ -11972,11 +11995,16 @@ describe("Claude explicit native compaction", () => {
           }).pipe(Effect.result, Effect.forkChild);
           yield* TestClock.adjust("2 seconds");
           if (discoveryOutcome !== "ready") {
+            if (discoveryOutcome === "cancel-after-discovery") {
+              yield* Deferred.succeed(discovery, [fakeSlashCommand("compact")]);
+              yield* Deferred.await(publicationEntered);
+            }
             if (discoveryOutcome === "stop") {
               yield* adapter.stopSession(THREAD_ID);
             } else {
               yield* adapter.cancelClaudeCompactionDiscovery?.(THREAD_ID) ?? Effect.void;
             }
+            yield* Deferred.succeed(publicationReleased, undefined);
             const stoppedOperation = yield* Fiber.join(operation).pipe(
               Effect.timeoutOption("1 second"),
               Effect.forkChild,
@@ -12032,6 +12060,42 @@ describe("Claude explicit native compaction", () => {
       },
     );
   }
+
+  it.effect("dispatches compaction using the first command discovery result", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        runtimeMode: "full-access",
+        resumeCursor: { resume: nativeSessionId },
+      });
+      const repeatedLookup = yield* Deferred.make<ReturnType<typeof fakeSlashCommand>[]>();
+      vi.spyOn(harness.query, "supportedCommands")
+        .mockResolvedValueOnce([fakeSlashCommand("compact")])
+        .mockImplementation(() => Effect.runPromise(Deferred.await(repeatedLookup)));
+      const operation = yield* adapter.startClaudeCompaction!({
+        threadId: THREAD_ID,
+        turnId: compactionTurnId,
+      }).pipe(Effect.forkChild);
+      const bounded = yield* Fiber.join(operation).pipe(
+        Effect.timeoutOption("1 second"),
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("1 second");
+      const result = yield* Fiber.join(bounded);
+      yield* Deferred.succeed(repeatedLookup, [fakeSlashCommand("compact")]);
+      yield* Fiber.join(operation);
+      assert.isTrue(Option.isSome(result), "Validated compaction must not wait on a second lookup");
+      const prompt = yield* Effect.promise(() =>
+        harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]().next(),
+      );
+      assert.deepEqual(prompt.value?.message.content, [{ type: "text", text: "/compact" }]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
 
   it.effect("bounds native command discovery without queueing a prompt", () => {
     const harness = makeHarness();

@@ -81,7 +81,7 @@ export interface ProviderServiceShape {
     readonly threadId: ThreadId;
     readonly turnId: TurnId;
   }) => Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
-  /** Signal read-only discovery cancellation without delivering a provider command. */
+  /** Signal local compaction preparation cancellation without delivering a provider command. */
   readonly cancelClaudeCompactionDiscovery?: (
     threadId: ThreadId,
   ) => Effect.Effect<void, ProviderServiceError>;
