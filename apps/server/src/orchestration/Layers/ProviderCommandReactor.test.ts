@@ -1334,15 +1334,17 @@ describe("ProviderCommandReactor", () => {
       const startClaudeCompaction = vi.fn<
         NonNullable<ProviderServiceShape["startClaudeCompaction"]>
       >(({ threadId, turnId }) => Effect.succeed({ threadId, turnId }));
+      const getClaudeCacheObservation = vi.fn(() => Effect.sync(() => observation));
       const harness = await createHarness({
         threadModelSelection: { provider: "claudeAgent", model: "claude-opus-4-6" },
-        getClaudeCacheObservation: () => Effect.sync(() => observation),
+        getClaudeCacheObservation,
         startClaudeCompaction,
         ...(cancelClaudeCompactionDiscovery ? { cancelClaudeCompactionDiscovery } : {}),
       });
       return {
         harness,
         startClaudeCompaction,
+        getClaudeCacheObservation,
         setObservation: (next: ClaudeCacheObservation) => {
           observation = next;
         },
@@ -1399,79 +1401,127 @@ describe("ProviderCommandReactor", () => {
       expect((await harness.completionState())[0]?.context_consumed).toBe(1);
     });
 
-    it.each(["thread.session.stop", "thread.turn.interrupt"] as const)(
-      "cancels discovery before delivering a queued UI %s",
-      async (commandType) => {
-        let releaseDiscovery!: () => void;
-        const discovery = new Promise<void>((resolve) => {
-          releaseDiscovery = resolve;
-        });
-        const cancelDiscovery = vi.fn((threadId: ThreadId) =>
-          Effect.sync(() => {
-            expect(threadId).toBe("thread-1");
-            releaseDiscovery();
-          }),
-        );
-        const { harness, startClaudeCompaction } = await createCompactionHarness(cancelDiscovery);
-        startClaudeCompaction.mockImplementation(() =>
-          Effect.promise(() => discovery).pipe(
-            Effect.andThen(
-              Effect.fail(
-                new ProviderAdapterValidationError({
-                  provider: "claudeAgent",
-                  operation: "startClaudeCompaction",
-                  issue: "Compaction discovery cancelled before dispatch.",
-                }),
-              ),
+    it.each([
+      "thread.session.stop",
+      "thread.turn.interrupt",
+      "thread.archive",
+      "thread.delete",
+    ] as const)("cancels discovery before delivering a queued UI %s", async (commandType) => {
+      let releaseDiscovery!: () => void;
+      const discovery = new Promise<void>((resolve) => {
+        releaseDiscovery = resolve;
+      });
+      const cancelDiscovery = vi.fn((threadId: ThreadId) =>
+        Effect.sync(() => {
+          expect(threadId).toBe("thread-1");
+          releaseDiscovery();
+        }),
+      );
+      const { harness, startClaudeCompaction } = await createCompactionHarness(cancelDiscovery);
+      startClaudeCompaction.mockImplementation(() =>
+        Effect.promise(() => discovery).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new ProviderAdapterValidationError({
+                provider: "claudeAgent",
+                operation: "startClaudeCompaction",
+                issue: "Compaction discovery cancelled before dispatch.",
+              }),
             ),
           ),
+        ),
+      );
+      const review = await sendHeldMessage(harness);
+      try {
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.claude-cache.respond",
+            commandId: CommandId.makeUnsafe("cmd-queued-stop-compact"),
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            reviewId: review.reviewId,
+            messageId: review.messageId,
+            decision: "compact",
+            createdAt: new Date().toISOString(),
+          }),
         );
-        const review = await sendHeldMessage(harness);
-        try {
+        await waitFor(() => startClaudeCompaction.mock.calls.length === 1);
+        // Fill the ordered source's bounded handoff with unrelated events.
+        for (const index of [1, 2, 3]) {
           await Effect.runPromise(
             harness.engine.dispatch({
-              type: "thread.claude-cache.respond",
-              commandId: CommandId.makeUnsafe("cmd-queued-stop-compact"),
+              type: "thread.meta.update",
+              commandId: CommandId.makeUnsafe(`cmd-discovery-title-${index}`),
               threadId: ThreadId.makeUnsafe("thread-1"),
-              reviewId: review.reviewId,
-              messageId: review.messageId,
-              decision: "compact",
-              createdAt: new Date().toISOString(),
+              title: `Title ${index}`,
             }),
           );
-          await waitFor(() => startClaudeCompaction.mock.calls.length === 1);
-          // Fill the ordered source's bounded handoff with unrelated events.
-          for (const index of [1, 2, 3]) {
-            await Effect.runPromise(
-              harness.engine.dispatch({
-                type: "thread.meta.update",
-                commandId: CommandId.makeUnsafe(`cmd-discovery-title-${index}`),
-                threadId: ThreadId.makeUnsafe("thread-1"),
-                title: `Title ${index}`,
-              }),
-            );
-          }
-          await Effect.runPromise(
-            harness.engine.dispatch({
-              type: commandType,
-              commandId: CommandId.makeUnsafe("cmd-stop-during-discovery"),
-              threadId: ThreadId.makeUnsafe("thread-1"),
-              createdAt: new Date().toISOString(),
-            }),
-          );
-          await expect.poll(() => cancelDiscovery.mock.calls.length).toBe(1);
-          await harness.drain();
-          if (commandType === "thread.session.stop") {
-            expect(harness.stopRuntimeSession).toHaveBeenCalledTimes(1);
-          } else {
-            expect(harness.interruptTurn).toHaveBeenCalledTimes(1);
-          }
-          expect(harness.sendTurn).not.toHaveBeenCalled();
-        } finally {
-          releaseDiscovery();
         }
-      },
-    );
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: commandType,
+            commandId: CommandId.makeUnsafe("cmd-stop-during-discovery"),
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            createdAt: new Date().toISOString(),
+          }),
+        );
+        await expect.poll(() => cancelDiscovery.mock.calls.length).toBe(1);
+        await harness.drain();
+        if (commandType === "thread.turn.interrupt") {
+          expect(harness.interruptTurn).toHaveBeenCalledTimes(1);
+        } else if (commandType !== "thread.delete") {
+          expect(harness.stopRuntimeSession).toHaveBeenCalledTimes(1);
+        }
+        expect(harness.sendTurn).not.toHaveBeenCalled();
+      } finally {
+        releaseDiscovery();
+      }
+    });
+
+    it("cancels a compaction response while provider handoff is still preparing", async () => {
+      let releaseObservation!: () => void;
+      const observationGate = new Promise<void>((resolve) => {
+        releaseObservation = resolve;
+      });
+      const cancelDiscovery = vi.fn(() => Effect.void);
+      const { harness, startClaudeCompaction, getClaudeCacheObservation } =
+        await createCompactionHarness(cancelDiscovery);
+      const review = await sendHeldMessage(harness);
+      getClaudeCacheObservation.mockImplementationOnce(() =>
+        Effect.promise(() => observationGate).pipe(
+          Effect.andThen(Effect.succeed(review.assessment)),
+        ),
+      );
+      try {
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.claude-cache.respond",
+            commandId: CommandId.makeUnsafe("cmd-compact-before-handoff"),
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            reviewId: review.reviewId,
+            messageId: review.messageId,
+            decision: "compact",
+            createdAt: new Date().toISOString(),
+          }),
+        );
+        await waitFor(() => getClaudeCacheObservation.mock.calls.length === 2);
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.turn.interrupt",
+            commandId: CommandId.makeUnsafe("cmd-interrupt-before-handoff"),
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            createdAt: new Date().toISOString(),
+          }),
+        );
+        await waitFor(() => cancelDiscovery.mock.calls.length === 1);
+        releaseObservation();
+        await harness.drain();
+        expect(startClaudeCompaction).not.toHaveBeenCalled();
+        expect(harness.sendTurn).not.toHaveBeenCalled();
+        expect((await readHarnessThread(harness))?.claudeCacheReview?.status).toBe("failed");
+      } finally {
+        releaseObservation();
+      }
+    });
 
     it("discovery error leaves the held message retryable", async () => {
       const { harness, startClaudeCompaction } = await createCompactionHarness();
@@ -2206,113 +2256,154 @@ describe("ProviderCommandReactor", () => {
       },
     );
 
-    it.each(["running", "settled-before-publication"] as const)(
-      "keeps a compaction started during startup replay active until its terminal result (%s)",
-      async (settlement) => {
-        let observation = expiredCacheObservation();
-        const now = new Date().toISOString();
-        const threadId = ThreadId.makeUnsafe("thread-1");
-        const startClaudeCompaction = vi.fn<
-          NonNullable<ProviderServiceShape["startClaudeCompaction"]>
-        >((input) => Effect.succeed(input));
-        const harness = await createHarness({
-          threadModelSelection: { provider: "claudeAgent", model: "claude-opus-4-6" },
-          startReactor: false,
-          startClaudeCompaction,
-          getClaudeCacheObservation: () => Effect.sync(() => observation),
-        });
-        startClaudeCompaction.mockImplementation((input) =>
-          Effect.sync(() => {
-            harness.setRuntimeSessionTurnState({
-              threadId: input.threadId,
-              status: settlement === "running" ? "running" : "ready",
-              ...(settlement === "running" ? { activeTurnId: input.turnId } : {}),
-            });
-            return input;
-          }),
-        );
-        const source = await dispatchHarnessUserTurn(harness, {
-          messageId: "startup-replay-user",
-          text: "Continue after this live compaction",
+    it.each([
+      "running",
+      "settled-before-publication",
+      "cancelled-stop",
+      "cancelled-interrupt",
+      "cancelled-archive",
+      "cancelled-delete",
+    ] as const)("replays compaction choices with ordered cancellation (%s)", async (settlement) => {
+      let observation = expiredCacheObservation();
+      const now = new Date().toISOString();
+      const threadId = ThreadId.makeUnsafe("thread-1");
+      const startClaudeCompaction = vi.fn<
+        NonNullable<ProviderServiceShape["startClaudeCompaction"]>
+      >((input) => Effect.succeed(input));
+      const harness = await createHarness({
+        threadModelSelection: { provider: "claudeAgent", model: "claude-opus-4-6" },
+        startReactor: false,
+        startClaudeCompaction,
+        getClaudeCacheObservation: () => Effect.sync(() => observation),
+      });
+      startClaudeCompaction.mockImplementation((input) =>
+        Effect.sync(() => {
+          harness.setRuntimeSessionTurnState({
+            threadId: input.threadId,
+            status: settlement === "running" ? "running" : "ready",
+            ...(settlement === "running" ? { activeTurnId: input.turnId } : {}),
+          });
+          return input;
+        }),
+      );
+      const source = await dispatchHarnessUserTurn(harness, {
+        messageId: "startup-replay-user",
+        text: "Continue after this live compaction",
+        createdAt: now,
+      });
+      const review = {
+        reviewId: "startup-replay-review",
+        messageId: asMessageId("startup-replay-user"),
+        sourceEventSequence: source.sequence,
+        assessment: observation,
+        status: "pending" as const,
+        createdAt: now,
+      };
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.claude-cache.set",
+          commandId: CommandId.makeUnsafe("cmd-startup-replay-review"),
+          threadId,
+          review,
+          expectedReviewId: null,
           createdAt: now,
-        });
-        const review = {
-          reviewId: "startup-replay-review",
-          messageId: asMessageId("startup-replay-user"),
-          sourceEventSequence: source.sequence,
-          assessment: observation,
-          status: "pending" as const,
+        }),
+      );
+      await Effect.runPromise(
+        harness.deliveryRepository.claim({
+          consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+          eventSequence: source.sequence,
+          threadId,
+          claimOwner: "previous-process",
+          claimedAt: now,
+          claimExpiresAt: now,
+        }),
+      );
+      await Effect.runPromise(
+        harness.deliveryRepository.complete({
+          consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+          eventSequence: source.sequence,
+          claimOwner: "previous-process",
+          completedAt: now,
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.claude-cache.respond",
+          commandId: CommandId.makeUnsafe("cmd-startup-replay-compact"),
+          threadId,
+          reviewId: review.reviewId,
+          messageId: review.messageId,
+          decision: "compact",
           createdAt: now,
-        };
+        }),
+      );
+
+      if (settlement.startsWith("cancelled-")) {
+        const commandType =
+          settlement === "cancelled-stop"
+            ? "thread.session.stop"
+            : settlement === "cancelled-interrupt"
+              ? "thread.turn.interrupt"
+              : settlement === "cancelled-archive"
+                ? "thread.archive"
+                : "thread.delete";
         await Effect.runPromise(
           harness.engine.dispatch({
-            type: "thread.claude-cache.set",
-            commandId: CommandId.makeUnsafe("cmd-startup-replay-review"),
+            type: commandType,
+            commandId: CommandId.makeUnsafe("cmd-cancel-before-replay"),
             threadId,
-            review,
-            expectedReviewId: null,
             createdAt: now,
           }),
         );
-        await Effect.runPromise(
-          harness.deliveryRepository.claim({
-            consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
-            eventSequence: source.sequence,
-            threadId,
-            claimOwner: "previous-process",
-            claimedAt: now,
-            claimExpiresAt: now,
-          }),
-        );
-        await Effect.runPromise(
-          harness.deliveryRepository.complete({
-            consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
-            eventSequence: source.sequence,
-            claimOwner: "previous-process",
-            completedAt: now,
-          }),
-        );
-        await Effect.runPromise(
-          harness.engine.dispatch({
-            type: "thread.claude-cache.respond",
-            commandId: CommandId.makeUnsafe("cmd-startup-replay-compact"),
-            threadId,
-            reviewId: review.reviewId,
-            messageId: review.messageId,
-            decision: "compact",
-            createdAt: now,
-          }),
-        );
+      }
 
-        await harness.startReactor();
-        await harness.drain();
+      await harness.startReactor();
+      await harness.drain();
 
-        expect(startClaudeCompaction).toHaveBeenCalledTimes(1);
+      if (settlement.startsWith("cancelled-")) {
+        expect(startClaudeCompaction).not.toHaveBeenCalled();
         expect(harness.sendTurn).not.toHaveBeenCalled();
-        const turnId = startClaudeCompaction.mock.calls[0]?.[0].turnId;
-        expect((await readHarnessThread(harness))?.claudeCacheReview).toMatchObject({
-          status: "compacting",
-          compactionTurnId: turnId,
-        });
-        observation = {
-          ...observation,
-          contextTokens: 16_000,
-          state: "likely-warm",
-          lastResponseAt: new Date().toISOString(),
-        };
-        await emitCompactionTerminal(harness, turnId!, {
-          state: "completed",
-          contextCompacted: true,
-        });
-        await waitFor(() => harness.sendTurn.mock.calls.length === 1);
-        await harness.drain();
+        if (settlement === "cancelled-interrupt") {
+          expect((await readHarnessThread(harness))?.claudeCacheReview).toBeNull();
+          await dispatchHarnessUserTurn(harness, {
+            messageId: "retry-after-interrupt-message",
+            text: "Compact for this new choice",
+            createdAt: new Date().toISOString(),
+          });
+          await waitFor(
+            async () => (await readHarnessThread(harness))?.claudeCacheReview?.status === "pending",
+          );
+          const retryReview = (await readHarnessThread(harness))?.claudeCacheReview;
+          await respondToReview(harness, retryReview, "compact", "retry-after-interrupt");
+          expect(startClaudeCompaction).toHaveBeenCalledTimes(1);
+        }
+        return;
+      }
 
-        expect(harness.sendTurn.mock.calls[0]?.[0].input).toBe(
-          "Continue after this live compaction",
-        );
-        expect((await readHarnessThread(harness))?.claudeCacheReview).toBeNull();
-      },
-    );
+      expect(startClaudeCompaction).toHaveBeenCalledTimes(1);
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      const turnId = startClaudeCompaction.mock.calls[0]?.[0].turnId;
+      expect((await readHarnessThread(harness))?.claudeCacheReview).toMatchObject({
+        status: "compacting",
+        compactionTurnId: turnId,
+      });
+      observation = {
+        ...observation,
+        contextTokens: 16_000,
+        state: "likely-warm",
+        lastResponseAt: new Date().toISOString(),
+      };
+      await emitCompactionTerminal(harness, turnId!, {
+        state: "completed",
+        contextCompacted: true,
+      });
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      await harness.drain();
+
+      expect(harness.sendTurn.mock.calls[0]?.[0].input).toBe("Continue after this live compaction");
+      expect((await readHarnessThread(harness))?.claudeCacheReview).toBeNull();
+    });
 
     it.each([
       "confirmed",

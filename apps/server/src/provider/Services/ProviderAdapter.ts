@@ -43,7 +43,7 @@ import type {
   ProviderTurnStartResult,
   TurnId,
 } from "@synara/contracts";
-import type { Effect } from "effect";
+import type { Deferred, Effect } from "effect";
 import type { Stream } from "effect";
 
 export type ProviderSessionModelSwitchMode = "in-session" | "restart-session" | "unsupported";
@@ -261,6 +261,8 @@ export interface ProviderAdapterShape<TError> {
   readonly startClaudeCompaction?: (input: {
     readonly threadId: ThreadId;
     readonly turnId: TurnId;
+    /** Request-owned cancellation remains valid before adapter discovery is registered. */
+    readonly cancellation?: Deferred.Deferred<void>;
   }) => Effect.Effect<ProviderTurnStartResult, TError>;
 
   /** Cancel active local compaction preparation before prompt dispatch. */

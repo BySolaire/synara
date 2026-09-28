@@ -11946,15 +11946,23 @@ describe("Claude explicit native compaction", () => {
     );
   });
 
-  for (const discoveryOutcome of ["ready", "stop", "cancel", "cancel-after-discovery"] as const) {
+  for (const discoveryOutcome of [
+    "ready",
+    "stop",
+    "cancel",
+    "cancel-before-discovery",
+    "cancel-after-discovery",
+  ] as const) {
     it.effect(
       discoveryOutcome === "stop"
         ? "does not dispatch compaction after a session stops during command discovery"
         : discoveryOutcome === "cancel"
           ? "cancels only compaction discovery and allows a retry in the same session"
-          : discoveryOutcome === "cancel-after-discovery"
-            ? "cancels compaction before enqueue while turn-start publication is delayed"
-            : "waits for cold Claude initialization before native compaction",
+          : discoveryOutcome === "cancel-before-discovery"
+            ? "honors cancellation supplied before compaction discovery starts"
+            : discoveryOutcome === "cancel-after-discovery"
+              ? "cancels compaction before enqueue while turn-start publication is delayed"
+              : "waits for cold Claude initialization before native compaction",
       () => {
         const harness = makeHarness();
         return Effect.gen(function* () {
@@ -11989,10 +11997,19 @@ describe("Claude explicit native compaction", () => {
             runtimeMode: "full-access",
             resumeCursor: { resume: nativeSessionId },
           });
-          const operation = yield* adapter.startClaudeCompaction!({
+          const cancellation = yield* Deferred.make<void>();
+          if (discoveryOutcome === "cancel-before-discovery") {
+            yield* Deferred.succeed(cancellation, undefined);
+          }
+          const input = {
             threadId: THREAD_ID,
             turnId: compactionTurnId,
-          }).pipe(Effect.result, Effect.forkChild);
+            cancellation,
+          };
+          const operation = yield* adapter.startClaudeCompaction!(input).pipe(
+            Effect.result,
+            Effect.forkChild,
+          );
           yield* TestClock.adjust("2 seconds");
           if (discoveryOutcome !== "ready") {
             if (discoveryOutcome === "cancel-after-discovery") {
@@ -12001,7 +12018,7 @@ describe("Claude explicit native compaction", () => {
             }
             if (discoveryOutcome === "stop") {
               yield* adapter.stopSession(THREAD_ID);
-            } else {
+            } else if (discoveryOutcome !== "cancel-before-discovery") {
               yield* adapter.cancelClaudeCompactionDiscovery?.(THREAD_ID) ?? Effect.void;
             }
             yield* Deferred.succeed(publicationReleased, undefined);

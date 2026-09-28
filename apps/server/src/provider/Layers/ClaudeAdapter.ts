@@ -6646,6 +6646,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const withPendingDispatch = (
       input: ProviderSendTurnInput,
       dispatch: (cancelled?: Deferred.Deferred<void>) => ReturnType<ClaudeAdapterShape["sendTurn"]>,
+      cancellation?: Deferred.Deferred<void>,
     ): ReturnType<ClaudeAdapterShape["sendTurn"]> =>
       Effect.gen(function* () {
         const context = yield* requireSession(input.threadId);
@@ -6665,8 +6666,15 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           });
         }
         const cancelled = isClaudeCompactionCommand(input.input)
-          ? yield* Deferred.make<void>()
+          ? (cancellation ?? (yield* Deferred.make<void>()))
           : undefined;
+        if (cancelled && (yield* Deferred.isDone(cancelled))) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startClaudeCompaction",
+            issue: "Claude compaction preparation was cancelled. Try again.",
+          });
+        }
         if (cancelled) context.pendingCompactionPreparations.add(cancelled);
         context.pendingDispatches = (context.pendingDispatches ?? 0) + 1;
         return yield* dispatch(cancelled).pipe(
@@ -6693,6 +6701,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             input.turnId,
             cancelled,
           ),
+        input.cancellation,
       );
 
     const cancelClaudeCompactionDiscovery: NonNullable<

@@ -37,7 +37,7 @@ import type {
   ProviderTurnStartResult,
 } from "@synara/contracts";
 import { ServiceMap } from "effect";
-import type { Effect, Stream } from "effect";
+import type { Deferred, Effect, Stream } from "effect";
 
 import type { ProviderServiceError } from "../Errors.ts";
 import type { PersistedProviderRuntimeEvent } from "../../persistence/Services/ProviderRuntimeEvents.ts";
@@ -80,6 +80,7 @@ export interface ProviderServiceShape {
   readonly startClaudeCompaction?: (input: {
     readonly threadId: ThreadId;
     readonly turnId: TurnId;
+    readonly cancellation?: Deferred.Deferred<void>;
   }) => Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
   /** Signal local compaction preparation cancellation without delivering a provider command. */
   readonly cancelClaudeCompactionDiscovery?: (

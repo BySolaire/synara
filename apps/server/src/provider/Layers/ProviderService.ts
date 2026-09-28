@@ -3280,6 +3280,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     ) =>
       runTurnDispatch(input.threadId, (generation) =>
         Effect.gen(function* () {
+          if (input.cancellation && (yield* Deferred.isDone(input.cancellation))) {
+            return yield* toValidationError(
+              "ProviderService.startClaudeCompaction",
+              "Claude compaction preparation was cancelled. Try again.",
+            );
+          }
           const routed = yield* resolveRoutableSession({
             threadId: input.threadId,
             operation: "ProviderService.startClaudeCompaction",

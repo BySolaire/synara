@@ -61,10 +61,13 @@ Command discovery is local and bounded. Unsupported runtimes leave compaction un
 adapter allows up to five seconds for command discovery, including fresh or resumed processes,
 so initialization does not hold the ordered provider dispatch source for a minute. A timeout reports
 a retryable discovery failure rather than claiming the runtime does not support compaction; the
-same runtime can finish initializing before a retry. A UI stop or interrupt cancels active discovery
-through a separate local signal, so it does not wait behind discovery in the ordered delivery queue.
-The signal stays active through preparation until prompt enqueue; session teardown and native
-interrupts still run in their original order. Compaction reuses its validated command list rather
+same runtime can finish initializing before a retry. A UI stop, interrupt, archive, or delete cancels
+active discovery through a separate local signal, so it does not wait behind discovery in the
+ordered delivery queue.
+The compaction response owns its signal before the provider handoff. Startup replay checks the
+durable journal for cancellations after that response, so an old choice cannot dispatch after an
+interrupt and a later retry remains valid. The signal stays active through preparation until prompt
+enqueue; session teardown and native interrupts still run in their original order. Compaction reuses its validated command list rather
 than issuing another lookup after turn admission. A cancellation during runtime-event publication
 settles the local turn without dispatching the prompt. Stopping the session also ends discovery immediately.
 The adapter treats discovery failures as pre-dispatch rejections, so they leave the saved send retryable. The
