@@ -4584,6 +4584,8 @@ function startBackend(trigger: BackendStartTrigger = "lifecycle"): void {
   });
 
   child.on("exit", (code, signal) => {
+    // Output can drain after a failed stop has restored the app's running state.
+    const expectedExit = expectedBackendExits.has(child);
     if (backendListeningDetector === listeningDetector) {
       listeningDetector.fail(
         new Error(
@@ -4607,7 +4609,7 @@ function startBackend(trigger: BackendStartTrigger = "lifecycle"): void {
       }
       const reason = `code=${code ?? "null"} signal=${signal ?? "null"}`;
       lastBackendFailureDetail = outputTailDetector.read();
-      if (!expectedBackendExits.has(child))
+      if (!expectedExit)
         trackBetaDiagnostics("app.child-process-crash", {
           kind: "crash",
           processType: "backend",
@@ -4655,8 +4657,8 @@ async function stopBackendAndWaitForExit(): Promise<void> {
       });
       requireWindowsBackendExit(result);
     } catch (error) {
-      expectedBackendExits.delete(backendChild);
       backendProcess = retainLiveBackendAfterShutdownFailure(backendProcess, backendChild);
+      if (backendProcess === backendChild) expectedBackendExits.delete(backendChild);
       throw error;
     }
     return;
@@ -4672,8 +4674,8 @@ async function stopBackendAndWaitForExit(): Promise<void> {
       timeoutMs: POSIX_BACKEND_SHUTDOWN_TIMEOUT_MS,
     });
   } catch (error) {
-    expectedBackendExits.delete(backendChild);
     backendProcess = retainLiveBackendAfterShutdownFailure(backendProcess, backendChild);
+    if (backendProcess === backendChild) expectedBackendExits.delete(backendChild);
     throw error;
   }
 }
