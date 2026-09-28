@@ -4240,13 +4240,19 @@ describe("ChatView transcript geometry (full app)", () => {
         // resolves. Record the reader position only once the viewport is quiet.
         let lastTop = container.scrollTop;
         let stableSince = performance.now();
+        const scrollOffsets = [lastTop];
         await vi.waitFor(
           () => {
             if (container.scrollTop !== lastTop) {
               lastTop = container.scrollTop;
               stableSince = performance.now();
+              scrollOffsets.push(lastTop);
+              if (scrollOffsets.length > 20) scrollOffsets.shift();
             }
-            expect(performance.now() - stableSince).toBeGreaterThanOrEqual(150);
+            expect(
+              performance.now() - stableSince,
+              `Transcript scroll did not settle: ${scrollOffsets.join(" -> ")} (height ${container.scrollHeight}, viewport ${container.clientHeight})`,
+            ).toBeGreaterThanOrEqual(150);
           },
           { timeout: 3_000, interval: 20 },
         );
