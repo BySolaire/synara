@@ -4536,6 +4536,30 @@ const make = Effect.gen(function* () {
         ),
         cancellation,
       ).pipe(
+        // Cancellation can win before the checkpoint lease is acquired, so the
+        // handler inside that lease never gets to settle the held review.
+        Effect.catchCause((cause) =>
+          Effect.gen(function* () {
+            const review = (yield* resolveThread(event.payload.threadId))?.claudeCacheReview;
+            if (
+              review?.reviewId === event.payload.review.reviewId &&
+              review.status === "responding"
+            ) {
+              const rejected =
+                classifyProviderAttemptOutcome(Exit.failCause(cause))._tag === "rejected";
+              yield* setClaudeCacheReview(
+                event.payload.threadId,
+                {
+                  ...review,
+                  status: rejected ? "failed" : "uncertain",
+                  error: Cause.pretty(cause),
+                },
+                review.reviewId,
+              );
+            }
+            return yield* Effect.failCause(cause);
+          }),
+        ),
         Effect.ensuring(
           Effect.sync(() => {
             if (

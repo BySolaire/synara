@@ -2195,6 +2195,7 @@ describe("ProviderCommandReactor", () => {
         await Effect.runPromise(harness.reactor.drain.pipe(Effect.timeout(Duration.seconds(1))));
         expect(startClaudeCompaction).not.toHaveBeenCalled();
         expect(harness.sendTurn).not.toHaveBeenCalled();
+        expect((await readHarnessThread(harness))?.claudeCacheReview?.status).toBe("failed");
       } finally {
         await Effect.runPromise(Deferred.succeed(releaseLease, undefined));
         await Effect.runPromise(Effect.exit(Fiber.join(leaseFiber)));
