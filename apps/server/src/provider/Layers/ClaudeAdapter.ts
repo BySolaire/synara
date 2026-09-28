@@ -354,7 +354,7 @@ interface ClaudeSessionContext {
   stopDeferred?: Deferred.Deferred<void, ProviderAdapterProcessError>;
   // Controls/attachment reads can yield before turnState is installed.
   pendingDispatches?: number;
-  pendingCompactionPublication?: boolean;
+  pendingCompactionPublication?: Deferred.Deferred<void>;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
   readonly startedAt: string;
   readonly basePermissionMode: PermissionMode | undefined;
@@ -2679,7 +2679,8 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // producer only owns the captured control turn and never mutates a later
         // turn or delivers a native prompt. Pending publication blocks another
         // dispatch/reconfiguration rather than accumulating detached producers.
-        context.pendingCompactionPublication = true;
+        const publicationFinished = Deferred.makeUnsafe<void>();
+        context.pendingCompactionPublication = publicationFinished;
         context.pendingDispatches = (context.pendingDispatches ?? 0) + 1;
         yield* Fiber.join(publication).pipe(
           Effect.andThen(emitFailedCompactionProgress(context, turnState)),
@@ -2700,9 +2701,10 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             }),
           ),
           Effect.ensuring(
-            Effect.sync(() => {
-              context.pendingCompactionPublication = false;
+            Effect.gen(function* () {
+              delete context.pendingCompactionPublication;
               context.pendingDispatches = (context.pendingDispatches ?? 1) - 1;
+              yield* Deferred.succeed(publicationFinished, undefined);
             }),
           ),
           Effect.forkIn(adapterScope),
@@ -5289,19 +5291,28 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       return Effect.succeed(context);
     };
 
+    const awaitCancelledCompactionPublication = (context: ClaudeSessionContext) =>
+      context.pendingCompactionPublication
+        ? Deferred.await(context.pendingCompactionPublication).pipe(
+            Effect.raceFirst(Deferred.await(context.stoppedSignal)),
+          )
+        : Effect.void;
+
     const assertSessionReplaceable = (threadId: ThreadId) =>
-      Effect.suspend(() => {
+      Effect.gen(function* () {
         const context = sessions.get(threadId);
-        return context && (context.pendingDispatches || hasActiveClaudeRuntimeWork(context))
-          ? Effect.fail(
-              new ProviderAdapterValidationError({
-                provider: PROVIDER,
-                operation: "session/reconfigure",
-                issue:
-                  "Wait for Claude's active turn, shared tasks, approvals and questions to finish before changing session settings.",
-              }),
-            )
-          : Effect.void;
+        if (context) yield* awaitCancelledCompactionPublication(context);
+        const current = sessions.get(threadId);
+        if (current && (current.pendingDispatches || hasActiveClaudeRuntimeWork(current))) {
+          return yield* Effect.fail(
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "session/reconfigure",
+              issue:
+                "Wait for Claude's active turn, shared tasks, approvals and questions to finish before changing session settings.",
+            }),
+          );
+        }
       });
 
     // Only slash-shaped input pays for the lookup; the SDK serves it from the
@@ -6738,15 +6749,17 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       cancellation?: Deferred.Deferred<void>,
     ): ReturnType<ClaudeAdapterShape["sendTurn"]> =>
       Effect.gen(function* () {
-        const context = yield* requireSession(input.threadId);
+        let context = yield* requireSession(input.threadId);
         if (context.pendingCompactionPublication) {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: isClaudeCompactionCommand(input.input)
-              ? "startClaudeCompaction"
-              : "sendTurn",
-            issue: "Claude's cancelled compaction events are still being published. Try again.",
-          });
+          if (isClaudeCompactionCommand(input.input)) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startClaudeCompaction",
+              issue: "Claude's cancelled compaction events are still being published. Try again.",
+            });
+          }
+          yield* awaitCancelledCompactionPublication(context);
+          context = yield* requireSession(input.threadId);
         }
         const selection = isClaudeCompactionCommand(input.input) ? undefined : input.modelSelection;
         if (

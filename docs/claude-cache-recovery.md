@@ -73,10 +73,10 @@ cache preflight, pass it through local dispatch options to the adapter, and fenc
 against later cancellations. The signal is never serialized into provider input or saved history.
 Steered `/compact` requests retain the same signal when a live turn settles during preparation.
 All native compaction entry points preserve the established model, settings, and permission mode;
-pending selection changes apply to the next ordinary prompt. Compaction does not wait on model or
+pending selection and access-mode changes apply to the next ordinary prompt. Compaction does not wait on model or
 settings control requests or persist an unapplied selection as the active runtime model. Spawn-fixed
 choices are also deferred before session preparation, so native compaction does not restart to apply
-them. The journal fence is refreshed at provider dispatch to cover a delayed live subscriber; the
+them or change the established session's access mode. The journal fence is refreshed at provider dispatch to cover a delayed live subscriber; the
 adapter checks the signal and enqueues native compaction in one synchronous admission step.
 Cancelled direct compaction defers queue promotion until the ordered cancelling control settles.
 Its optimistic session status is restored from the runtime before interrupt handling, preserving
@@ -87,7 +87,9 @@ than issuing another lookup after turn admission. Cancellation or dispatch inter
 runtime-event publication settles the local reservation without dispatching the prompt. An
 adapter-owned producer retains the ordered start, progress, and cancelled terminal events until
 the bounded event queue can accept them. Further dispatch and reconfiguration wait for that
-publication, keeping it bounded. Stopping the session also ends discovery immediately.
+publication, keeping it bounded. Ordinary sends wait for that producer rather than being rejected;
+another native compaction remains a retryable rejection until publication settles. Stopping the
+session also ends discovery and publication waits immediately.
 The adapter treats discovery failures as pre-dispatch rejections, so they leave the saved send retryable. The
 adapter requires an idle session with no pending interactions or tasks that share the context, and
 rechecks that condition after asynchronous preparation. It preserves the current model, permission

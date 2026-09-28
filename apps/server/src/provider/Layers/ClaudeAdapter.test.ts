@@ -11955,6 +11955,8 @@ describe("Claude explicit native compaction", () => {
     "steer-cancel-before-discovery",
     "cancel-after-discovery",
     "cancel-during-progress",
+    "cancel-with-followup",
+    "cancel-with-followup-stop",
     "interrupt-publication",
   ] as const) {
     it.effect(
@@ -11972,9 +11974,13 @@ describe("Claude explicit native compaction", () => {
                   ? "cancels compaction before enqueue while turn-start publication is delayed"
                   : discoveryOutcome === "cancel-during-progress"
                     ? "cancels compaction while its progress publication is stalled"
-                    : discoveryOutcome === "interrupt-publication"
-                      ? "settles a reserved compaction when its dispatch fiber is interrupted"
-                      : "waits for cold Claude initialization before native compaction",
+                    : discoveryOutcome === "cancel-with-followup"
+                      ? "delivers the follow-up after cancelled compaction publication drains"
+                      : discoveryOutcome === "cancel-with-followup-stop"
+                        ? "cancels the follow-up publication wait when its session stops"
+                        : discoveryOutcome === "interrupt-publication"
+                          ? "settles a reserved compaction when its dispatch fiber is interrupted"
+                          : "waits for cold Claude initialization before native compaction",
       () => {
         const harness = makeHarness();
         return Effect.gen(function* () {
@@ -11985,6 +11991,8 @@ describe("Claude explicit native compaction", () => {
           const delayedPublication =
             discoveryOutcome === "cancel-after-discovery" ||
             discoveryOutcome === "cancel-during-progress" ||
+            discoveryOutcome === "cancel-with-followup" ||
+            discoveryOutcome === "cancel-with-followup-stop" ||
             discoveryOutcome === "interrupt-publication";
           if (delayedPublication) {
             const offer = Queue.offer;
@@ -11995,7 +12003,11 @@ describe("Claude explicit native compaction", () => {
                 event !== null &&
                 "type" in event &&
                 event.type ===
-                  (discoveryOutcome === "cancel-during-progress" ? "item.updated" : "turn.started")
+                  (discoveryOutcome === "cancel-during-progress" ||
+                  discoveryOutcome === "cancel-with-followup" ||
+                  discoveryOutcome === "cancel-with-followup-stop"
+                    ? "item.updated"
+                    : "turn.started")
               ) {
                 return Deferred.succeed(publicationEntered, undefined).pipe(
                   Effect.andThen(Deferred.await(publicationReleased)),
@@ -12085,9 +12097,43 @@ describe("Claude explicit native compaction", () => {
               }).pipe(Effect.result);
               assert.equal(pendingRetry._tag, "Failure");
             }
+            const followup =
+              discoveryOutcome === "cancel-with-followup" ||
+              discoveryOutcome === "cancel-with-followup-stop"
+                ? yield* adapter
+                    .sendTurn({
+                      threadId: THREAD_ID,
+                      input: "Continue the active task",
+                      attachments: [],
+                    })
+                    .pipe(Effect.result, Effect.forkChild)
+                : undefined;
+            yield* TestClock.adjust(10);
+            const settledBeforePublication = followup?.pollUnsafe();
+            if (discoveryOutcome === "cancel-with-followup-stop") {
+              yield* adapter.stopSession(THREAD_ID);
+              const stoppedFollowup = yield* Fiber.join(followup!);
+              assert.equal(stoppedFollowup._tag, "Failure");
+              assert.lengthOf(yield* adapter.listSessions(), 0);
+            }
             yield* Deferred.succeed(publicationReleased, undefined);
             yield* Deferred.succeed(discovery, [fakeSlashCommand("compact")]);
             assert.isTrue(Option.isSome(stoppedResult), "Compaction must settle without discovery");
+            if (followup) {
+              const result = yield* Fiber.join(followup);
+              assert.isUndefined(settledBeforePublication);
+              if (discoveryOutcome === "cancel-with-followup-stop") return;
+              assert.equal(result._tag, "Success");
+              assert.equal((yield* Fiber.join(operation))._tag, "Failure");
+              if (cancellationTerminal) yield* Fiber.join(cancellationTerminal);
+              const prompt = yield* Effect.promise(() =>
+                harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]().next(),
+              );
+              assert.deepEqual(prompt.value?.message.content, [
+                { type: "text", text: "Continue the active task" },
+              ]);
+              return;
+            }
           } else {
             yield* Deferred.succeed(discovery, [fakeSlashCommand("compact")]);
           }

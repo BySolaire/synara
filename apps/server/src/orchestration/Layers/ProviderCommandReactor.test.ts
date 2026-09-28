@@ -1591,6 +1591,7 @@ describe("ProviderCommandReactor", () => {
       "subscriber-lag",
       "idle-interrupt",
       "queued-rollback",
+      "service-cancel",
     ] as const)("retains direct /compact cancellation during %s", async (phase) => {
       let releasePreparation!: () => void;
       const preparation = new Promise<void>((resolve) => {
@@ -1615,7 +1616,7 @@ describe("ProviderCommandReactor", () => {
         getClaudeCacheObservation: getObservation,
         cancelClaudeCompactionDiscovery: cancelDiscovery,
       });
-      if (phase === "idle-interrupt") {
+      if (phase === "idle-interrupt" || phase === "service-cancel") {
         await dispatchHarnessUserTurn(harness, {
           messageId: "before-idle-compact",
           text: "Initial task",
@@ -1636,6 +1637,20 @@ describe("ProviderCommandReactor", () => {
         const startSession = harness.startSession.getMockImplementation()!;
         harness.startSession.mockImplementationOnce((...args) =>
           Effect.promise(() => preparation).pipe(Effect.flatMap(() => startSession(...args))),
+        );
+      } else if (phase === "service-cancel") {
+        harness.sendTurn.mockImplementationOnce((_, options) =>
+          Effect.promise(() => preparation).pipe(
+            Effect.andThen(Deferred.await(options!.claudeCompactionCancellation!)),
+            Effect.andThen(
+              Effect.fail(
+                new ProviderValidationError({
+                  operation: "ProviderService.sendTurn",
+                  issue: "Claude compaction preparation was cancelled. Try again.",
+                }),
+              ),
+            ),
+          ),
         );
       } else if (phase !== "replay") {
         getObservation.mockImplementationOnce(() =>
@@ -1680,7 +1695,9 @@ describe("ProviderCommandReactor", () => {
           await waitFor(() =>
             phase === "startup"
               ? harness.startSession.mock.calls.length === 1
-              : getObservation.mock.calls.length === 1,
+              : phase === "service-cancel"
+                ? harness.sendTurn.mock.calls.length === 1
+                : getObservation.mock.calls.length === 1,
           );
         }
         if (phase === "queued-stop" || phase === "queued-rollback") {
@@ -1731,7 +1748,8 @@ describe("ProviderCommandReactor", () => {
                   type:
                     phase === "preflight" ||
                     phase === "subscriber-lag" ||
-                    phase === "idle-interrupt"
+                    phase === "idle-interrupt" ||
+                    phase === "service-cancel"
                       ? "thread.turn.interrupt"
                       : "thread.session.stop",
                   commandId: CommandId.makeUnsafe(`cmd-direct-compact-cancel-${phase}`),
@@ -1745,8 +1763,16 @@ describe("ProviderCommandReactor", () => {
         else await waitFor(() => cancelDiscovery.mock.calls.length === 1);
         releasePreparation();
         await harness.drain();
-        expect(harness.sendTurn).not.toHaveBeenCalled();
-        if (phase === "idle-interrupt") {
+        if (phase === "service-cancel") {
+          expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+          harness.sendTurn.mockClear();
+          expect(
+            (await readHarnessThread(harness))?.activities.some(
+              (activity) => activity.kind === "provider.turn.start.failed",
+            ),
+          ).toBe(false);
+        } else expect(harness.sendTurn).not.toHaveBeenCalled();
+        if (phase === "idle-interrupt" || phase === "service-cancel") {
           expect(harness.stopRuntimeSession).not.toHaveBeenCalled();
           expect((await readHarnessThread(harness))?.session?.status).toBe("ready");
         }
@@ -1770,7 +1796,8 @@ describe("ProviderCommandReactor", () => {
         await waitFor(() => harness.sendTurn.mock.calls.length === 1);
         await harness.drain();
         expect(harness.sendTurn).toHaveBeenCalledTimes(1);
-        if (phase === "idle-interrupt") expect(harness.startSession).toHaveBeenCalledTimes(1);
+        if (phase === "idle-interrupt" || phase === "service-cancel")
+          expect(harness.startSession).toHaveBeenCalledTimes(1);
         expect(harness.sendTurn.mock.calls[0]?.[0].input).toBe("/compact Keep the active task");
         const options = harness.sendTurn.mock.calls[0]?.[1];
         expect(options?.claudeCompactionCancellation).toBeDefined();
@@ -1781,9 +1808,14 @@ describe("ProviderCommandReactor", () => {
       }
     });
 
-    it.each(["queue", "steer"] as const)(
-      "defers spawn-fixed selections during direct /compact (%s)",
-      async (dispatchMode) => {
+    it.each([
+      ["queue", "model"],
+      ["steer", "model"],
+      ["queue", "runtime"],
+      ["steer", "runtime"],
+    ] as const)(
+      "defers spawn-fixed selections during direct /compact (%s, %s)",
+      async (dispatchMode, changedSetting) => {
         const harness = await createHarness({
           threadModelSelection: { provider: "claudeAgent", model: "claude-opus-4-6" },
           getClaudeCacheObservation: () =>
@@ -1801,7 +1833,10 @@ describe("ProviderCommandReactor", () => {
               threadId: ThreadId.makeUnsafe("thread-1"),
               message: { messageId: asMessageId(id), role: "user", text, attachments: [] },
               interactionMode: "default",
-              runtimeMode: "approval-required",
+              runtimeMode:
+                changedSetting === "runtime" && modelSelection
+                  ? "full-access"
+                  : "approval-required",
               dispatchMode,
               ...(modelSelection ? { modelSelection } : {}),
               createdAt: new Date().toISOString(),
@@ -1826,6 +1861,9 @@ describe("ProviderCommandReactor", () => {
         await harness.drain();
         expect(harness.startSession).toHaveBeenCalledTimes(2);
         expect(harness.startSession.mock.calls[1]?.[1].modelSelection).toEqual(selection);
+        expect(harness.startSession.mock.calls[1]?.[1].runtimeMode).toBe(
+          changedSetting === "runtime" ? "full-access" : "approval-required",
+        );
       },
     );
 

@@ -89,6 +89,7 @@ import {
   ProviderAdapterRequestError,
   ProviderAdapterValidationError,
   ProviderServiceError,
+  ProviderValidationError,
 } from "../../provider/Errors.ts";
 import { buildInlineSkillInstructions } from "../../provider/skillPromptInjection.ts";
 import {
@@ -3312,6 +3313,9 @@ const make = Effect.gen(function* () {
         cancellation,
       );
       yield* requireClaudeCompactionPreparationActive(cancellation);
+      const establishedSession = (yield* providerService.listSessions()).find(
+        (session) => session.threadId === input.threadId && session.provider === "claudeAgent",
+      );
       return yield* dispatchTurnForThreadCore({
         ...input,
         // Native controls operate on the established session. Spawn-fixed
@@ -3319,25 +3323,30 @@ const make = Effect.gen(function* () {
         ...(establishedSelection?.provider === "claudeAgent"
           ? { modelSelection: establishedSelection }
           : {}),
+        ...(establishedSession ? { runtimeMode: establishedSession.runtimeMode } : {}),
         claudeCompactionCancellation: cancellation,
       });
     }).pipe(
-      Effect.catchTag("ProviderAdapterValidationError", (error) =>
-        Deferred.isDone(cancellation).pipe(
-          Effect.flatMap((cancelled) => {
-            if (cancelled)
-              deferredClaudeCompactionQueueDrains.set(input.threadId, input.sourceEventSequence);
-            return Effect.fail(
-              cancelled
-                ? new ProviderAdapterValidationError({
-                    provider: "claudeAgent",
-                    operation: "startClaudeCompaction.cancelled",
-                    issue: error.issue,
-                  })
-                : error,
-            );
-          }),
-        ),
+      Effect.catchIf(
+        (error): error is ProviderAdapterValidationError | ProviderValidationError =>
+          error instanceof ProviderAdapterValidationError ||
+          error instanceof ProviderValidationError,
+        (error) =>
+          Deferred.isDone(cancellation).pipe(
+            Effect.flatMap((cancelled) => {
+              if (cancelled)
+                deferredClaudeCompactionQueueDrains.set(input.threadId, input.sourceEventSequence);
+              return Effect.fail(
+                cancelled
+                  ? new ProviderAdapterValidationError({
+                      provider: "claudeAgent",
+                      operation: "startClaudeCompaction.cancelled",
+                      issue: error.issue,
+                    })
+                  : error,
+              );
+            }),
+          ),
       ),
       Effect.ensuring(
         Effect.sync(() => {
