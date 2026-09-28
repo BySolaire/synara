@@ -45,6 +45,7 @@ import {
   Effect,
   Equal,
   Exit,
+  Fiber,
   Layer,
   Option,
   Queue,
@@ -2292,6 +2293,50 @@ const make = Effect.gen(function* () {
         })
       : preparation;
 
+  // Only the wait for a checkpoint lease is cancellable here. Native dispatch
+  // retains the lease and uses its own cancellation protocol once it starts.
+  const withCancelableClaudeCompactionLease = <A, E, R>(
+    threadId: ThreadId,
+    effect: Effect.Effect<A, E, R>,
+    cancellation: Deferred.Deferred<void> | undefined,
+  ) =>
+    cancellation
+      ? Effect.gen(function* () {
+          const acquired = yield* Deferred.make<void>();
+          const released = yield* Deferred.make<void>();
+          const leaseFiber = yield* Effect.forkChild(
+            withProviderSessionLease(
+              threadId,
+              Deferred.succeed(acquired, undefined).pipe(Effect.andThen(Deferred.await(released))),
+            ),
+            { startImmediately: true },
+          );
+          yield* awaitClaudeCompactionPreparation(
+            Deferred.await(acquired).pipe(
+              Effect.raceFirst(
+                Fiber.join(leaseFiber).pipe(
+                  Effect.andThen(
+                    Effect.die(
+                      new Error("The checkpoint lease ended before compaction could start."),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            cancellation,
+          ).pipe(Effect.onError(() => Fiber.interrupt(leaseFiber).pipe(Effect.ignore)));
+          return yield* requireClaudeCompactionPreparationActive(cancellation).pipe(
+            Effect.andThen(effect),
+            Effect.ensuring(
+              Deferred.succeed(released, undefined).pipe(
+                Effect.andThen(Fiber.join(leaseFiber)),
+                Effect.ignore,
+              ),
+            ),
+          );
+        })
+      : withProviderSessionLease(threadId, effect);
+
   const dispatchTurnForThreadCore = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly sourceEventSequence: number;
@@ -2319,6 +2364,7 @@ const make = Effect.gen(function* () {
     >;
     readonly acceptedCacheReview?: PendingClaudeCacheReview;
     readonly claudeCompactionCancellation?: Deferred.Deferred<void>;
+    readonly claudeCompactionUsesPersistedProfile?: boolean;
   }) {
     const thread = yield* resolveThread(input.threadId);
     if (!thread) {
@@ -2445,9 +2491,11 @@ const make = Effect.gen(function* () {
     const requestedMode = activation.computerControlMode;
     const generation = activation.computerControlGeneration;
     const enableComputerControl = input.claudeCompactionCancellation
-      ? Option.isSome(gatewaySessions) && gatewaySessions.value.computerControlProvisioned
-        ? gatewaySessions.value.computerControlProvisioned(input.threadId, "claudeAgent")
-        : (threadSessionComputerControl.get(input.threadId) ?? false)
+      ? input.claudeCompactionUsesPersistedProfile
+        ? (input.enableComputerControl ?? false)
+        : Option.isSome(gatewaySessions) && gatewaySessions.value.computerControlProvisioned
+          ? gatewaySessions.value.computerControlProvisioned(input.threadId, "claudeAgent")
+          : (threadSessionComputerControl.get(input.threadId) ?? false)
       : Option.isNone(computerService)
         ? activation.enableComputerControl
         : input.turnKind === "goal-continuation"
@@ -3004,7 +3052,10 @@ const make = Effect.gen(function* () {
           })
         : providerService.steerTurn(turnInput);
     } else {
-      yield* capturePreTurnBaselines;
+      yield* awaitClaudeCompactionPreparation(
+        capturePreTurnBaselines,
+        input.claudeCompactionCancellation,
+      ).pipe(Effect.onError(() => cancelPendingStudioBaseline));
       const tracksDroidContextAcceptance =
         activeSession?.provider === "droid" &&
         (sidechatBootstrapText !== null || priorTranscriptBootstrapText !== null);
@@ -3343,8 +3394,6 @@ const make = Effect.gen(function* () {
     if (provider !== "claudeAgent" || !/^\/compact(?:\s|$)/.test(input.messageText.trim())) {
       return yield* dispatchTurnForThreadCore(input);
     }
-    const establishedSelection =
-      threadSessionModelSelections.get(input.threadId) ?? thread?.modelSelection;
     const cancellation = yield* Deferred.make<void>();
     pendingClaudeCompactionPreparations.set(input.threadId, {
       sourceEventSequence: input.sourceEventSequence,
@@ -3357,9 +3406,43 @@ const make = Effect.gen(function* () {
         cancellation,
       );
       yield* requireClaudeCompactionPreparationActive(cancellation);
-      const establishedSession = (yield* providerService.listSessions()).find(
+      const establishedSession = (yield* awaitClaudeCompactionPreparation(
+        providerService.listSessions(),
+        cancellation,
+      )).find(
         (session) => session.threadId === input.threadId && session.provider === "claudeAgent",
       );
+      const persistedProfile = establishedSession
+        ? undefined
+        : yield* awaitClaudeCompactionPreparation(
+            providerService.getPersistedSessionProfile(input.threadId),
+            cancellation,
+          );
+      if (persistedProfile && persistedProfile.provider !== "claudeAgent") {
+        return yield* new ProviderAdapterValidationError({
+          provider: "claudeAgent",
+          operation: "startClaudeCompaction",
+          issue: "This thread has no established Claude session to compact.",
+        });
+      }
+      if (
+        persistedProfile?.provider === "claudeAgent" &&
+        (!persistedProfile.modelSelection || !persistedProfile.runtimeMode)
+      ) {
+        return yield* new ProviderAdapterValidationError({
+          provider: "claudeAgent",
+          operation: "startClaudeCompaction",
+          issue:
+            "The saved Claude session settings are incomplete. Resume the task with an ordinary message before compacting.",
+        });
+      }
+      const establishedSelection =
+        persistedProfile?.provider === "claudeAgent"
+          ? persistedProfile.modelSelection
+          : (threadSessionModelSelections.get(input.threadId) ?? thread?.modelSelection);
+      const establishedRuntimeMode =
+        establishedSession?.runtimeMode ??
+        (persistedProfile?.provider === "claudeAgent" ? persistedProfile.runtimeMode : undefined);
       return yield* dispatchTurnForThreadCore({
         ...input,
         // Native controls operate on the established session. Spawn-fixed
@@ -3367,7 +3450,13 @@ const make = Effect.gen(function* () {
         ...(establishedSelection?.provider === "claudeAgent"
           ? { modelSelection: establishedSelection }
           : {}),
-        ...(establishedSession ? { runtimeMode: establishedSession.runtimeMode } : {}),
+        ...(establishedRuntimeMode !== undefined ? { runtimeMode: establishedRuntimeMode } : {}),
+        ...(persistedProfile?.provider === "claudeAgent"
+          ? {
+              enableComputerControl: persistedProfile.enableComputerControl,
+              claudeCompactionUsesPersistedProfile: true,
+            }
+          : {}),
         claudeCompactionCancellation: cancellation,
       });
     }).pipe(
@@ -4223,7 +4312,7 @@ const make = Effect.gen(function* () {
       const requirePreparationActive = cancellation
         ? requireClaudeCompactionPreparationActive(cancellation)
         : Effect.void;
-      return yield* withProviderSessionLease(
+      return yield* withCancelableClaudeCompactionLease(
         event.payload.threadId,
         Effect.gen(function* () {
           const { threadId, review, decision } = event.payload;
@@ -4445,6 +4534,7 @@ const make = Effect.gen(function* () {
             }),
           ),
         ),
+        cancellation,
       ).pipe(
         Effect.ensuring(
           Effect.sync(() => {

@@ -41,6 +41,7 @@ import {
   Deferred,
   Effect,
   Exit,
+  Fiber,
   Layer,
   ManagedRuntime,
   Option,
@@ -102,6 +103,7 @@ import { GitCore, type GitCoreShape } from "../../git/Services/GitCore.ts";
 import { TextGeneration, type TextGenerationShape } from "../../git/Services/TextGeneration.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { TurnCheckpointCoordinatorLive } from "./TurnCheckpointCoordinator.ts";
+import { TurnCheckpointCoordinator } from "../Services/TurnCheckpointCoordinator.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
@@ -301,6 +303,7 @@ describe("ProviderCommandReactor", () => {
       ProviderServiceShape["getClaudeCacheObservation"]
     >;
     readonly startClaudeCompaction?: NonNullable<ProviderServiceShape["startClaudeCompaction"]>;
+    readonly getPersistedSessionProfile?: ProviderServiceShape["getPersistedSessionProfile"];
     readonly ingestRuntimeEvents?: boolean;
     readonly cancelClaudeCompactionDiscovery?: NonNullable<
       ProviderServiceShape["cancelClaudeCompactionDiscovery"]
@@ -634,6 +637,8 @@ describe("ProviderCommandReactor", () => {
           }),
       clearSessionResumeCursor,
       listSessions,
+      getPersistedSessionProfile:
+        input?.getPersistedSessionProfile ?? (() => Effect.succeed(undefined)),
       getCapabilities: (_provider) =>
         Effect.succeed({
           sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
@@ -741,6 +746,9 @@ describe("ProviderCommandReactor", () => {
         interceptor(command) ?? passthroughDispatch(command, context);
     };
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
+    const checkpointCoordinator = await runtime.runPromise(
+      Effect.service(TurnCheckpointCoordinator),
+    );
     const serverSettings = await runtime.runPromise(Effect.service(ServerSettingsService));
     const deliveryRepository = await runtime.runPromise(
       Effect.service(OrchestrationEventDeliveryRepository),
@@ -827,6 +835,7 @@ describe("ProviderCommandReactor", () => {
         SELECT context_consumed, context_event_sequence FROM agent_gateway_completions WHERE child_thread_id = 'delegated-child'
       `),
       reactor,
+      checkpointCoordinator,
       serverSettings,
       startSession,
       startSessionWithOutcome,
@@ -1586,6 +1595,7 @@ describe("ProviderCommandReactor", () => {
     it.each([
       "startup",
       "preflight",
+      "baseline",
       "replay",
       "queued-stop",
       "subscriber-lag",
@@ -1606,6 +1616,7 @@ describe("ProviderCommandReactor", () => {
         lastResponseAt: new Date().toISOString(),
       };
       const getObservation = vi.fn(() => Effect.succeed(observation));
+      const captureBaselineBeforeTurn = vi.fn(() => Effect.promise(() => preparation));
       let releaseSubscriber!: () => void;
       let subscriberEntered = false;
       const subscriberGate = new Promise<void>((resolve) => {
@@ -1615,6 +1626,7 @@ describe("ProviderCommandReactor", () => {
         threadModelSelection: { provider: "claudeAgent", model: "claude-opus-4-6" },
         startReactor: phase !== "replay" && phase !== "subscriber-lag",
         getClaudeCacheObservation: getObservation,
+        ...(phase === "baseline" ? { studioOutputReactor: { captureBaselineBeforeTurn } } : {}),
         cancelClaudeCompactionDiscovery: cancelDiscovery,
       });
       if (phase === "idle-interrupt" || phase === "service-cancel") {
@@ -1666,7 +1678,7 @@ describe("ProviderCommandReactor", () => {
             ),
           ),
         );
-      } else if (phase !== "replay") {
+      } else if (phase !== "replay" && phase !== "baseline") {
         getObservation.mockImplementationOnce(() =>
           Effect.promise(() => preparation).pipe(Effect.as(observation)),
         );
@@ -1709,9 +1721,11 @@ describe("ProviderCommandReactor", () => {
           await waitFor(() =>
             phase === "startup" || phase === "startup-cleanup-failure"
               ? harness.startSession.mock.calls.length === 1
-              : phase === "service-cancel"
-                ? harness.sendTurn.mock.calls.length === 1
-                : getObservation.mock.calls.length === 1,
+              : phase === "baseline"
+                ? captureBaselineBeforeTurn.mock.calls.length === 1
+                : phase === "service-cancel"
+                  ? harness.sendTurn.mock.calls.length === 1
+                  : getObservation.mock.calls.length === 1,
           );
         }
         if (phase === "queued-stop" || phase === "queued-rollback") {
@@ -1761,6 +1775,7 @@ describe("ProviderCommandReactor", () => {
               : {
                   type:
                     phase === "preflight" ||
+                    phase === "baseline" ||
                     phase === "subscriber-lag" ||
                     phase === "idle-interrupt" ||
                     phase === "service-cancel"
@@ -1789,7 +1804,7 @@ describe("ProviderCommandReactor", () => {
           expect(harness.sendTurn).not.toHaveBeenCalled();
           return;
         }
-        if (phase === "startup" || phase === "preflight") {
+        if (phase === "startup" || phase === "preflight" || phase === "baseline") {
           await Effect.runPromise(harness.reactor.drain.pipe(Effect.timeout(Duration.seconds(1))));
         }
         releasePreparation();
@@ -1914,6 +1929,59 @@ describe("ProviderCommandReactor", () => {
         }
       },
     );
+
+    it("uses the persisted Claude profile when native compaction resumes a stopped runtime", async () => {
+      const savedSelection: ModelSelection = {
+        provider: "claudeAgent",
+        model: "claude-opus-4-6",
+        options: { effort: "high", autoCompactWindow: "200k" },
+      };
+      const pendingSelection: ModelSelection = {
+        provider: "claudeAgent",
+        model: "claude-opus-4-6",
+        options: { effort: "max", autoCompactWindow: "200k" },
+      };
+      const getPersistedSessionProfile = vi.fn(() =>
+        Effect.succeed({
+          provider: "claudeAgent" as const,
+          modelSelection: savedSelection,
+          runtimeMode: "approval-required" as const,
+          enableComputerControl: true,
+        }),
+      );
+      const harness = await createHarness({
+        threadModelSelection: pendingSelection,
+        getPersistedSessionProfile,
+        getClaudeCacheObservation: () => Effect.succeed(undefined),
+      });
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("cmd-cold-native-compact"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          message: {
+            messageId: asMessageId("cold-native-compact"),
+            role: "user",
+            text: "/compact Keep the established context",
+            attachments: [],
+          },
+          interactionMode: "default",
+          modelSelection: pendingSelection,
+          runtimeMode: "full-access",
+          createdAt: new Date().toISOString(),
+        }),
+      );
+      await harness.drain();
+      expect(getPersistedSessionProfile).toHaveBeenCalledWith(ThreadId.makeUnsafe("thread-1"));
+      expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+        modelSelection: savedSelection,
+        runtimeMode: "approval-required",
+        enableComputerControl: true,
+      });
+      expect(harness.sendTurn.mock.calls[0]?.[0].input).toBe(
+        "/compact Keep the established context",
+      );
+    });
 
     it("retains compaction cancellation when a native steer settles during preflight", async () => {
       let releasePreparation!: () => void;
@@ -2077,6 +2145,61 @@ describe("ProviderCommandReactor", () => {
         }
       },
     );
+
+    it("cancels a cache-review compaction while a checkpoint revert holds its lease", async () => {
+      const cancelDiscovery = vi.fn(() => Effect.void);
+      const { harness, startClaudeCompaction } = await createCompactionHarness(cancelDiscovery);
+      const review = await sendHeldMessage(harness);
+      const threadId = ThreadId.makeUnsafe("thread-1");
+      const leaseAcquired = Effect.runSync(Deferred.make<void>());
+      const releaseLease = Effect.runSync(Deferred.make<void>());
+      const leaseFiber = Effect.runFork(
+        harness.checkpointCoordinator.withThreadLease(
+          threadId,
+          Deferred.succeed(leaseAcquired, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseLease)),
+          ),
+        ),
+      );
+      await Effect.runPromise(Deferred.await(leaseAcquired));
+      try {
+        const response = await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.claude-cache.respond",
+            commandId: CommandId.makeUnsafe("cmd-compact-behind-checkpoint-lease"),
+            threadId,
+            reviewId: review.reviewId,
+            messageId: review.messageId,
+            decision: "compact",
+            createdAt: new Date().toISOString(),
+          }),
+        );
+        await waitFor(async () => {
+          const delivery = await Effect.runPromise(
+            harness.deliveryRepository.getDelivery({
+              consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+              eventSequence: response.sequence,
+            }),
+          );
+          return Option.getOrUndefined(delivery)?.state === "inflight";
+        });
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.turn.interrupt",
+            commandId: CommandId.makeUnsafe("cmd-cancel-behind-checkpoint-lease"),
+            threadId,
+            createdAt: new Date().toISOString(),
+          }),
+        );
+        await waitFor(() => cancelDiscovery.mock.calls.length === 1);
+        await Effect.runPromise(harness.reactor.drain.pipe(Effect.timeout(Duration.seconds(1))));
+        expect(startClaudeCompaction).not.toHaveBeenCalled();
+        expect(harness.sendTurn).not.toHaveBeenCalled();
+      } finally {
+        await Effect.runPromise(Deferred.succeed(releaseLease, undefined));
+        await Effect.runPromise(Effect.exit(Fiber.join(leaseFiber)));
+      }
+    });
 
     it("discovery error leaves the held message retryable", async () => {
       const { harness, startClaudeCompaction } = await createCompactionHarness();

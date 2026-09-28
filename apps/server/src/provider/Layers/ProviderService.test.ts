@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type {
+  ModelSelection,
   ProviderApprovalDecision,
   ProviderForkThreadInput,
   ProviderForkThreadResult,
@@ -4584,6 +4585,11 @@ routing.layer("ProviderServiceLive routing", (it) => {
           permissionMode: "acceptEdits",
         },
       };
+      const savedSelection: ModelSelection = {
+        provider: "claudeAgent",
+        model: "claude-opus-4-6",
+        options: { effort: "high" },
+      };
 
       const firstClaude = makeFakeCodexAdapter("claudeAgent");
       const firstRegistry: typeof ProviderAdapterRegistry.Service = {
@@ -4608,6 +4614,8 @@ routing.layer("ProviderServiceLive routing", (it) => {
           threadId: asThreadId("thread-stop-runtime"),
           cwd: "/tmp/project-stop-runtime",
           providerOptions,
+          modelSelection: savedSelection,
+          enableComputerControl: true,
           runtimeMode: "full-access",
         });
         assert.equal(typeof provider.stopRuntimeSession, "function");
@@ -4634,6 +4642,17 @@ routing.layer("ProviderServiceLive routing", (it) => {
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, secondRegistry)),
         Layer.provide(secondDirectoryLayer),
       );
+
+      const savedProfile = yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        return yield* provider.getPersistedSessionProfile(initial.threadId);
+      }).pipe(Effect.provide(secondProviderLayer));
+      assert.deepEqual(savedProfile, {
+        provider: "claudeAgent",
+        modelSelection: savedSelection,
+        runtimeMode: "full-access",
+        enableComputerControl: true,
+      });
 
       yield* Effect.gen(function* () {
         const provider = yield* ProviderService;

@@ -2138,6 +2138,23 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const startSession: ProviderServiceShape["startSession"] = (threadId, input) =>
       startSessionWithOutcome(threadId, input).pipe(Effect.map(({ session }) => session));
 
+    const getPersistedSessionProfile: ProviderServiceShape["getPersistedSessionProfile"] = (
+      threadId,
+    ) =>
+      directory.getBinding(threadId).pipe(
+        Effect.map((bindingOption) => {
+          const binding = Option.getOrUndefined(bindingOption);
+          if (!binding || !hasResumeCursor(binding.resumeCursor)) return undefined;
+          const modelSelection = readPersistedModelSelection(binding.runtimePayload);
+          return {
+            provider: binding.provider,
+            ...(modelSelection ? { modelSelection } : {}),
+            ...(binding.runtimeMode !== undefined ? { runtimeMode: binding.runtimeMode } : {}),
+            enableComputerControl: readPersistedComputerControl(binding.runtimePayload),
+          };
+        }),
+      );
+
     const completePriorTranscriptBootstrap: NonNullable<
       ProviderServiceShape["completePriorTranscriptBootstrap"]
     > = (rawInput) =>
@@ -3588,6 +3605,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     return {
       startSession,
       startSessionWithOutcome,
+      getPersistedSessionProfile,
       completePriorTranscriptBootstrap,
       forkThread,
       importExternalThread,

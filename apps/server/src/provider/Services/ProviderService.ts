@@ -76,6 +76,13 @@ export interface ProviderSessionStartOutcomeOptions {
   readonly registerPriorTranscriptBootstrapOnFreshStart?: boolean;
 }
 
+export interface PersistedProviderSessionProfile {
+  readonly provider: ProviderKind;
+  readonly modelSelection?: ModelSelection;
+  readonly runtimeMode?: RuntimeMode;
+  readonly enableComputerControl: boolean;
+}
+
 /**
  * ProviderServiceShape - Service API for provider session and turn orchestration.
  */
@@ -241,6 +248,11 @@ export interface ProviderServiceShape {
    * Aggregates runtime session lists from all registered adapters.
    */
   readonly listSessions: () => Effect.Effect<ReadonlyArray<ProviderSession>>;
+
+  /** Read the settings that produced a persisted native resume cursor. */
+  readonly getPersistedSessionProfile: (
+    threadId: ThreadId,
+  ) => Effect.Effect<PersistedProviderSessionProfile | undefined, ProviderServiceError>;
 
   /**
    * Read static capabilities for a provider adapter.
