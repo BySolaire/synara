@@ -1487,6 +1487,35 @@ async function waitForLayout(): Promise<void> {
   await nextFrame();
 }
 
+async function waitForTranscriptLayoutToSettle(container: HTMLElement): Promise<void> {
+  let lastTop = container.scrollTop;
+  let lastHeight = container.scrollHeight;
+  let lastViewportHeight = container.clientHeight;
+  let stableSince = performance.now();
+  const scrollOffsets = [lastTop];
+  await vi.waitFor(
+    () => {
+      if (
+        container.scrollTop !== lastTop ||
+        container.scrollHeight !== lastHeight ||
+        container.clientHeight !== lastViewportHeight
+      ) {
+        lastTop = container.scrollTop;
+        lastHeight = container.scrollHeight;
+        lastViewportHeight = container.clientHeight;
+        stableSince = performance.now();
+        scrollOffsets.push(lastTop);
+        if (scrollOffsets.length > 20) scrollOffsets.shift();
+      }
+      expect(
+        performance.now() - stableSince,
+        `Transcript scroll did not settle: ${scrollOffsets.join(" -> ")} (height ${container.scrollHeight}, viewport ${container.clientHeight})`,
+      ).toBeGreaterThanOrEqual(150);
+    },
+    { timeout: 3_000, interval: 20 },
+  );
+}
+
 /**
  * Whether the virtualized transcript is actually painted. LegendList keeps its
  * container wrapper at `opacity: 0` until its own initial scroll has finished,
@@ -3912,7 +3941,23 @@ describe("ChatView transcript geometry (full app)", () => {
       await new Promise<void>((resolve) => {
         window.setTimeout(resolve, 2_200);
       });
-      sampling = false;
+      try {
+        // Markdown rendering and row measurement can finish after the last
+        // scheduled chunk. Keep sampling their motion before the final check.
+        await vi.waitFor(
+          () => {
+            const paragraphs = scrollContainer
+              .querySelector(`[data-message-id='${CSS.escape(streamingId)}']`)
+              ?.querySelectorAll("p");
+            expect(paragraphs?.length).toBe(40);
+            expect(paragraphs?.[39]?.textContent).toBe("Streaming response paragraph.");
+          },
+          { timeout: 10_000, interval: 20 },
+        );
+        await waitForTranscriptLayoutToSettle(scrollContainer);
+      } finally {
+        sampling = false;
+      }
 
       const visible = samples.filter(
         (entry): entry is { t: number; offset: number; bottom: number } => entry.offset !== null,
@@ -4134,6 +4179,19 @@ describe("ChatView transcript geometry (full app)", () => {
         grow();
         await waitForLayout();
       }
+      // The prepared response still reveals text gradually after delivery.
+      // Finish rendering and measuring it before giving the reader control.
+      await vi.waitFor(
+        () => {
+          const paragraphs = container
+            .querySelector(`[data-message-id='${CSS.escape(messageId)}']`)
+            ?.querySelectorAll("p");
+          expect(paragraphs?.length).toBe(13);
+          expect(paragraphs?.[12]?.textContent).toBe("More streaming output. ".repeat(35).trim());
+        },
+        { timeout: 10_000, interval: 20 },
+      );
+      await waitForTranscriptLayoutToSettle(container);
       await vi.waitFor(() =>
         expect(getScrollContainerDistanceFromBottom(container)).toBeLessThanOrEqual(4),
       );
@@ -4238,24 +4296,7 @@ describe("ChatView transcript geometry (full app)", () => {
         await waitForLayout();
         // Native wheel and key scrolling may continue after the input command
         // resolves. Record the reader position only once the viewport is quiet.
-        let lastTop = container.scrollTop;
-        let stableSince = performance.now();
-        const scrollOffsets = [lastTop];
-        await vi.waitFor(
-          () => {
-            if (container.scrollTop !== lastTop) {
-              lastTop = container.scrollTop;
-              stableSince = performance.now();
-              scrollOffsets.push(lastTop);
-              if (scrollOffsets.length > 20) scrollOffsets.shift();
-            }
-            expect(
-              performance.now() - stableSince,
-              `Transcript scroll did not settle: ${scrollOffsets.join(" -> ")} (height ${container.scrollHeight}, viewport ${container.clientHeight})`,
-            ).toBeGreaterThanOrEqual(150);
-          },
-          { timeout: 3_000, interval: 20 },
-        );
+        await waitForTranscriptLayoutToSettle(container);
         const viewport = container.getBoundingClientRect();
         const readingAnchor = Array.from(
           container.querySelectorAll<HTMLElement>("[data-message-id] p, [data-message-id] li"),

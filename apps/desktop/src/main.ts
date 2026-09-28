@@ -116,8 +116,10 @@ import { showDesktopConfirmDialog } from "./confirmDialog";
 import {
   desktopAppIconResourceName,
   isDesktopAppIcon,
+  readDesktopAppIconPreference,
   shouldUpdateDesktopAppIcon,
   usesMacBundleAppIcon,
+  writeDesktopAppIconPreference,
 } from "./desktopAppIcon";
 import {
   applyWindowsTaskbarIcon,
@@ -2250,7 +2252,7 @@ function configureAppIdentity(): void {
 }
 
 // Older macOS needs pre-rounded artwork as a runtime Dock override. macOS 26+
-// renders the appearance-aware Icon Composer asset when Default is selected.
+// renders the Icon Composer asset for Stable Default and Beta Beta choices.
 function usesLegacyMacDockIcon(): boolean {
   if (process.platform !== "darwin") return false;
   const darwinMajor = Number.parseInt(OS.release().split(".")[0] ?? "", 10);
@@ -2258,17 +2260,21 @@ function usesLegacyMacDockIcon(): boolean {
 }
 
 function readDesktopAppIcon(): DesktopAppIcon {
-  try {
-    const storedIcon = FS.readFileSync(DESKTOP_APP_ICON_PATH, "utf8").trim();
-    return isDesktopAppIcon(storedIcon) ? storedIcon : "default";
-  } catch {
-    return "default";
-  }
+  const requestedFallback = desktopFlavor === "beta" ? "beta" : "default";
+  const fallbackIcon = isDesktopAppIcon(requestedFallback) ? requestedFallback : "default";
+  return readDesktopAppIconPreference(DESKTOP_APP_ICON_PATH, {
+    fallbackIcon,
+    // Stable leaves a Beta choice inert. Builds without the Beta icon retain
+    // the token too, so returning to a build that supports it restores it.
+    inactiveIcons: desktopFlavor === "beta" && isDesktopAppIcon("beta") ? [] : ["beta"],
+    onResetError: (error) => {
+      safeConsoleError("[desktop] Failed to reset unrecognized app icon preference", error);
+    },
+  });
 }
 
 function persistDesktopAppIcon(icon: DesktopAppIcon): void {
-  FS.mkdirSync(Path.dirname(DESKTOP_APP_ICON_PATH), { recursive: true });
-  FS.writeFileSync(DESKTOP_APP_ICON_PATH, icon, "utf8");
+  writeDesktopAppIconPreference(DESKTOP_APP_ICON_PATH, icon);
 }
 
 function windowsShortcutSearchDirectories(): string[] {
@@ -2405,22 +2411,17 @@ function toWindowsTaskbarIcoBytes(sourcePath: string): Buffer {
 let windowsShellStampTimer: ReturnType<typeof setImmediate> | null = null;
 let windowsShellStampResolve: (() => void) | null = null;
 let desktopAppIconApplyTail: Promise<void> = Promise.resolve();
-let lastPersistedMacAppIcon: DesktopAppIcon | null = null;
 
-async function syncMacAppBundleIcon(
-  icon: DesktopAppIcon,
-  image: Electron.NativeImage | null,
-): Promise<void> {
+async function syncMacAppBundleIcon(image: Electron.NativeImage | null): Promise<void> {
   // Do not customize the shared Electron executable used by development runs.
-  if (!app.isPackaged || lastPersistedMacAppIcon === icon) return;
+  if (!app.isPackaged) return;
   const bundlePath = resolveMacAppBundlePath(process.execPath, process.platform);
   if (!bundlePath) return;
   await persistMacAppIcon({
     bundlePath,
     cacheDirectory: Path.join(STATE_DIR, "mac-app-icons"),
-    png: icon === "default" ? null : (image?.toPNG() ?? null),
+    png: image?.toPNG() ?? null,
   });
-  lastPersistedMacAppIcon = icon;
 }
 
 function cancelDeferredWindowsShellStamp(): void {
@@ -2513,11 +2514,12 @@ async function applyDesktopAppIconUnlocked(
       icon,
       platform: process.platform,
       usesLegacyDockIcon: usesLegacyMacDockIcon(),
+      isBetaFlavor: desktopFlavor === "beta",
     })
   ) {
     // Remove the persistent override before asking AppKit to reload the bundle
     // icon, otherwise it can read the previous custom artwork again.
-    await syncMacAppBundleIcon(icon, null);
+    await syncMacAppBundleIcon(null);
     app.dock?.setIcon(null as unknown as Electron.NativeImage);
     return;
   }
@@ -2526,6 +2528,7 @@ async function applyDesktopAppIconUnlocked(
     icon,
     platform: process.platform,
     isDarkAppearance: process.platform === "darwin" && nativeTheme.shouldUseDarkColors,
+    isBetaFlavor: desktopFlavor === "beta",
   });
   const iconPath = resolveResourcePath(resourceName);
   if (!iconPath) return;
@@ -2535,7 +2538,7 @@ async function applyDesktopAppIconUnlocked(
 
   if (process.platform === "darwin") {
     app.dock?.setIcon(image);
-    await syncMacAppBundleIcon(icon, image);
+    await syncMacAppBundleIcon(image);
     return;
   }
   if (process.platform === "win32") {
@@ -2610,7 +2613,7 @@ function applyInitialMacDockIcon(): void {
     return;
   }
   void applyPersistedDesktopAppIcon().catch((error) => {
-    console.warn("[desktop] Failed to persist the macOS app icon", error);
+    safeConsoleError("[desktop] Failed to persist the macOS app icon", error);
   });
 }
 
@@ -2619,11 +2622,11 @@ function registerMacAppearanceIconSync(): void {
     return;
   }
   // macOS does not swap a runtime dock image when the system appearance
-  // changes, so re-apply the persisted preference. On macOS 26 the default
-  // preference short-circuits to the bundle icon, which adapts on its own.
+  // changes, so re-apply the persisted preference. On macOS 26, Stable's
+  // Default and Beta's Beta choices use the bundle icon, which adapts on its own.
   nativeTheme.on("updated", () => {
     void applyPersistedDesktopAppIcon().catch((error) => {
-      console.warn("[desktop] Failed to persist the macOS app icon", error);
+      safeConsoleError("[desktop] Failed to persist the macOS app icon", error);
     });
   });
 }
@@ -4965,7 +4968,7 @@ function registerIpcHandlers(): void {
     await applyDesktopAppIcon(icon, mainWindow, { flushShellIconCache: true });
   });
   ipcMain.handle(IPC.setAppIcon, async (_event, rawIcon: unknown) => {
-    if (!isDesktopAppIcon(rawIcon)) return;
+    if (!isDesktopAppIcon(rawIcon) || (rawIcon === "beta" && desktopFlavor !== "beta")) return;
     await enqueueDesktopAppIconApply(rawIcon);
   });
 
@@ -5370,6 +5373,7 @@ function getIconOption(): { icon: string } | Record<string, never> {
     icon,
     platform: process.platform,
     isDarkAppearance: false,
+    isBetaFlavor: desktopFlavor === "beta",
   });
   const iconPath = resolveResourcePath(resourceName);
   if (!iconPath) return {};
