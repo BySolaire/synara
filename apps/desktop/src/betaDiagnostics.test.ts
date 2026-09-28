@@ -243,6 +243,42 @@ describe("BetaDiagnostics error tracking", () => {
       .split("\n")
       .map((line) => JSON.parse(line));
 
+  it("preserves a renderer exception stack without accepting extra IPC fields", () => {
+    const root = makeRoot();
+    const diag = makeDiagnostics(root);
+    diag.trackError("renderer", {
+      message: "Cannot read properties of undefined (reading '_nonReactive')",
+      stack: "TypeError: _nonReactive\n    at render (/Users/alice/private-project/View.tsx:12:3)",
+      prompt: "private chat content",
+    });
+    const [event] = readQueue(root);
+    expect(event.payload.message).toContain("_nonReactive");
+    expect(event.payload.stack).toContain("View.tsx:12:3");
+    expect(JSON.stringify(event)).not.toMatch(/alice|private-project|private chat content/);
+  });
+
+  it("groups the same loopback failure across ports without grouping external ports", () => {
+    const root = makeRoot();
+    const diag = makeDiagnostics(root);
+    for (const port of [56268, 57314]) {
+      diag.trackError(
+        "renderer",
+        `Access to fetch at 'http://127.0.0.1:${port}/private-route' blocked by CORS`,
+      );
+    }
+    expect(readQueue(root)).toHaveLength(1);
+    for (const port of [8443, 9443]) {
+      diag.trackError(
+        "renderer",
+        `Access to fetch at 'https://example.com:${port}/private-route' blocked by CORS`,
+      );
+    }
+    const events = readQueue(root);
+    expect(events).toHaveLength(3);
+    expect(events[0].payload.message).toContain(":56268/");
+    expect(JSON.stringify(events)).not.toContain("private-route");
+  });
+
   it("records redacted app.error events with a fingerprint", () => {
     const root = makeRoot();
     const diag = new BetaDiagnostics({
@@ -307,6 +343,49 @@ describe("BetaDiagnostics error tracking", () => {
 });
 
 describe("BetaDiagnostics", () => {
+  it("retains a redacted updater failure message only on update.error", () => {
+    const root = makeRoot();
+    const diag = makeDiagnostics(root);
+    const payload = {
+      kind: "update" as const,
+      outcome: "error" as const,
+      errorContext: "check" as const,
+      message:
+        "Cannot find beta-mac.yml at https://user:secret@example.com/private/feed?token=secret for user@example.com",
+    };
+    diag.track("update.error", payload);
+    diag.track("update.check", payload);
+    const events = readFileSync(join(root, "diagnostics", "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(events[0].payload.message).toContain("Cannot find beta-mac.yml");
+    expect(events[1].payload.message).toBeUndefined();
+    expect(JSON.stringify(events)).not.toMatch(/secret|private\/feed|user@example/);
+  });
+
+  it("excludes clean exits while retaining an unexpected killed process", () => {
+    const root = makeRoot();
+    const diag = makeDiagnostics(root);
+    diag.track("app.child-process-crash", {
+      kind: "crash",
+      processType: "GPU",
+      reason: "clean-exit",
+    });
+    diag.track("app.renderer-crash", {
+      kind: "crash",
+      processType: "renderer",
+      reason: "clean-exit",
+    });
+    diag.track("app.renderer-crash", { kind: "crash", processType: "renderer", reason: "killed" });
+    const events = readFileSync(join(root, "diagnostics", "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(events).toHaveLength(1);
+    expect(events[0].payload.reason).toBe("killed");
+  });
+
   it("queues allowlisted events with a stable install id", () => {
     const root = makeRoot();
     const diag = makeDiagnostics(root);
