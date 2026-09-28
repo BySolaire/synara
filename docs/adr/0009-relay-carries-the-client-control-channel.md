@@ -1,6 +1,8 @@
+> Historical decision, superseded on 2026-09-28 by [ADR 0016](0016-managed-cloudflare-remote.md). The managed Cloudflare path has no Bun relay deployment.
+
 ---
-status: superseded by ADR-0010
----
+
+## status: superseded by ADR-0010
 
 # The relay carries the client control channel (presence & directory push)
 

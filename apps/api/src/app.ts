@@ -1,3 +1,6 @@
+import { createCloudflareClient } from "./remote/cloudflare";
+import { createPairingRendezvous } from "./remote/pairing";
+import { createTunnelCoordinator } from "./remote/tunnels";
 import type { AccountErrorBody } from "@synara/contracts";
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -25,10 +28,24 @@ export const API_MAX_BODY_BYTES = 64 * 1024;
 
 export async function createApp(
   config: ApiConfig,
-): Promise<{ app: Hono; identity: IdentityAdapters; pool: pg.Pool }> {
+  dependencies: { createTunnels?: typeof createTunnelCoordinator } = {},
+): Promise<{
+  app: Hono;
+  identity: IdentityAdapters;
+  pool: pg.Pool;
+  tunnels?: ReturnType<typeof createTunnelCoordinator>;
+  cleanup: () => Promise<void>;
+}> {
   const { db, pool } = createDb(config.databaseUrl);
   const identity = await createIdentityAdapters(config, db);
 
+  const tunnels = config.cloudflareTunnel
+    ? (dependencies.createTunnels ?? createTunnelCoordinator)(
+        db,
+        createCloudflareClient(config.cloudflareTunnel),
+        config.cloudflareTunnel.domain,
+      )
+    : undefined;
   const app = new Hono();
 
   // Before the routes, so no handler ever parses an oversized body. 413 in
@@ -58,6 +75,8 @@ export async function createApp(
   app.route(
     "/api/v1",
     createV1Routes({
+      ...(tunnels ? { tunnels } : {}),
+      ...(config.remoteTestUserIds ? { remoteTestUserIds: config.remoteTestUserIds } : {}),
       verifier: identity.verifier,
       grants: identity.grants,
       signing: identity.signing,
@@ -66,7 +85,7 @@ export async function createApp(
       hostGrants: identity.hostGrants,
       hostSecrets: identity.hostSecrets,
       accountBaseUrl: config.baseUrl,
-      ...(config.relayServiceToken ? { relayServiceToken: config.relayServiceToken } : {}),
+      apiIssuer: config.apiPublicUrl,
       db,
       ...(config.avatarStorage ? { avatarStorage: createAvatarStorage(config.avatarStorage) } : {}),
       trustedProxyHops: config.trustedProxyHops,
@@ -77,7 +96,6 @@ export async function createApp(
     "/internal",
     createInternalRoutes({
       revocations: identity.revocations,
-      ...(config.relayServiceToken ? { relayServiceToken: config.relayServiceToken } : {}),
     }),
   );
 
@@ -89,7 +107,8 @@ export async function createApp(
    */
   app.onError((error, c) => {
     if (!c.req.path.startsWith("/api/") && !c.req.path.startsWith("/internal/")) throw error;
-    console.error(`[api] unhandled error on ${c.req.method} ${c.req.path}`, error);
+    // Database errors can embed SQL parameters (including rendezvous secrets).
+    console.error(`[api] unhandled error on ${c.req.method} ${c.req.routePath}`);
     const body: AccountErrorBody = {
       error: "internal_error",
       message: "Something went wrong handling this request",
@@ -115,5 +134,14 @@ export async function createApp(
     );
   });
 
-  return { app, identity, pool };
+  return {
+    app,
+    identity,
+    pool,
+    ...(tunnels ? { tunnels } : {}),
+    cleanup: async () => {
+      await createPairingRendezvous(db, config.apiPublicUrl).cleanup();
+      await tunnels?.cleanup();
+    },
+  };
 }

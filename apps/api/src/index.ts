@@ -7,12 +7,24 @@ async function main(): Promise<void> {
   const config = loadApiConfig(process.env);
   await runMigrations(config.databaseUrl);
 
-  const { app, identity, pool } = await createApp(config);
+  const { app, identity, pool, cleanup } = await createApp(config);
 
   const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
     console.log(`[api] listening on http://localhost:${info.port}`);
   });
 
+  let maintenance: Promise<void> | undefined;
+  const sweep = () => {
+    if (maintenance) return;
+    maintenance = cleanup()
+      .catch(() => console.warn("[api] Tunnel cleanup pending"))
+      .finally(() => {
+        maintenance = undefined;
+      });
+  };
+  const cleanupTimer = setInterval(sweep, 30_000);
+  cleanupTimer.unref();
+  sweep();
   let shuttingDown = false;
   async function shutdown(signal: NodeJS.Signals): Promise<void> {
     if (shuttingDown) return;
@@ -21,6 +33,8 @@ async function main(): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
     });
+    clearInterval(cleanupTimer);
+    await maintenance;
     await identity.close();
     await pool.end();
     process.exit(0);

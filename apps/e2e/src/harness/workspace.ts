@@ -8,7 +8,7 @@ import { bindEphemeralHttpServer } from "./network";
 /** A built application, isolated from operator homes, credentials and inherited policy. */
 export async function startWorkspace(
   baseDir: string,
-  relayOrigin: string,
+  remote: { connectorExecutable: string; publicCa: string },
   requestedOrigin?: string,
 ) {
   const reservation = requestedOrigin ? undefined : await bindEphemeralHttpServer();
@@ -37,7 +37,8 @@ export async function startWorkspace(
         TMPDIR: process.env.TMPDIR,
         SYNARA_REMOTE_CONNECTIONS: "1",
         SYNARA_DESKTOP_BUNDLE_ID: "",
-        SYNARA_RELAY_URL: relayOrigin,
+        SYNARA_CLOUDFLARED_PATH: remote.connectorExecutable,
+        NODE_EXTRA_CA_CERTS: remote.publicCa,
       },
       stdio: ["ignore", log.fd, log.fd],
     },
@@ -55,6 +56,9 @@ export async function startWorkspace(
     const kill = setTimeout(() => child.kill("SIGKILL"), 5_000);
     try {
       await exited;
+      if (child.signalCode !== null) {
+        throw new Error(`Workspace exited by ${child.signalCode} before proving graceful shutdown`);
+      }
     } finally {
       clearTimeout(kill);
       await log.close();

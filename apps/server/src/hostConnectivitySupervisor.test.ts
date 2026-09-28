@@ -114,6 +114,23 @@ describe("superviseHostConnectivity", () => {
     expect(start).toHaveBeenCalledTimes(2);
   });
 
+  it("does not replace an instance whose asynchronous teardown failed", async () => {
+    const dir = await tempDir();
+    await writeAccountCredentials(dir, LINKED);
+    const stop = vi.fn(async (): Promise<void> => {
+      throw new Error("unproven child cleanup");
+    });
+    const start = vi.fn(async () => stop);
+    const supervisor = await superviseHostConnectivity({ baseDir: dir, start, debounceMs: 60_000 });
+    await writeAccountCredentials(dir, { ...LINKED, hostKeyGeneration: 2 });
+    await expect(supervisor.reconcile()).rejects.toThrow("unproven child cleanup");
+    expect(start).toHaveBeenCalledTimes(1);
+    stop.mockImplementation(async () => {});
+    await supervisor.reconcile();
+    expect(start).toHaveBeenCalledTimes(2);
+    await supervisor.stop();
+  });
+
   it("retries a failed start on the next reconcile and stops the active one on stop()", async () => {
     const dir = await tempDir();
     await writeAccountCredentials(dir, LINKED);
@@ -128,7 +145,7 @@ describe("superviseHostConnectivity", () => {
     await supervisor.reconcile();
     expect(start).toHaveBeenCalledTimes(2);
 
-    supervisor.stop();
+    await supervisor.stop();
     expect(stop).toHaveBeenCalledTimes(1);
     // Stopped supervisors ignore later changes.
     await writeAccountCredentials(dir, { ...LINKED, hostKeyGeneration: 3 });

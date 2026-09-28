@@ -6,7 +6,12 @@ import { Schema } from "effect";
 
 import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas";
 
-export const HostSessionTransport = Schema.Literals(["direct", "relay", "ssh-forward"]);
+export const HostSessionTransport = Schema.Literals([
+  "direct",
+  "relay",
+  "cloudflare",
+  "ssh-forward",
+]);
 export type HostSessionTransport = typeof HostSessionTransport.Type;
 
 /** A safe projection of a live session: no socket or close handle crosses RPC. */

@@ -1,13 +1,13 @@
 // FILE: hostConnectivitySupervisor.ts
-// Purpose: Keep host connectivity (relay dial, mint gateway, ssh-forward
+// Purpose: Keep host connectivity (connector, mint gateway, ssh-forward
 //          listener) in step with the account credentials file for the
 //          lifetime of the server, instead of reading the file once at boot.
 // Layer: server host connectivity
 //
 // Why: sign-in links this machine as a host and writes the host fields to the
 // credentials file while the server is already running. Reading the file only
-// at boot meant a freshly linked host did not dial the relay until the next
-// restart, and an unlinked one kept its control socket open. The supervisor
+// at boot meant a freshly linked host did not start the connector until the next
+// restart, and an unlinked one kept its connector running. The supervisor
 // watches the file and (re)starts connectivity whenever the linked-host
 // identity changes, so "signed in" and "reachable" happen in the same moment.
 
@@ -36,7 +36,7 @@ export interface HostConnectivitySupervisorOptions {
   /** A new root restarts the listener; leaf renewal preserves existing streams. */
   readonly tlsIdentityPath?: string;
   /** Starts connectivity for the link currently on disk; resolves to its stop. */
-  readonly start: () => Promise<() => void>;
+  readonly start: () => Promise<() => void | Promise<void>>;
   readonly log?: (message: string, detail?: Record<string, unknown>) => void;
   /** Coalesces the burst of events an atomic rename produces. */
   readonly debounceMs?: number;
@@ -47,7 +47,7 @@ export interface HostConnectivitySupervisorOptions {
 export interface HostConnectivitySupervisor {
   /** Re-reads the file now; useful after a write the caller made itself. */
   readonly reconcile: () => Promise<void>;
-  readonly stop: () => void;
+  readonly stop: () => Promise<void>;
 }
 
 /**
@@ -65,22 +65,19 @@ export async function superviseHostConnectivity(
   const credentialsFile = path.basename(accountCredentialsPath(options.baseDir));
 
   let activeKey: string | undefined;
-  let activeStop: (() => void) | undefined;
+  let activeStop: (() => void | Promise<void>) | undefined;
   let stopped = false;
   // Reconciliations are serialized: a change that lands while one is in
   // flight queues exactly one more pass, which reads the newest file state.
   let inFlight: Promise<void> | undefined;
   let pending = false;
 
-  const stopActive = () => {
+  const stopActive = async () => {
     const stop = activeStop;
+    // Preserve ownership on failure: a replacement must not outlive an unproven teardown.
+    await stop?.();
     activeStop = undefined;
     activeKey = undefined;
-    try {
-      stop?.();
-    } catch (error) {
-      log("Host connectivity stop failed.", { error: String(error) });
-    }
   };
 
   const reconcileOnce = async () => {
@@ -104,13 +101,13 @@ export async function superviseHostConnectivity(
           ? "Host link changed; restarting host connectivity."
           : "Host unlinked; stopping host connectivity.",
       );
-      stopActive();
+      await stopActive();
     }
     if (!key) return;
     try {
       const stop = await options.start();
       if (stopped) {
-        stop();
+        await stop();
         return;
       }
       activeStop = stop;
@@ -146,7 +143,9 @@ export async function superviseHostConnectivity(
     if (debounce) clearTimeout(debounce);
     debounce = setTimeout(() => {
       debounce = undefined;
-      void reconcile();
+      void reconcile().catch(() =>
+        log("Host connectivity reconciliation failed; teardown remains pending."),
+      );
     }, debounceMs);
   };
 
@@ -184,20 +183,27 @@ export async function superviseHostConnectivity(
       /* Polling still observes root creation and loss. */
     }
   }
-  const poll = setInterval(() => void reconcile(), pollIntervalMs);
+  const poll = setInterval(
+    () =>
+      void reconcile().catch(() =>
+        log("Host connectivity reconciliation failed; teardown remains pending."),
+      ),
+    pollIntervalMs,
+  );
   poll.unref();
 
   await reconcile();
 
   return {
     reconcile,
-    stop: () => {
+    stop: async () => {
       stopped = true;
       if (debounce) clearTimeout(debounce);
       clearInterval(poll);
       watcher?.close();
       identityWatcher?.close();
-      stopActive();
+      await inFlight;
+      await stopActive();
     },
   };
 }

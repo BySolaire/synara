@@ -21,7 +21,7 @@
  * @module transportRace
  */
 
-export type TransportKind = "loopback" | "lan" | "tailscale" | "ssh" | "relay";
+export type TransportKind = "loopback" | "lan" | "tailscale" | "ssh" | "cloudflare" | "relay";
 
 /**
  * Fixed preference order (ADR 0007). Earlier is better. SSH is desktop-only
@@ -34,6 +34,7 @@ export const TRANSPORT_PREFERENCE: readonly TransportKind[] = [
   "lan",
   "tailscale",
   "ssh",
+  "cloudflare",
   "relay",
 ];
 

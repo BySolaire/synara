@@ -16,10 +16,14 @@ import {
   type SpawnSyncReturns,
 } from "node:child_process";
 
-import { prepareProcess, type ProcessLaunchInput, type ProcessLaunchPlan } from "./platformProcess";
+import {
+  prepareProcess,
+  type ProcessLaunchInput,
+  type ProcessLaunchPlan,
+} from "./platformProcess.ts";
 
-import { trackProcessSpawn } from "./processSpawnOutcome";
-export { didProcessFailToSpawn } from "./processSpawnOutcome";
+import { trackProcessSpawn } from "./processSpawnOutcome.ts";
+export { didProcessFailToSpawn } from "./processSpawnOutcome.ts";
 
 type ProcessPlanningOptions = Pick<ProcessLaunchInput, "platform" | "requireExecutable">;
 

@@ -34,15 +34,14 @@ describe("loadApiConfig", () => {
       baseUrl: base.ACCOUNT_BASE_URL,
       apiPublicUrl: base.API_PUBLIC_URL,
       apiSigningKey: base.API_SIGNING_KEY,
-      relayServiceToken: base.RELAY_SERVICE_TOKEN,
     });
   });
 
-  it("fails closed for WorkOS without the API signing or relay service key", () => {
+  it("requires signing but works without the retired relay service key", () => {
     const { API_SIGNING_KEY: _signing, ...withoutSigning } = base;
     expect(() => loadApiConfig(withoutSigning)).toThrow(/API_SIGNING_KEY/);
     const { RELAY_SERVICE_TOKEN: _relay, ...withoutRelay } = base;
-    expect(() => loadApiConfig(withoutRelay)).toThrow(/RELAY_SERVICE_TOKEN/);
+    expect(loadApiConfig(withoutRelay).relayServiceToken).toBeUndefined();
   });
 
   it("reads the previous signing key for rotation", () => {

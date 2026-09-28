@@ -1,6 +1,11 @@
+import path from "node:path";
+import {
+  initializeRemoteTlsIdentity,
+  remoteTlsAnchor,
+} from "../../server/src/remoteTransport/certificates";
 import { randomBytes } from "node:crypto";
 
-import { HOST_SESSION_CLOSE_REVOKED, RELAY_CLOSE_GRANT_REPLAY } from "@synara/relay-protocol";
+import { HOST_SESSION_CLOSE_REVOKED } from "@synara/relay-protocol";
 import { AccountApiError, createAccountClient } from "@synara/shared/account";
 import { generateSyncKey, openHostSecret, sealHostSecret } from "@synara/shared/hostSecrets";
 import { decodeJwt } from "jose";
@@ -29,7 +34,7 @@ describe.skipIf(!TEST_DATABASE_URL)("A → B → C slice checkpoint", () => {
     expect(second.row.id).toBe(first.row.id);
     expect(second.row.keyGeneration).toBe(2);
     expect(second.identity.publicKeyJwk).not.toEqual(first.identity.publicKeyJwk);
-    await expect(fixture.requestRelayTicket(oldProof, first.row.id)).rejects.toMatchObject({
+    await expect(fixture.requestTunnel(oldProof, first.row.id)).rejects.toMatchObject({
       code: "bad_proof",
       status: 401,
     });
@@ -48,19 +53,19 @@ describe.skipIf(!TEST_DATABASE_URL)("A → B → C slice checkpoint", () => {
     expect(linked.stored).not.toHaveProperty("accessToken");
   });
 
-  it("carries byte-identical text and binary traffic through a relay session", async () => {
+  it("carries byte-identical text and binary traffic through the Cloudflare boundary fixture", async () => {
     await using fixture = await createE2eFixture(TEST_DATABASE_URL as string);
     const linked = await fixture.linkHost();
     await using host = await fixture.startHost();
     await using client = await fixture.createClient();
     const grant = await client.requestGrant(linked.row.id);
     await using session = await client.connectWithGrant({
-      candidates: [{ kind: "relay", url: fixture.relayOrigin }],
+      candidates: [{ kind: "cloudflare", url: fixture.remoteOrigin }],
       environmentId: linked.row.environmentId,
       grant,
     });
 
-    const text = "relay text — Δ — end";
+    const text = "Cloudflare text — Δ — end";
     expect(await session.echo({ sequence: 1, payload: text })).toEqual({
       sequence: 1,
       payload: text,
@@ -71,8 +76,32 @@ describe.skipIf(!TEST_DATABASE_URL)("A → B → C slice checkpoint", () => {
     const binary = await session.echo({ sequence: 2, payload: encoded, binary: true });
     expect(Buffer.from(binary.payload, "base64")).toEqual(bytes);
     expect(binary.binary).toBe(true);
-    expect(session.transport).toBe("relay");
+    expect(session.transport).toBe("cloudflare");
     expect(host.directUrl).toMatch(/^ws:\/\/127\.0\.0\.1:\d+\/ws\/host\/v2$/);
+  });
+
+  it("refuses a substituted root through the public HTTPS fixture", async () => {
+    await using fixture = await createE2eFixture(TEST_DATABASE_URL as string);
+    const linked = await fixture.linkHost();
+    await using host = await fixture.startHost();
+    await using client = await fixture.createClient(fixture.owner, false);
+    await client.register();
+    const invitation = await host.createInvitation();
+    const substituted = await initializeRemoteTlsIdentity(
+      path.join(fixture.baseDir, "wrong-root.json"),
+      linked.row.environmentId,
+    );
+    await expect(
+      client.pair(
+        {
+          ...invitation,
+          ...remoteTlsAnchor(substituted),
+          environmentId: invitation.environmentId,
+        },
+        fixture.remoteOrigin,
+      ),
+    ).rejects.toThrow();
+    expect((await host.listSessions()).sessions).toHaveLength(0);
   });
 
   it("reuses one session credential on the direct transport without re-minting", async () => {
@@ -81,14 +110,14 @@ describe.skipIf(!TEST_DATABASE_URL)("A → B → C slice checkpoint", () => {
     await using host = await fixture.startHost();
     await using client = await fixture.createClient();
     const grant = await client.requestGrant(linked.row.id);
-    await using relaySession = await client.connectWithGrant({
-      candidates: [{ kind: "relay", url: fixture.relayOrigin }],
+    await using cloudflareSession = await client.connectWithGrant({
+      candidates: [{ kind: "cloudflare", url: fixture.remoteOrigin }],
       environmentId: linked.row.environmentId,
       grant,
     });
     await using directSession = await client.connectWithCredential({
       candidates: [{ kind: "lan", url: host.directUrl }],
-      credential: relaySession.credential,
+      credential: cloudflareSession.credential,
     });
 
     expect(directSession.minted).toBe(false);
@@ -98,21 +127,24 @@ describe.skipIf(!TEST_DATABASE_URL)("A → B → C slice checkpoint", () => {
     ).resolves.toMatchObject({ sequence: 3, payload: "same credential" });
   });
 
-  it("refuses a spent relay grant with the documented replay close code", async () => {
+  it("refuses a spent grant inside the encrypted host transport", async () => {
     await using fixture = await createE2eFixture(TEST_DATABASE_URL as string);
     const linked = await fixture.linkHost();
     await using _host = await fixture.startHost();
     await using client = await fixture.createClient();
     const grant = await client.requestGrant(linked.row.id);
     await using session = await client.connectWithGrant({
-      candidates: [{ kind: "relay", url: fixture.relayOrigin }],
+      candidates: [{ kind: "cloudflare", url: fixture.remoteOrigin }],
       environmentId: linked.row.environmentId,
       grant,
     });
-    const replay = await client.openRelay(grant, fixture.relayOrigin);
-    await expect(replay.inbox.waitForClose()).resolves.toMatchObject({
-      code: RELAY_CLOSE_GRANT_REPLAY,
-    });
+    await expect(
+      client.connectWithGrant({
+        candidates: [{ kind: "cloudflare", url: fixture.remoteOrigin }],
+        environmentId: linked.row.environmentId,
+        grant,
+      }),
+    ).rejects.toThrow();
     expect(session.socket.readyState).toBe(1);
   });
 
@@ -124,34 +156,34 @@ describe.skipIf(!TEST_DATABASE_URL)("A → B → C slice checkpoint", () => {
     await expect(client.requestGrant(linked.row.id)).rejects.toMatchObject({ status: 403 });
   });
 
-  it("degrades cleanly across relay and account API outages", async () => {
+  it("degrades cleanly across connector and account API outages", async () => {
     await using fixture = await createE2eFixture(TEST_DATABASE_URL as string);
     const linked = await fixture.linkHost();
     await using host = await fixture.startHost();
     await using client = await fixture.createClient();
     const grant = await client.requestGrant(linked.row.id);
-    await using relaySession = await client.connectWithGrant({
-      candidates: [{ kind: "relay", url: fixture.relayOrigin }],
+    await using cloudflareSession = await client.connectWithGrant({
+      candidates: [{ kind: "cloudflare", url: fixture.remoteOrigin }],
       environmentId: linked.row.environmentId,
       grant,
     });
     await using directSession = await client.connectWithCredential({
       candidates: [{ kind: "lan", url: host.directUrl }],
-      credential: relaySession.credential,
+      credential: cloudflareSession.credential,
     });
-    const relayClosed = relaySession.waitForClose();
+    const cloudflareClosed = cloudflareSession.waitForClose();
 
-    await fixture.stopRelay();
-    // The opaque relay cannot inject an authenticated inner WebSocket close.
-    await expect(relayClosed).resolves.toMatchObject({ code: 1006 });
+    await fixture.stopConnector();
+    // The opaque proxy cannot inject an authenticated inner WebSocket close.
+    await expect(cloudflareClosed).resolves.toMatchObject({ code: 1006 });
     await expect(
-      directSession.echo({ sequence: 4, payload: "relay offline" }),
-    ).resolves.toMatchObject({ payload: "relay offline" });
+      directSession.echo({ sequence: 4, payload: "connector offline" }),
+    ).resolves.toMatchObject({ payload: "connector offline" });
 
     await fixture.stopApi();
     await using offlineSession = await client.connectWithCredential({
       candidates: [{ kind: "lan", url: host.directUrl }],
-      credential: relaySession.credential,
+      credential: cloudflareSession.credential,
     });
     await expect(
       offlineSession.echo({ sequence: 5, payload: "api offline" }),
@@ -164,14 +196,14 @@ describe.skipIf(!TEST_DATABASE_URL)("A → B → C slice checkpoint", () => {
     });
   });
 
-  it("preserves every ordered frame under relay backpressure", async () => {
+  it("preserves every ordered frame under Cloudflare transport backpressure", async () => {
     await using fixture = await createE2eFixture(TEST_DATABASE_URL as string);
     const linked = await fixture.linkHost();
     await using _host = await fixture.startHost();
     await using client = await fixture.createClient();
     const grant = await client.requestGrant(linked.row.id);
     await using session = await client.connectWithGrant({
-      candidates: [{ kind: "relay", url: fixture.relayOrigin }],
+      candidates: [{ kind: "cloudflare", url: fixture.remoteOrigin }],
       environmentId: linked.row.environmentId,
       grant,
     });
@@ -183,6 +215,32 @@ describe.skipIf(!TEST_DATABASE_URL)("A → B → C slice checkpoint", () => {
 
     const replies = await session.echoBurst(payloads, { slowReader: true });
     expect(replies).toEqual(payloads.map((payload, sequence) => ({ sequence, payload })));
+  });
+
+  it("delivers an account revocation by bounded polling without a relay socket", async () => {
+    await using fixture = await createE2eFixture(TEST_DATABASE_URL as string);
+    const linked = await fixture.linkHost();
+    await using host = await fixture.startHost();
+    await using client = await fixture.createClient();
+    const device = await client.register();
+    await using session = await client.connectWithGrant({
+      candidates: [{ kind: "cloudflare", url: fixture.remoteOrigin }],
+      environmentId: linked.row.environmentId,
+      grant: await client.requestGrant(linked.row.id),
+    });
+    const closed = session.waitForClose(30_000);
+    await createAccountClient({ baseUrl: fixture.apiOrigin }).revokeDevice(
+      fixture.owner.accessToken,
+      device.id,
+    );
+    await expect(closed).resolves.toMatchObject({ code: REMOTE_SESSION_REVOKED_CLOSE_CODE });
+    expect((await host.listSessions()).sessions).toHaveLength(0);
+    await expect(
+      client.connectWithCredential({
+        candidates: [{ kind: "cloudflare", url: fixture.remoteOrigin }],
+        credential: session.credential,
+      }),
+    ).rejects.toThrow();
   });
 
   it("pairs a Sync Key through the account API and rotates Host Secrets after revocation", async () => {
@@ -324,15 +382,15 @@ describe.skipIf(!TEST_DATABASE_URL)("A → B → C slice checkpoint", () => {
     ).rejects.toMatchObject({ reason: "open-failed" });
   });
 
-  it("lists relay and direct sessions and ends or expires only the targeted session", async () => {
+  it("lists Cloudflare and direct sessions and ends or expires only the targeted session", async () => {
     await using fixture = await createE2eFixture(TEST_DATABASE_URL as string);
     const linked = await fixture.linkHost();
     await using host = await fixture.startHost();
     await using client = await fixture.createClient();
     const grant = await client.requestGrant(linked.row.id);
     const earliestStart = Date.now();
-    await using relaySession = await client.connectWithGrant({
-      candidates: [{ kind: "relay", url: fixture.relayOrigin }],
+    await using cloudflareSession = await client.connectWithGrant({
+      candidates: [{ kind: "cloudflare", url: fixture.remoteOrigin }],
       environmentId: linked.row.environmentId,
       grant,
     });
@@ -344,7 +402,7 @@ describe.skipIf(!TEST_DATABASE_URL)("A → B → C slice checkpoint", () => {
     expect(firstListing.sessions[0]).toMatchObject({
       userId: fixture.owner.userId,
       deviceJkt,
-      transport: "relay",
+      transport: "cloudflare",
     });
     expect(Date.parse(firstListing.sessions[0]?.startedAt ?? "")).toBeGreaterThanOrEqual(
       earliestStart,
@@ -352,22 +410,23 @@ describe.skipIf(!TEST_DATABASE_URL)("A → B → C slice checkpoint", () => {
 
     await using directSession = await client.connectWithCredential({
       candidates: [{ kind: "lan", url: host.directUrl }],
-      credential: relaySession.credential,
+      credential: cloudflareSession.credential,
     });
     const bothListing = await host.listSessions();
     expect(bothListing.sessions).toHaveLength(2);
     expect(bothListing.sessions.map((session) => session.transport).toSorted()).toEqual([
+      "cloudflare",
       "direct",
-      "relay",
     ]);
     expect(new Set(bothListing.sessions.map((session) => session.id)).size).toBe(2);
-    const relayRegistrySession = bothListing.sessions.find(
-      (session) => session.transport === "relay",
+    const cloudflareRegistrySession = bothListing.sessions.find(
+      (session) => session.transport === "cloudflare",
     );
-    if (!relayRegistrySession) throw new Error("relay session disappeared from the registry");
+    if (!cloudflareRegistrySession)
+      throw new Error("Cloudflare session disappeared from the registry");
 
-    const relayClosed = relaySession.waitForClose();
-    await host.endSession(relayRegistrySession.id);
+    const cloudflareClosed = cloudflareSession.waitForClose();
+    await host.endSession(cloudflareRegistrySession.id);
     // Pin the NUMBER, not just the constant. Host-session codes live in their
     // own 45xx range precisely so a revoked session can never be read as a
     // relay 44xx meaning (4403 = grant replay) after travelling verbatim
@@ -375,8 +434,8 @@ describe.skipIf(!TEST_DATABASE_URL)("A → B → C slice checkpoint", () => {
     // reintroduced by changing the constant, which is exactly how it shipped
     // the first time.
     expect(HOST_SESSION_CLOSE_REVOKED).toBe(4503);
-    expect(HOST_SESSION_CLOSE_REVOKED).not.toBe(RELAY_CLOSE_GRANT_REPLAY);
-    await expect(relayClosed).resolves.toMatchObject({ code: HOST_SESSION_CLOSE_REVOKED });
+    expect(HOST_SESSION_CLOSE_REVOKED).not.toBe(4403);
+    await expect(cloudflareClosed).resolves.toMatchObject({ code: HOST_SESSION_CLOSE_REVOKED });
     await expect(
       directSession.echo({ sequence: 6, payload: "direct session survived" }),
     ).resolves.toMatchObject({ payload: "direct session survived" });

@@ -55,10 +55,11 @@ describe("createDesktopPlatformBuildConfig", () => {
     assert.deepStrictEqual(mac.binaries, [
       "Contents/Helpers/synara-appsnap-helper",
       "Contents/Resources/cua-driver/cua-driver",
+      "Contents/Resources/cloudflared/cloudflared",
     ]);
     assert.equal(
       mac.x64ArchFiles,
-      "Contents/{Helpers/synara-appsnap-helper,Resources/cua-driver/cua-driver}",
+      "Contents/{Helpers/synara-appsnap-helper,Resources/cua-driver/cua-driver,Resources/cloudflared/cloudflared}",
     );
     assert.equal(
       MAC_APPSNAP_HELPER_STAGE_PATH,
@@ -169,6 +170,7 @@ describe("createDesktopPlatformBuildConfig", () => {
     assert.equal(linux.mac, undefined);
     assert.equal(linux.extraFiles, undefined);
     assert.deepStrictEqual(linux.extraResources, [
+      { from: "apps/desktop/resources/cloudflared", to: "cloudflared" },
       { from: "apps/desktop/resources/cua-driver", to: "cua-driver" },
     ]);
     assert.ok(linux.files?.includes("!apps/desktop/resources/cua-driver/**"));
@@ -188,7 +190,9 @@ describe("createDesktopPlatformBuildConfig", () => {
 
     assert.equal(win.mac, undefined);
     assert.equal(win.extraFiles, undefined);
-    assert.equal(win.extraResources, undefined);
+    assert.deepStrictEqual(win.extraResources, [
+      { from: "apps/desktop/resources/cloudflared", to: "cloudflared" },
+    ]);
     assert.deepStrictEqual(win.asarUnpack, ["node_modules/node-pty/**"]);
     assert.equal(WINDOWS_INSTALLER_GUID, "368107a8-afe6-5db5-ab3b-d4f331684868");
     assert.deepStrictEqual(win.nsis, {

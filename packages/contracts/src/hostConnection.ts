@@ -18,6 +18,7 @@ export const HostConnectionTransport = Schema.Literals([
   "lan",
   "tailscale",
   "ssh",
+  "cloudflare",
   "relay",
 ]);
 export type HostConnectionTransport = typeof HostConnectionTransport.Type;

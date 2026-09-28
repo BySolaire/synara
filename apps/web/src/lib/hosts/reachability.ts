@@ -32,6 +32,7 @@ export type HostReachability =
   | { readonly state: "no-route"; readonly at: number };
 
 export const TRANSPORT_LABELS: Record<TransportKind, string> = {
+  cloudflare: "Cloudflare",
   loopback: "this machine",
   lan: "local network",
   tailscale: "Tailscale",

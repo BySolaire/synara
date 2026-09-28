@@ -73,7 +73,7 @@ function httpUrlForProbe(candidate: TransportCandidate): string {
   const url = new URL(candidate.url);
   if (url.protocol === "ws:") url.protocol = "http:";
   else if (url.protocol === "wss:") url.protocol = "https:";
-  url.pathname = "/healthz";
+  url.pathname = "/health";
   url.search = "";
   url.hash = "";
   return url.toString();
@@ -86,15 +86,6 @@ async function decodeFailure(response: Response): Promise<never> {
       ? body.message
       : `request failed with HTTP ${response.status}`;
   throw new HeadlessClientError(message, response.status, body);
-}
-
-function websocketSessionUrl(candidate: TransportCandidate, grant?: string): string {
-  const url = new URL(candidate.url);
-  if (candidate.kind === "relay") {
-    url.pathname = "/client/session";
-    url.search = new URLSearchParams({ grant: grant ?? "" }).toString();
-  }
-  return url.toString();
 }
 
 type RpcSuccess = {
@@ -316,8 +307,9 @@ export class HeadlessClient implements AsyncDisposable {
       candidates,
       async (candidate, signal) => {
         try {
-          await fetch(httpUrlForProbe(candidate), { signal });
-          return true;
+          const response = await fetch(httpUrlForProbe(candidate), { signal });
+          await response.body?.cancel();
+          return candidate.kind !== "cloudflare" || response.ok;
         } catch {
           return false;
         }
@@ -330,15 +322,7 @@ export class HeadlessClient implements AsyncDisposable {
     return result.candidate;
   }
 
-  async openRelay(grant: string, relayOrigin: string) {
-    const candidate = { kind: "relay" as const, url: relayOrigin };
-    const opened = await openWebSocket(websocketSessionUrl(candidate, grant));
-    this.#sockets.add(opened.socket);
-    opened.socket.once("close", () => this.#sockets.delete(opened.socket));
-    return opened;
-  }
-
-  async pair(bundle: RemotePairingBundle, directUrl?: string, relayUrl?: string): Promise<void> {
+  async pair(bundle: RemotePairingBundle, directUrl?: string): Promise<void> {
     const identity = await this.#getIdentity();
     await pairRemoteHost({
       host: {
@@ -347,7 +331,6 @@ export class HeadlessClient implements AsyncDisposable {
         endpoints: directUrl ? [{ transport: "lan", url: directUrl }] : [],
       },
       anchor: bundle,
-      ...(relayUrl ? { relayUrl } : {}),
       bundle,
       identity: { ...identity, userId: this.options.userId },
       label: "E2E controller",
@@ -357,10 +340,13 @@ export class HeadlessClient implements AsyncDisposable {
     this.#anchor = bundle;
   }
 
-  async #openVerified(candidate: TransportCandidate, grant = "") {
+  async #openVerified(candidate: TransportCandidate) {
     if (!this.#anchor) throw new Error("Explicit owner pairing is required");
-    const url = new URL(websocketSessionUrl(candidate, grant));
-    if (candidate.kind !== "relay") url.pathname = "/ws/host/v2";
+    const url = new URL(candidate.url);
+    if (url.protocol === "https:") url.protocol = "wss:";
+    else if (url.protocol === "http:") url.protocol = "ws:";
+    url.pathname = "/ws/host/v2";
+    url.search = "";
     const outer = await openWebSocket(url.toString());
     try {
       const socket = await connectRemoteWebSocket(outer.socket, this.#anchor);
@@ -379,7 +365,7 @@ export class HeadlessClient implements AsyncDisposable {
     readonly grant: string;
   }): Promise<HeadlessClientSession> {
     const candidate = await this.selectTransport(input.candidates);
-    const opened = await this.#openVerified(candidate, input.grant);
+    const opened = await this.#openVerified(candidate);
     try {
       const identity = await this.#getIdentity();
       const mintRequest = await signMintRequest({

@@ -103,7 +103,6 @@ export interface ServerConfigShape extends ServerDerivedPaths {
   readonly staticDir: string | undefined;
   readonly devUrl: URL | undefined;
   readonly publicUrl: URL | undefined;
-  readonly relayUrl?: URL | undefined;
   readonly sshForwardPort?: number | undefined;
   readonly allowInsecureRemote: boolean;
   readonly noBrowser: boolean;

@@ -40,7 +40,6 @@ export interface DialIdentity {
 export interface RemoteChannelInput {
   readonly host: Pick<AccountHost, "id" | "environmentId" | "endpoints">;
   readonly anchor: RemoteTlsAnchor;
-  readonly relayUrl?: string | undefined;
   readonly requestGrant: () => Promise<string>;
   readonly signal?: AbortSignal | undefined;
   readonly path?: string;
@@ -80,33 +79,29 @@ export class HostDialError extends Error {
     this.name = "HostDialError";
   }
 }
-function sessionUrl(candidate: TransportCandidate, grant: string): string {
+function sessionUrl(candidate: TransportCandidate): string {
   const url = new URL(candidate.url);
   if (url.protocol === "https:") url.protocol = "wss:";
   else if (url.protocol === "http:") url.protocol = "ws:";
   if ((url.protocol !== "ws:" && url.protocol !== "wss:") || url.username || url.password)
     throw new Error("Invalid remote endpoint");
-  url.pathname = candidate.kind === "relay" ? "/client/session" : REMOTE_OUTER_PATH;
-  url.search = candidate.kind === "relay" ? new URLSearchParams({ grant }).toString() : "";
+  url.pathname = REMOTE_OUTER_PATH;
+  url.search = "";
   url.hash = "";
   return url.toString();
 }
-function defaultProbe(hostId: string) {
+function defaultProbe() {
   return async (candidate: TransportCandidate, signal: AbortSignal): Promise<boolean> => {
     const url = new URL(candidate.url);
     if (url.protocol === "ws:") url.protocol = "http:";
     else if (url.protocol === "wss:") url.protocol = "https:";
     url.search = "";
     url.hash = "";
-    url.pathname =
-      candidate.kind === "relay" ? `/healthz/host/${encodeURIComponent(hostId)}` : "/health";
+    url.pathname = "/health";
     try {
-      const response = await fetch(url, { signal });
-      if (!response.ok) return false;
-      return (
-        candidate.kind !== "relay" ||
-        ((await response.json()) as { ready?: boolean }).ready === true
-      );
+      const response = await fetch(url, { signal, redirect: "error" });
+      await response.body?.cancel();
+      return response.ok;
     } catch {
       return false;
     }
@@ -114,14 +109,12 @@ function defaultProbe(hostId: string) {
 }
 export function buildDialCandidates(
   host: Pick<AccountHost, "id" | "endpoints">,
-  relayUrl: string | undefined,
 ): readonly TransportCandidate[] {
   const candidates: TransportCandidate[] = host.endpoints.map((endpoint) => ({
     kind: endpoint.transport,
     url: endpoint.url,
     label: endpoint.transport,
   }));
-  if (relayUrl) candidates.push({ kind: "relay", url: relayUrl, label: "relay" });
   return candidates;
 }
 function openOuter(url: string, signal: AbortSignal): Promise<WebSocket> {
@@ -174,14 +167,14 @@ async function openRemoteTransport<Socket>(
   candidate: TransportCandidate;
   race: TransportRaceResult;
 }> {
-  const candidates = buildDialCandidates(input.host, input.relayUrl);
+  const candidates = buildDialCandidates(input.host);
   if (candidates.length === 0)
     throw new HostDialError("That host has no published route", { stage: "no-route" });
   if (input.anchor.environmentId !== input.host.environmentId)
     throw new HostDialError("The paired identity does not match this host", { stage: "handshake" });
   const deadline = AbortSignal.timeout(30_000);
   const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
-  const race = await raceTransports(candidates, input.probe ?? defaultProbe(input.host.id));
+  const race = await raceTransports(candidates, input.probe ?? defaultProbe());
   const ordered =
     race.outcome === "reachable"
       ? [
@@ -211,7 +204,7 @@ async function openRemoteTransport<Socket>(
     let outer: WebSocket | undefined;
     try {
       const attemptSignal = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
-      outer = await openOuter(sessionUrl(candidate, grant), attemptSignal);
+      outer = await openOuter(sessionUrl(candidate), attemptSignal);
       const socket = await authenticate(outer, attemptSignal);
       return { socket, grant, candidate, race };
     } catch (cause) {

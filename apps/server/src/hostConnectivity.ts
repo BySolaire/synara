@@ -1,3 +1,9 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
+import { installCloudflared, CLOUDFLARED_VERSION } from "@synara/shared/cloudflared";
+import { startCloudflareIngress } from "./cloudflare/ingress";
+import { startCloudflareConnector } from "./cloudflare/connector";
+import { startRemoteAuthorization } from "./cloudflare/authorization";
 import { accountStateDirectory } from "./accountAuth";
 import { createRemoteResourceGateway } from "./remoteTransport/resourceGateway";
 import { requireRemoteConnections } from "./remoteFeaturePolicy";
@@ -33,7 +39,6 @@ import { startEndpointReporter } from "./endpointReporter";
 import { ApiJwksCache, HostMintService } from "./hostAuth";
 import { mintHostProof, readHostIdentity } from "./hostIdentity";
 import { MAX_WEBSOCKET_MESSAGE_BYTES } from "./nodeHttpServer";
-import { RelayDialSupervisor } from "./relayDial";
 import {
   bridgeRemoteSocketToLocalRpc,
   RemoteConnectionGateway,
@@ -43,6 +48,7 @@ import {
 
 export interface HostConnectivityOptions {
   readonly config: ServerConfigShape;
+  readonly connectorExecutable?: () => Promise<string>;
   readonly listeningPort: number;
   readonly localSessions: SessionCredentialServiceShape;
   readonly remoteSessions: RemoteSessionRegistry;
@@ -50,7 +56,9 @@ export interface HostConnectivityOptions {
   readonly authControlPlane: AuthControlPlaneShape;
 }
 
-export async function startHostConnectivity(options: HostConnectivityOptions): Promise<() => void> {
+export async function startHostConnectivity(
+  options: HostConnectivityOptions,
+): Promise<() => Promise<void>> {
   requireRemoteConnections(options.config.stateDir);
   const credentials = await readAccountFile(
     accountStateDirectory(options.config.baseDir, options.config.devUrl),
@@ -61,10 +69,10 @@ export async function startHostConnectivity(options: HostConnectivityOptions): P
     !credentials.organizationId ||
     credentials.hostKeyGeneration === undefined
   ) {
-    return () => {};
+    return async () => {};
   }
   const identity = await readHostIdentity(options.config.hostIdentityPath);
-  if (!identity) return () => {};
+  if (!identity) return async () => {};
   const environmentId = await resolveEnvironmentId(options.config.baseDir, options.config.devUrl);
   // Startup cannot silently replace a missing root. Only local pairing initializes it.
   const tlsIdentity = await loadRemoteTlsIdentity(
@@ -78,7 +86,10 @@ export async function startHostConnectivity(options: HostConnectivityOptions): P
     userId: credentials.hostOwnerUserId,
     organizationId: credentials.organizationId,
   };
+  let admissionAvailable = () => false;
   const authorizeDevice = async (userId: string, deviceJkt: string, generation?: number) => {
+    if (!admissionAvailable())
+      throw new Error("Remote authorization is unavailable; reconnect after account verification");
     if (userId !== trustScope.userId)
       throw new Error("Only the locally linked owner is authorized");
     const trusted = await Effect.runPromise(
@@ -107,8 +118,13 @@ export async function startHostConnectivity(options: HostConnectivityOptions): P
     revokedDeviceJkts: [],
   };
   const refreshAuthorization = async () => {
-    authorization = await client.getHostAuthorization(await hostProof(), credentials.hostId!);
+    authorization = await client.getHostAuthorization(
+      await hostProof(),
+      credentials.hostId!,
+      controller.signal,
+    );
     for (const jkt of authorization.revokedDeviceJkts) {
+      options.remoteSessions.closeDevice(jkt);
       await Effect.runPromise(
         options.remoteTrust.revoke(trustScope, jkt, new Date().toISOString()),
       );
@@ -119,7 +135,12 @@ export async function startHostConnectivity(options: HostConnectivityOptions): P
       // Acknowledgement follows the durable local tombstone, never receipt of
       // the relay frame. Failed delivery remains pending in the account service.
       await client
-        .acknowledgeDeviceRevocations(await hostProof(), credentials.hostId!, pending)
+        .acknowledgeDeviceRevocations(
+          await hostProof(),
+          credentials.hostId!,
+          pending,
+          controller.signal,
+        )
         .catch(() => {});
     }
     return authorization;
@@ -159,11 +180,26 @@ export async function startHostConnectivity(options: HostConnectivityOptions): P
       }),
   });
   const controller = new AbortController();
-  const stops: Array<() => void> = [];
+  const stops: Array<() => void | Promise<void>> = [];
+  let finishSetup!: () => void;
+  const setupDone = new Promise<void>((resolve) => {
+    finishSetup = resolve;
+  });
+  let activeTunnelId: string | undefined;
+  let stopping: Promise<void> | undefined;
   const stop = () => {
     controller.abort();
     remoteSessions.closeAll();
-    for (const cleanup of stops.splice(0)) cleanup();
+    return (stopping ??= (async () => {
+      // A revocation can arrive while a listener is still binding. Own all
+      // resources acquired by that setup before declaring teardown complete.
+      await setupDone;
+      const results = await Promise.allSettled(
+        stops.splice(0).map((cleanup) => Promise.resolve().then(cleanup)),
+      );
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
+    })());
   };
   try {
     const tunnel = new RemoteTlsServer({
@@ -181,6 +217,10 @@ export async function startHostConnectivity(options: HostConnectivityOptions): P
         },
       }),
       accept: (socket, path, ingress) => {
+        if (!admissionAvailable()) {
+          socket.close(1008, "Remote authorization unavailable");
+          return;
+        }
         if (path === REMOTE_INNER_PAIRING_PATH) {
           acceptRemotePairing(
             socket,
@@ -209,6 +249,15 @@ export async function startHostConnectivity(options: HostConnectivityOptions): P
         else {
           remoteSessions.closeAll("remote access disabled");
           tunnel.close();
+          const disabling = hostProof()
+            .then((proof) => client.disableRemoteTunnel(proof, credentials.hostId!, activeTunnelId))
+            .catch(() => {});
+          // Serialize retirement with a replacement root/host instance. When an
+          // allocation is known, its ID also fences a delayed disable response.
+          stops.push(() => disabling);
+          void stop().catch(() =>
+            console.warn("[synara] Remote connector cleanup could not be verified."),
+          );
         }
       }),
     );
@@ -219,7 +268,9 @@ export async function startHostConnectivity(options: HostConnectivityOptions): P
         })
         .catch(() => {
           console.warn("[synara] Remote TLS identity unavailable; local re-pair is required.");
-          stop();
+          void stop().catch(() =>
+            console.warn("[synara] Remote connector cleanup could not be verified."),
+          );
         });
     }, 60 * 60_000);
     renewal.unref();
@@ -240,67 +291,71 @@ export async function startHostConnectivity(options: HostConnectivityOptions): P
       }),
     );
 
-    if (options.config.relayUrl) {
-      const supervisor = new RelayDialSupervisor({
-        relayUrl: options.config.relayUrl.toString(),
-        hostId: credentials.hostId,
-        requestTicket: async () =>
-          (await client.requestRelayTicket(await hostProof(), credentials.hostId!)).ticket,
-        reverifySessions: async (event) => {
-          // Kill first with what the event already proves, THEN refresh.
-          //
-          // The frame is self-sufficient for the two kinds that matter most:
-          // `device_revoked` carries the thumbprint in `event.subject`, and
-          // `host_unlinked` drops everything unconditionally. Neither needs to
-          // ask the cloud anything. Refreshing first made revocation fail OPEN
-          // — an account-API 5xx threw before a single session was dropped, so
-          // a revoked device kept its session precisely when the control plane
-          // was unhealthy.
-          if (event?.kind === "host_unlinked" || event?.kind === "device_revoked") {
-            if (event.kind === "host_unlinked")
-              await Effect.runPromise(
-                options.remoteTrust.disable(trustScope, new Date().toISOString()),
-              );
-            else if (event.subject)
-              await Effect.runPromise(
-                options.remoteTrust.revoke(trustScope, event.subject, new Date().toISOString()),
-              );
-            await remoteSessions.reverify(authorization, event);
-          }
-          // Discoverability and org membership genuinely are cloud-governed, so
-          // they still need the snapshot — but a failure here can no longer
-          // suppress the kill above.
-          const current = await refreshAuthorization();
-          for (const jkt of current.revokedDeviceJkts)
-            await Effect.runPromise(
-              options.remoteTrust.revoke(trustScope, jkt, new Date().toISOString()),
-            );
-          await remoteSessions.reverify(current, event);
-        },
-        acceptSplice: async (socket, request) => {
-          if (!(socket instanceof WebSocket))
-            throw new Error("Remote TLS requires a native Node socket");
-          tunnel.accept(socket, {
-            via: "relay",
-            expectedPeer: { userId: request.userId, deviceJkt: request.deviceJkt },
-          });
-        },
-      });
-      void supervisor.run(controller.signal);
-    }
-
-    if (!options.config.relayUrl) {
-      // A linked host with no relay still accepts direct and ssh-forward
-      // sessions, but has no control socket — so it never receives a revocation
-      // signal, and every kind (discoverability-off, org departure, device
-      // revoke, unlink) degrades silently to the credential TTL. That is a
-      // misconfiguration, not a mode: say so where an operator will see it.
-      console.warn(
-        "[synara] This host is linked to an account but SYNARA_RELAY_URL is not set. " +
-          "Remote sessions will still be accepted, but revocations cannot be delivered " +
-          "and will only take effect when session credentials expire.",
-      );
-    }
+    const authorizationPoll = startRemoteAuthorization({
+      signal: controller.signal,
+      refresh: refreshAuthorization,
+      apply: async (snapshot) => {
+        await remoteSessions.reverify(snapshot);
+      },
+      unavailable: async (permanent) => {
+        remoteSessions.closeAll("Remote authorization unavailable");
+        if (permanent)
+          await Effect.runPromise(
+            options.remoteTrust.disable(trustScope, new Date().toISOString()),
+          );
+      },
+    });
+    admissionAvailable = authorizationPoll.available;
+    stops.push(() => authorizationPoll.done);
+    let connectorReady = false;
+    const ingress = await startCloudflareIngress(
+      tunnel,
+      () => admissionAvailable() && connectorReady,
+    );
+    stops.push(ingress.close);
+    const connectorHome = join(options.config.baseDir, "tools", "cloudflared", "home");
+    await mkdir(connectorHome, { recursive: true, mode: 0o700 });
+    const connectorConfig = join(connectorHome, "managed.yml");
+    await writeFile(connectorConfig, "{}\n", { mode: 0o600 });
+    let executable: Promise<string> | undefined;
+    const connector = startCloudflareConnector({
+      home: connectorHome,
+      configurationFile: connectorConfig,
+      signal: controller.signal,
+      executable:
+        options.connectorExecutable ??
+        ((signal) =>
+          (executable ??= process.env.SYNARA_CLOUDFLARED_PATH
+            ? isAbsolute(process.env.SYNARA_CLOUDFLARED_PATH)
+              ? Promise.resolve(process.env.SYNARA_CLOUDFLARED_PATH)
+              : Promise.reject(new Error("The connector override must be an absolute path"))
+            : installCloudflared(
+                join(options.config.baseDir, "tools", "cloudflared", CLOUDFLARED_VERSION),
+                process.platform,
+                process.arch,
+                signal,
+              ).catch((error) => {
+                executable = undefined;
+                throw error;
+              }))),
+      token: async (signal) => {
+        if (!admissionAvailable()) throw new Error("Remote authorization unavailable");
+        const config = await client.provisionRemoteTunnel(
+          await hostProof(),
+          credentials.hostId!,
+          ingress.port,
+          signal,
+        );
+        if (controller.signal.aborted) throw new Error("Remote connector stopped");
+        activeTunnelId = config.tunnelId;
+        ingress.setHostname(config.hostname);
+        return config.connectorToken;
+      },
+      ready: (ready) => {
+        connectorReady = ready;
+      },
+    });
+    stops.push(connector.stop);
 
     if (options.config.sshForwardPort !== undefined) {
       const server = http.createServer((_request, response) => {
@@ -328,7 +383,10 @@ export async function startHostConnectivity(options: HostConnectivityOptions): P
     }
     return stop;
   } catch (error) {
-    stop();
+    finishSetup();
+    await stop();
     throw error;
+  } finally {
+    finishSetup();
   }
 }

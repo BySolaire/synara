@@ -7,8 +7,7 @@
     "build": "echo 'no build step'",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --maxWorkers=1 --no-file-parallelism",
-    "test:docker": "bun docker/run.ts",
-    "test:workspace": "SYNARA_E2E_WORKSPACE=1 vitest run src/workspace.e2e.test.ts --maxWorkers=1"
+    "test:workspace": "SYNARA_E2E_WORKSPACE=1 vitest run src/workspace.e2e.test.ts src/pairing.e2e.test.ts --maxWorkers=1 --no-file-parallelism"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",

@@ -56,6 +56,16 @@ export const RemoteAccessRequest = Schema.Union([
   Schema.Struct({ operation: Schema.Literal("device-info") }),
   Schema.Struct({ operation: Schema.Literal("reset-identity"), environmentId: EnvironmentId }),
   Schema.Struct({ operation: Schema.Literal("create-invitation") }),
+  Schema.Struct({ operation: Schema.Literal("create-code") }),
+  Schema.Struct({
+    operation: Schema.Literal("redeem-code"),
+    code: boundedTrimmedNonEmptyString(32),
+  }),
+  Schema.Struct({
+    operation: Schema.Literal("confirm-code"),
+    inviteId: Schema.String,
+    rootFingerprint: Schema.String,
+  }),
   Schema.Struct({ operation: Schema.Literal("list") }),
   Schema.Struct({
     operation: Schema.Literal("approve"),
@@ -75,6 +85,21 @@ export const RemoteAccessInput = Schema.Struct({ request: RemoteAccessRequest })
 
 export const RemoteAccessResult = Schema.Union([
   Schema.Struct({
+    kind: Schema.Literal("pairing-code"),
+    code: Schema.String,
+    inviteId: Schema.String,
+    expiresAt: IsoDateTime,
+    rootFingerprint: Schema.String,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("pairing-preview"),
+    inviteId: Schema.String,
+    environmentId: EnvironmentId,
+    label: Schema.String,
+    rootFingerprint: Schema.String,
+    expiresAt: IsoDateTime,
+  }),
+  Schema.Struct({
     kind: Schema.Literal("account-sessions-revoked"),
     confirmed: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
     pending: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
@@ -89,6 +114,7 @@ export const RemoteAccessResult = Schema.Union([
     kind: Schema.Literal("host-state"),
     invitations: Schema.Array(RemotePairingStatus),
     devices: Schema.Array(RemoteTrustedDevice),
+    rootFingerprint: Schema.optional(Schema.String),
     rootExpiresAt: Schema.NullOr(IsoDateTime),
     rootNeedsRepair: Schema.Boolean,
   }),
@@ -100,3 +126,18 @@ export const RemoteAccessResult = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("done") }),
 ]);
 export type RemoteAccessResult = typeof RemoteAccessResult.Type;
+
+/** Rendezvous only: the short code is not the host invitation secret. */
+export const RemotePairingCode = Schema.String.check(
+  Schema.isPattern(/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/),
+);
+export const RemotePairingCodeResult = Schema.Struct({
+  code: RemotePairingCode,
+  inviteId: Schema.String,
+  expiresAt: IsoDateTime,
+});
+export const RedeemRemotePairingCode = Schema.Struct({
+  code: RemotePairingCode,
+  deviceJkt: boundedTrimmedNonEmptyString(128),
+  proof: boundedTrimmedNonEmptyString(4096),
+});

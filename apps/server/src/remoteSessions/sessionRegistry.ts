@@ -13,7 +13,7 @@ export interface RemoteSession {
   readonly deviceJkt: string;
   readonly startedAt: string;
   readonly expiresAtSeconds: number;
-  readonly via: "direct" | "relay" | "ssh-forward";
+  readonly via: "direct" | "relay" | "cloudflare" | "ssh-forward";
   readonly close: (code: number, reason: string) => void;
 }
 

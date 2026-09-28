@@ -407,6 +407,10 @@
     "./remoteCapabilities": {
       "types": "./src/remoteCapabilities.ts",
       "import": "./src/remoteCapabilities.ts"
+    },
+    "./cloudflared": {
+      "types": "./src/cloudflared.ts",
+      "import": "./src/cloudflared.ts"
     }
   },
   "scripts": {

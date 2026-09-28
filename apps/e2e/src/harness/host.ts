@@ -115,28 +115,10 @@ export function makeFrameKindEchoRpcSerialization() {
   } satisfies RpcSerialization.RpcSerialization["Service"];
 }
 
-/** Polls the relay's health endpoint until it reports a connected host. */
-async function waitForRelayRegistration(relayOrigin: string, timeoutMs = 10_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  const url = new URL("/healthz", relayOrigin).toString();
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(url);
-      if (response.ok) {
-        const body = (await response.json()) as { hosts?: number };
-        if ((body.hosts ?? 0) > 0) return;
-      }
-    } catch {
-      // Relay not answering yet; keep waiting.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  throw new Error("host never registered its relay control socket");
-}
-
 export async function startRealHost(input: {
   readonly baseDir: string;
-  readonly relayOrigin: string;
+  readonly connectorExecutable: string;
+  readonly waitReady: () => Promise<void>;
 }): Promise<RunningHost> {
   const baseConfigLayer = ServerConfig.layerTest(process.cwd(), input.baseDir).pipe(
     Layer.provide(NodeServices.layer),
@@ -148,7 +130,6 @@ export async function startRealHost(input: {
       return {
         ...config,
         authToken: "e2e-force-session-auth",
-        relayUrl: new URL(input.relayOrigin),
       } satisfies ServerConfigShape;
     }),
   ).pipe(Layer.provide(baseConfigLayer));
@@ -232,7 +213,7 @@ export async function startRealHost(input: {
     ),
   );
   let nodeServer: http.Server | null = null;
-  let stopConnectivity: (() => void) | undefined;
+  let stopConnectivity: (() => Promise<void>) | undefined;
   let closed = false;
   try {
     const started = await Effect.runPromise(
@@ -287,6 +268,7 @@ export async function startRealHost(input: {
       remoteTrust: started.remoteTrust,
       authControlPlane: started.authControlPlane,
       remoteSessions,
+      connectorExecutable: async () => input.connectorExecutable,
     });
     // The compact E2E host intentionally mounts only the echo RPC group. Drive
     // the production owner-guarded handlers directly so session visibility
@@ -304,12 +286,7 @@ export async function startRealHost(input: {
         list: () => Promise.resolve({ connections: [] }),
       },
     });
-    // The relay dial is asynchronous: startHostConnectivity returns before the
-    // control socket has connected and sent `ready`. A client that grants and
-    // connects in that window reaches a relay with no host registered, and its
-    // splice sits pending until the relay's timeout — so wait for the relay to
-    // actually report the host before handing the fixture back.
-    await waitForRelayRegistration(input.relayOrigin);
+    await input.waitReady();
     return {
       config: started.config,
       directUrl: `ws://127.0.0.1:${address.port}/ws/host/v2`,
@@ -355,12 +332,12 @@ export async function startRealHost(input: {
       async [Symbol.asyncDispose]() {
         if (closed) return;
         closed = true;
-        stopConnectivity?.();
+        await stopConnectivity?.();
         await Effect.runPromise(Scope.close(scope, Exit.void));
       },
     };
   } catch (error) {
-    stopConnectivity?.();
+    await stopConnectivity?.();
     await Effect.runPromise(Scope.close(scope, Exit.void)).catch(() => undefined);
     throw error;
   }

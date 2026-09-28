@@ -102,7 +102,12 @@ export function createDesktopPlatformBuildConfig(
     diagnostics: preserveDependencyDiagnostics(process.env),
     linuxGlibc: typeof report?.header?.glibcVersionRuntime === "string",
   });
-  const nativePackaging = { asarUnpack: [...NODE_PTY_ASAR_UNPACK_GLOBS], files };
+  const connectorResources = { from: "apps/desktop/resources/cloudflared", to: "cloudflared" };
+  const nativePackaging = {
+    asarUnpack: [...NODE_PTY_ASAR_UNPACK_GLOBS],
+    files,
+    extraResources: [connectorResources],
+  };
 
   if (input.platform === "mac") {
     const mac = {
@@ -121,10 +126,15 @@ export function createDesktopPlatformBuildConfig(
         : {}),
       entitlements: MAC_ENTITLEMENTS_PATH,
       entitlementsInherit: MAC_INHERITED_ENTITLEMENTS_PATH,
-      binaries: [MAC_APPSNAP_HELPER_BUNDLE_PATH, "Contents/Resources/cua-driver/cua-driver"],
+      binaries: [
+        MAC_APPSNAP_HELPER_BUNDLE_PATH,
+        "Contents/Resources/cua-driver/cua-driver",
+        "Contents/Resources/cloudflared/cloudflared",
+      ],
       // The universal build stages the same pre-lipo'd helper in both app trees.
       // @electron/universal needs this pattern to preserve that existing fat binary.
-      x64ArchFiles: "Contents/{Helpers/synara-appsnap-helper,Resources/cua-driver/cua-driver}",
+      x64ArchFiles:
+        "Contents/{Helpers/synara-appsnap-helper,Resources/cua-driver/cua-driver,Resources/cloudflared/cloudflared}",
       extendInfo: {
         NSMicrophoneUsageDescription: MICROPHONE_USAGE_DESCRIPTION,
         NSScreenCaptureUsageDescription:
@@ -193,7 +203,10 @@ export function createDesktopPlatformBuildConfig(
         "!apps/desktop/resources/cua-driver/**",
         "!apps/desktop/prod-resources/cua-driver/**",
       ],
-      extraResources: [{ from: "apps/desktop/resources/cua-driver", to: "cua-driver" }],
+      extraResources: [
+        connectorResources,
+        { from: "apps/desktop/resources/cua-driver", to: "cua-driver" },
+      ],
       linux: {
         target: [input.target],
         executableName: "synara",

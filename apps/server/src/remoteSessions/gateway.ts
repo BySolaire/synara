@@ -61,7 +61,7 @@ export class RemoteConnectionGateway {
   async accept(
     socket: RelaySocket,
     expected?: ExpectedPeer,
-    via: "direct" | "relay" | "ssh-forward" = "direct",
+    via: "direct" | "relay" | "cloudflare" | "ssh-forward" = "direct",
   ): Promise<void> {
     let state: "mint" | "authorize" | "bridged" = "mint";
     let removeSession: (() => void) | undefined;

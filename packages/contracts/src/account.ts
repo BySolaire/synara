@@ -35,7 +35,7 @@ const AccountEmailString = boundedTrimmedNonEmptyString(ACCOUNT_EMAIL_MAX_LENGTH
 const AccountAuthTokenString = boundedTrimmedNonEmptyString(ACCOUNT_AUTH_TOKEN_MAX_LENGTH);
 const AccountAppVersionString = boundedTrimmedNonEmptyString(ACCOUNT_APP_VERSION_MAX_LENGTH);
 
-export const AccountHostTransport = Schema.Literals(["lan", "tailscale"]);
+export const AccountHostTransport = Schema.Literals(["lan", "tailscale", "cloudflare"]);
 export type AccountHostTransport = typeof AccountHostTransport.Type;
 
 export const AccountHostEndpoint = Schema.Struct({
@@ -615,3 +615,17 @@ export const AccountOpenVerificationUrlInput = Schema.Struct({
   url: TrimmedNonEmptyString,
 });
 export type AccountOpenVerificationUrlInput = typeof AccountOpenVerificationUrlInput.Type;
+
+/** Connector credentials are served exclusively to the proof-authenticated execution host. */
+export const RemoteTunnelRequest = Schema.Struct({
+  originPort: Schema.Int.check(
+    Schema.isGreaterThanOrEqualTo(1024),
+    Schema.isLessThanOrEqualTo(65535),
+  ),
+});
+export const RemoteTunnelResponse = Schema.Struct({
+  tunnelId: boundedTrimmedNonEmptyString(64),
+  hostname: boundedTrimmedNonEmptyString(253),
+  connectorToken: boundedTrimmedNonEmptyString(8192),
+});
+export type RemoteTunnelResponse = typeof RemoteTunnelResponse.Type;

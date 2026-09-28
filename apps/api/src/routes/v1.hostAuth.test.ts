@@ -12,7 +12,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { Schema } from "effect";
 import { Hono } from "hono";
 import { exportJWK, generateKeyPair, SignJWT, type GenerateKeyPairResult } from "jose";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkosApiConfig } from "../config";
 import { createDb } from "../db";
 import { runMigrations } from "../db/migrate";
@@ -45,6 +45,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
   let workos: FakeWorkos;
   let config: WorkosApiConfig;
   let signing: ApiSigningService;
+  const remoteTestUserIds: string[] = [];
 
   async function signIn(existing?: { userId: string; orgId: string }): Promise<Session> {
     const user = existing ? workos.addUser({ id: existing.userId }) : workos.addUser({});
@@ -52,6 +53,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
       ? workos.addOrganization({ id: existing.orgId })
       : workos.addOrganization({ name: `Workspace ${user.id}` });
     workos.addMembership(org.id, user.id);
+    remoteTestUserIds.push(user.id);
     return {
       userId: user.id,
       orgId: org.id,
@@ -62,6 +64,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
   async function teammate(owner: Session): Promise<Session> {
     const user = workos.addUser({});
     workos.addMembership(owner.orgId, user.id);
+    remoteTestUserIds.push(user.id);
     return {
       userId: user.id,
       orgId: owner.orgId,
@@ -73,7 +76,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
     };
   }
 
-  function buildApp() {
+  function buildApp(tunnels?: Parameters<typeof createV1Routes>[0]["tunnels"]) {
     const { db } = database;
     const { verifier, grants } = createWorkosIdentityProvider(config);
     const app = new Hono();
@@ -81,6 +84,8 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
     app.route(
       "/api/v1",
       createV1Routes({
+        remoteTestUserIds,
+        ...(tunnels ? { tunnels } : {}),
         verifier,
         grants,
         signing,
@@ -93,14 +98,17 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
         hostGrants: createHostGrantIssuer(signing),
         hostSecrets: createHostSecretStore(db),
         accountBaseUrl: config.baseUrl,
-        relayServiceToken: config.relayServiceToken,
+        ...(config.relayServiceToken ? { relayServiceToken: config.relayServiceToken } : {}),
         db,
         trustedProxyHops: 1,
       }),
     );
     app.route(
       "/internal",
-      createInternalRoutes({ revocations, relayServiceToken: config.relayServiceToken }),
+      createInternalRoutes({
+        revocations,
+        ...(config.relayServiceToken ? { relayServiceToken: config.relayServiceToken } : {}),
+      }),
     );
     return { app, db };
   }
@@ -1349,6 +1357,92 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
     });
   });
 
+  describe("managed remote token isolation", () => {
+    it("delivers connector credentials only to the current host proof and publishes only the URL", async () => {
+      const provision = vi.fn(async () => ({
+        hostname: "managed.example.test",
+        tunnelId: randomUUID(),
+        connectorToken: "fixture-private-connector-token",
+      }));
+      const { app } = buildApp({
+        provision,
+        disable: async () => {},
+        cleanup: async () => {},
+        endpoints: async (ids) => new Map(ids.map((id) => [id, "https://managed.example.test"])),
+      });
+      const owner = await signIn();
+      const host = await linkHost(app, owner);
+      const path = `/api/v1/hosts/${host.id}/tunnel`;
+      const denied = await app.request(path, {
+        method: "POST",
+        headers: authHeaders(owner.token),
+        body: JSON.stringify({ originPort: 34567 }),
+      });
+      expect(denied.status).toBe(401);
+      expect(provision).not.toHaveBeenCalled();
+      const accepted = await app.request(path, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `HostProof ${await hostProof(host.key, host)}`,
+        },
+        body: JSON.stringify({ originPort: 34567 }),
+      });
+      expect(accepted.status).toBe(200);
+      expect(accepted.headers.get("cache-control")).toBe("no-store");
+      expect(await accepted.json()).toHaveProperty(
+        "connectorToken",
+        "fixture-private-connector-token",
+      );
+      const directory = await app.request("/api/v1/hosts", { headers: authHeaders(owner.token) });
+      const text = await directory.text();
+      expect(text).toContain("managed.example.test");
+      expect(text).not.toContain("connector-token");
+      const injection = await app.request(`/api/v1/hosts/${host.id}`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          authorization: `HostProof ${await hostProof(host.key, host)}`,
+        },
+        body: JSON.stringify({
+          endpoints: [{ transport: "cloudflare", url: "https://attacker.invalid" }],
+        }),
+      });
+      expect(injection.status).toBe(400);
+      workos.removeMembership(owner.orgId, owner.userId);
+      const removed = await app.request(path, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `HostProof ${await hostProof(host.key, host)}`,
+        },
+        body: JSON.stringify({ originPort: 34567 }),
+      });
+      expect(removed.status).toBe(403);
+      expect(provision).toHaveBeenCalledTimes(1);
+      const snapshot = await app.request(`/api/v1/hosts/${host.id}/authorization`, {
+        headers: { authorization: `HostProof ${await hostProof(host.key, host)}` },
+      });
+      expect(await snapshot.json()).toMatchObject({ ownerInOrg: false });
+    });
+    it("refuses grants and authorization snapshots when the account loses the explicit test entitlement", async () => {
+      const { app } = buildApp();
+      const owner = await signIn();
+      const host = await linkHost(app, owner);
+      remoteTestUserIds.splice(remoteTestUserIds.indexOf(owner.userId), 1);
+      const grant = await app.request(`/api/v1/hosts/${host.id}/grant`, {
+        method: "POST",
+        headers: authHeaders(owner.token),
+        body: "{}",
+      });
+      expect(grant.status).toBe(403);
+      const authorization = await app.request(`/api/v1/hosts/${host.id}/authorization`, {
+        headers: { authorization: `HostProof ${await hostProof(host.key, host)}` },
+      });
+      expect(authorization.status).toBe(403);
+    });
+  });
+
   describe("8. JWKS", () => {
     it("serves a stable current kid and the configured previous key publicly", async () => {
       const { db } = buildApp();
@@ -1362,6 +1456,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
       app.route(
         "/api/v1",
         createV1Routes({
+          remoteTestUserIds,
           verifier,
           grants,
           signing: rotated,
@@ -1374,7 +1469,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
           hostGrants: createHostGrantIssuer(rotated),
           hostSecrets: createHostSecretStore(db),
           accountBaseUrl: config.baseUrl,
-          relayServiceToken: config.relayServiceToken,
+          ...(config.relayServiceToken ? { relayServiceToken: config.relayServiceToken } : {}),
           db,
         }),
       );

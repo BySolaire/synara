@@ -101,7 +101,14 @@ function scriptedProbe(
 
 describe("TRANSPORT_PREFERENCE", () => {
   it("is exactly ADR 0007's order", () => {
-    expect(TRANSPORT_PREFERENCE).toEqual(["loopback", "lan", "tailscale", "ssh", "relay"]);
+    expect(TRANSPORT_PREFERENCE).toEqual([
+      "loopback",
+      "lan",
+      "tailscale",
+      "ssh",
+      "cloudflare",
+      "relay",
+    ]);
   });
 
   it("ranks loopback best and relay worst", () => {

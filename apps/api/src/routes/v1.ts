@@ -1,4 +1,9 @@
+import { createPairingRendezvous } from "../remote/pairing";
+import { RemotePairingBundle, RedeemRemotePairingCode } from "@synara/contracts";
+import type { TunnelCoordinator } from "../remote/tunnels";
+import { CloudflareError } from "../remote/cloudflare";
 import {
+  RemoteTunnelRequest,
   type AccountErrorBody,
   type AccountErrorCode,
   ACCOUNT_HOST_ENDPOINTS_MAX,
@@ -307,6 +312,9 @@ function authTokensBody(auth_: AuthTokens): AuthTokensResponse {
 }
 
 export function createV1Routes(deps: {
+  tunnels?: TunnelCoordinator;
+  apiIssuer?: string;
+  remoteTestUserIds?: readonly string[];
   verifier: AccountIdentityVerifier;
   grants: EnvironmentGrantIssuer;
   signing: ApiSigningService;
@@ -1309,9 +1317,16 @@ export function createV1Routes(deps: {
           and(eq(hostRows.ownerOrgId, session.orgId), eq(hostRows.discoverable, true)),
         ),
       );
+    const managedEndpoints = await deps.tunnels?.endpoints(rows.map((row) => row.id));
     const body: ListHostsResponse = {
       hosts: rows.map((row) => ({
         ...toAccountHost(row),
+        endpoints: [
+          ...row.endpoints.filter((endpoint) => endpoint.transport !== "cloudflare"),
+          ...(managedEndpoints?.has(row.id)
+            ? [{ transport: "cloudflare" as const, url: managedEndpoints.get(row.id)! }]
+            : []),
+        ],
         mine: row.ownerUserId === session.userId,
       })),
     };
@@ -1335,6 +1350,13 @@ export function createV1Routes(deps: {
       );
     }
 
+    if (parsed.endpoints?.some((endpoint) => endpoint.transport === "cloudflare"))
+      return errorResponse(
+        c,
+        400,
+        "validation_failed",
+        "Managed endpoints are assigned by the account service",
+      );
     const owned = await requireHostOwner(c, id);
     if (owned instanceof Response) return owned;
     const updated = await db.transaction(async (tx) => {
@@ -1386,6 +1408,13 @@ export function createV1Routes(deps: {
         error instanceof Error ? error.message : String(error),
       );
     }
+    if (parsed.endpoints.some((endpoint) => endpoint.transport === "cloudflare"))
+      return errorResponse(
+        c,
+        400,
+        "validation_failed",
+        "Managed endpoints are assigned by the account service",
+      );
     try {
       return c.json({
         host: await hostKeys.replaceEndpoints(c.req.header("authorization"), id, parsed.endpoints),
@@ -1395,7 +1424,153 @@ export function createV1Routes(deps: {
     }
   });
 
+  async function requireRemoteHostMembership(host: { ownerUserId: string; ownerOrgId: string }) {
+    let memberships: OrganizationRef[];
+    try {
+      memberships = await grants.listUserOrganizations(host.ownerUserId, { freshMembership: true });
+    } catch {
+      throw new HostAuthDomainError(502, "internal_error", "Identity provider is unavailable");
+    }
+    if (!memberships.some((org) => org.orgId === host.ownerOrgId))
+      throw new HostAuthDomainError(
+        403,
+        "not_host_owner",
+        "The host owner no longer belongs to this workspace",
+      );
+  }
+
+  const rendezvous = createPairingRendezvous(db, deps.apiIssuer ?? "");
+  v1.post("/hosts/:id/pairing-codes", async (c) => {
+    c.header("Cache-Control", "no-store");
+    const bundle = await c.req.json().catch(() => null);
+    if (!Schema.is(RemotePairingBundle)(bundle))
+      return errorResponse(c, 400, "validation_failed", "Invalid pairing invitation");
+    try {
+      const host = await hostKeys.withAuthenticatedHost(
+        c.req.header("authorization"),
+        c.req.param("id"),
+        async (host) => host,
+      );
+      if (!deps.remoteTestUserIds?.includes(host.ownerUserId))
+        return errorResponse(
+          c,
+          403,
+          "not_host_owner",
+          "Remote test access is not enabled for this account",
+        );
+      if (!(await rendezvous.consumeBudget(`publish:${host.id}`, 5)))
+        return errorResponse(c, 429, "rate_limited", "Wait before creating another pairing code");
+      await requireRemoteHostMembership(host);
+      return c.json(await rendezvous.publish(host, bundle));
+    } catch (error) {
+      return hostDomainError(c, error);
+    }
+  });
+  v1.delete("/hosts/:id/pairing-codes/:inviteId", async (c) => {
+    try {
+      const host = await hostKeys.withAuthenticatedHost(
+        c.req.header("authorization"),
+        c.req.param("id"),
+        async (host) => host,
+      );
+      if (!isUuid(c.req.param("inviteId")))
+        return errorResponse(c, 400, "validation_failed", "Invalid invitation");
+      await rendezvous.cancel(host, c.req.param("inviteId"));
+      return c.body(null, 204);
+    } catch (error) {
+      return hostDomainError(c, error);
+    }
+  });
+  v1.post("/remote/pairing-codes/redeem", async (c) => {
+    c.header("Cache-Control", "no-store");
+    if (!(await rendezvous.consumeBudget(`redeem-ip:${callerIp(c)}`, 10)))
+      return errorResponse(c, 429, "rate_limited", "Too many pairing attempts; wait a minute");
+    const session = await requireOrgSession(c, { freshMembership: true });
+    if (session instanceof Response) return session;
+    if (!deps.remoteTestUserIds?.includes(session.userId))
+      return errorResponse(
+        c,
+        403,
+        "not_host_owner",
+        "Remote test access is not enabled for this account",
+      );
+    if (!(await rendezvous.consumeBudget(`redeem-user:${session.userId}`, 5)))
+      return errorResponse(c, 429, "rate_limited", "Too many pairing attempts; wait a minute");
+    const input = await c.req.json().catch(() => null);
+    if (!Schema.is(RedeemRemotePairingCode)(input))
+      return errorResponse(c, 400, "validation_failed", "Invalid pairing code");
+    if (!(await rendezvous.consumeBudget(`redeem-code:${session.userId}:${input.code}`, 5)))
+      return errorResponse(c, 429, "rate_limited", "Too many attempts for this code");
+    try {
+      return c.json(await rendezvous.redeem(session, input.code, input.deviceJkt, input.proof));
+    } catch (error) {
+      return hostDomainError(c, error);
+    }
+  });
+
+  v1.post("/hosts/:id/tunnel", async (c) => {
+    c.header("Cache-Control", "no-store");
+    if (!deps.tunnels)
+      return errorResponse(c, 503, "internal_error", "Remote tunnel service is not configured");
+    const input = await c.req.json().catch(() => null);
+    if (!Schema.is(RemoteTunnelRequest)(input))
+      return errorResponse(c, 400, "validation_failed", "Invalid remote ingress port");
+    try {
+      const host = await hostKeys.withAuthenticatedHost(
+        c.req.header("authorization"),
+        c.req.param("id"),
+        async (host) => host,
+      );
+      if (!deps.remoteTestUserIds?.includes(host.ownerUserId))
+        return errorResponse(
+          c,
+          403,
+          "not_host_owner",
+          "Remote test access is not enabled for this account",
+        );
+      if (!(await rendezvous.consumeBudget(`tunnel:${host.id}`, 10)))
+        return errorResponse(c, 429, "rate_limited", "Wait before retrying remote setup");
+      await requireRemoteHostMembership(host);
+      return c.json(await deps.tunnels.provision(host, input.originPort));
+    } catch (error) {
+      if (error instanceof CloudflareError)
+        return errorResponse(c, 502, "internal_error", error.message);
+      return hostDomainError(c, error);
+    }
+  });
+  v1.delete("/hosts/:id/tunnel", async (c) => {
+    try {
+      const host = await hostKeys.withAuthenticatedHost(
+        c.req.header("authorization"),
+        c.req.param("id"),
+        async (host) => host,
+      );
+      const input = await c.req.json().catch(() => ({}));
+      if (
+        !Schema.is(
+          Schema.Struct({
+            tunnelId: Schema.optional(
+              Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9-]{1,64}$/)),
+            ),
+          }),
+        )(input)
+      )
+        return errorResponse(c, 400, "validation_failed", "Invalid tunnel identity");
+      await deps.tunnels?.disable(host, input.tunnelId);
+      return c.body(null, 204);
+    } catch (error) {
+      return hostDomainError(c, error);
+    }
+  });
+
   v1.post("/hosts/:id/relay-ticket", async (c) => {
+    if (!deps.relayServiceToken)
+      return errorResponse(
+        c,
+        410,
+        "validation_failed",
+        "The relay transport has been retired; update Synara",
+      );
     try {
       const body: RelayTicketResponse = {
         ticket: await hostKeys.withAuthenticatedHost(
@@ -1473,9 +1648,18 @@ export function createV1Routes(deps: {
         c.req.param("id"),
         async (authenticated) => authenticated,
       );
+      if (!deps.remoteTestUserIds?.includes(host.ownerUserId))
+        return errorResponse(
+          c,
+          403,
+          "not_host_owner",
+          "Remote test access is not enabled for this account",
+        );
       let organizations: OrganizationRef[];
       try {
-        organizations = await grants.listUserOrganizations(host.ownerUserId);
+        organizations = await grants.listUserOrganizations(host.ownerUserId, {
+          freshMembership: true,
+        });
       } catch (error) {
         console.error("[api] host authorization membership lookup failed:", error);
         return errorResponse(c, 502, "internal_error", "Identity provider is unavailable");
@@ -1585,6 +1769,13 @@ export function createV1Routes(deps: {
     }
     const session = await requireOrgSession(c, { freshMembership: true });
     if (session instanceof Response) return session;
+    if (!deps.remoteTestUserIds?.includes(session.userId))
+      return errorResponse(
+        c,
+        403,
+        "not_host_owner",
+        "Remote test access is not enabled for this account",
+      );
     if (!grantRateLimiter.tryConsume(`user:${session.userId}`)) {
       return errorResponse(c, 429, "rate_limited", "Too many grant requests — slow down");
     }

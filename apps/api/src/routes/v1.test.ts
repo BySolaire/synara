@@ -140,7 +140,7 @@ describe.skipIf(!TEST_DATABASE_URL)("createV1Routes", () => {
       hostGrants: createHostGrantIssuer(testSigning),
       hostSecrets: createHostSecretStore(db),
       accountBaseUrl: forConfig.baseUrl,
-      relayServiceToken: forConfig.relayServiceToken,
+      ...(forConfig.relayServiceToken ? { relayServiceToken: forConfig.relayServiceToken } : {}),
       db,
       trustedProxyHops: options.trustedProxyHops ?? 1,
       ...(options.avatarStorage !== undefined ? { avatarStorage: options.avatarStorage } : {}),
@@ -2460,7 +2460,7 @@ describe.skipIf(!TEST_DATABASE_URL)("createV1Routes", () => {
           hostGrants: createHostGrantIssuer(testSigning),
           hostSecrets: createHostSecretStore(db),
           accountBaseUrl: config.baseUrl,
-          relayServiceToken: config.relayServiceToken,
+          ...(config.relayServiceToken ? { relayServiceToken: config.relayServiceToken } : {}),
           db,
         }),
       );

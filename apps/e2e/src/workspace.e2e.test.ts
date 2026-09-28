@@ -18,7 +18,7 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
     if (!process.env.TEST_DATABASE_URL)
       throw new Error("An isolated TEST_DATABASE_URL is required");
     await using fixture = await createE2eFixture(process.env.TEST_DATABASE_URL);
-    await fixture.linkHost();
+    const linked = await fixture.linkHost();
     const controllerDir = path.join(fixture.baseDir, "controller");
     await fixture.prepareController(controllerDir);
     await fs.mkdir(path.join(fixture.baseDir, "bin"));
@@ -34,8 +34,8 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         },
       }),
     );
-    await using host = await startWorkspace(fixture.baseDir, fixture.relayOrigin);
-    await using controller = await startWorkspace(controllerDir, fixture.relayOrigin);
+    await using host = await startWorkspace(fixture.baseDir, fixture);
+    await using controller = await startWorkspace(controllerDir, fixture);
     const projectId = randomUUID();
     const roots = [path.join(host.baseDir, "project"), path.join(controller.baseDir, "project")];
     for (const [index, root] of roots.entries()) {
@@ -77,26 +77,23 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       });
     }
     const invitation = await requestLocalRemoteAccess(host.baseDir, {
-      operation: "create-invitation",
+      operation: "create-code",
     });
-    expect(invitation.kind).toBe("invitation");
-    if (invitation.kind !== "invitation") throw new Error("Missing invitation");
-    await expect
-      .poll(
-        async () => {
-          const response = await fetch(
-            `${fixture.relayOrigin}/healthz/host/${invitation.bundle.hostId}`,
-          );
-          return ((await response.json()) as { ready: boolean }).ready;
-        },
-        { timeout: 20_000 },
-      )
-      .toBe(true);
+    expect(invitation.kind).toBe("pairing-code");
+    if (invitation.kind !== "pairing-code") throw new Error("Missing invitation");
+    await fixture.waitReady();
+    const preview = await requestLocalRemoteAccess(controller.baseDir, {
+      operation: "redeem-code",
+      code: invitation.code,
+    });
+    if (preview.kind !== "pairing-preview") throw new Error("Missing pairing preview");
+    expect(preview.rootFingerprint).toBe(invitation.rootFingerprint);
     const device = await requestLocalRemoteAccess(controller.baseDir, { operation: "device-info" });
     if (device.kind !== "device-info") throw new Error("Missing device");
     const pairing = requestLocalRemoteAccess(controller.baseDir, {
-      operation: "pair",
-      bundle: invitation.bundle,
+      operation: "confirm-code",
+      inviteId: preview.inviteId,
+      rootFingerprint: invitation.rootFingerprint,
     });
     // Install the rejection handler immediately while the independent owner polls.
     const paired = pairing.then(
@@ -120,7 +117,7 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       .toBe(true);
     await requestLocalRemoteAccess(host.baseDir, {
       operation: "approve",
-      inviteId: invitation.bundle.inviteId,
+      inviteId: invitation.inviteId,
       deviceJkt: device.deviceJkt,
     });
     expect(await paired).toMatchObject({ value: { kind: "paired" } });
@@ -151,16 +148,16 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         .waitFor();
       await page.getByRole("button", { name: "Connect", exact: true }).first().click();
       await page
-        .getByRole("button", { name: new RegExp(`${invitation.bundle.label}.*Connected`) })
+        .getByRole("button", { name: new RegExp(`${preview.label}.*Connected`) })
         .first()
         .waitFor();
       await page.getByText("REMOTE checkout", { exact: true }).first().waitFor();
       expect(await page.getByText("LOCAL checkout", { exact: true }).count()).toBe(0);
       await using localRpc = await workspaceRpc(controller.origin);
       const connection = await localRpc.request<HostConnection>("hosts.connect", {
-        hostId: invitation.bundle.hostId,
+        hostId: linked.row.id,
       });
-      expect(connection.transport).toBe("relay");
+      expect(connection.transport).toBe("cloudflare");
       await using remoteRpc = await workspaceRpc(controller.origin, connection.wsPath);
       expect(
         await remoteRpc.request("projects.readFile", { cwd: roots[0], relativePath: "same.txt" }),
@@ -174,7 +171,7 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       expect(await fs.readFile(path.join(roots[1]!, "same.txt"), "utf8")).toBe("LOCAL original");
       await page.reload();
       await page
-        .getByRole("button", { name: new RegExp(`${invitation.bundle.label}.*Connected`) })
+        .getByRole("button", { name: new RegExp(`${preview.label}.*Connected`) })
         .first()
         .waitFor();
       expect(await remoteRpc.request("git.status", { cwd: roots[0] })).toMatchObject({
@@ -213,7 +210,7 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       ).toBe(false);
       const bytes = new Uint8Array(512 * 1024).fill(91);
       const resourceUrl = (resource: object) =>
-        `${controller.origin}/api/remote/resource/${invitation.bundle.hostId}?${new URLSearchParams({ reference: JSON.stringify({ environmentId: invitation.bundle.environmentId, resource }) })}`;
+        `${controller.origin}/api/remote/resource/${linked.row.id}?${new URLSearchParams({ reference: JSON.stringify({ environmentId: linked.row.environmentId, resource }) })}`;
       const uploaded = await fetch(
         resourceUrl({
           kind: "attachment-upload",
@@ -260,7 +257,7 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         .toBe(true);
       await page.getByText("Remote continuity fixture", { exact: true }).first().click();
       await page.getByText("REMOTE STREAM STARTED", { exact: true }).waitFor();
-      await fixture.stopRelay();
+      await fixture.stopConnector();
       await expect
         .poll(async () => {
           try {
@@ -273,17 +270,17 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         .toBe(true);
       // The provider advances with the network down; automatic resubscription
       // must recover this delta in the existing browser without replaying a turn.
-      await fs.writeFile(path.join(host.baseDir, "relay-gap-fixture"), "emit");
+      await fs.writeFile(path.join(host.baseDir, "connector-gap-fixture"), "emit");
       await expect
         .poll(async () =>
           (await fs.readFile(path.join(host.baseDir, "fixture-provider.jsonl"), "utf8")).includes(
-            '"relay-gap"',
+            '"connector-gap"',
           ),
         )
         .toBe(true);
-      await fixture.restartRelay();
+      await fixture.restartConnector();
       await page
-        .getByText("REMOTE STREAM STARTED — RECOVERED AFTER RELAY RESTART", { exact: true })
+        .getByText("REMOTE STREAM STARTED — RECOVERED AFTER CONNECTOR RESTART", { exact: true })
         .waitFor({ timeout: 40_000 });
       await controller.stop();
       await fs.writeFile(path.join(host.baseDir, "finish-fixture-turn"), "finish");
@@ -296,13 +293,13 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         .toBe(true);
       await using restartedController = await startWorkspace(
         controllerDir,
-        fixture.relayOrigin,
+        fixture,
         controller.origin,
       );
       await page.reload();
       await page
         .getByText(
-          "REMOTE STREAM STARTED — RECOVERED AFTER RELAY RESTART — COMPLETED WHILE CONTROLLER WAS STOPPED",
+          "REMOTE STREAM STARTED — RECOVERED AFTER CONNECTOR RESTART — COMPLETED WHILE CONTROLLER WAS STOPPED",
           {
             exact: true,
           },
@@ -334,7 +331,7 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       expect(new Uint8Array(await range.arrayBuffer())).toEqual(bytes.slice(7, 39));
       await using recoveredLocal = await workspaceRpc(controller.origin);
       const recoveredConnection = await recoveredLocal.request<HostConnection>("hosts.connect", {
-        hostId: invitation.bundle.hostId,
+        hostId: linked.row.id,
       });
       await using recoveredRemote = await workspaceRpc(
         controller.origin,
@@ -357,10 +354,12 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       });
       await page.getByRole("button", { name: /Approve once/ }).click();
       await expect
-        .poll(async () =>
-          (await fs.readFile(path.join(host.baseDir, "fixture-provider.jsonl"), "utf8")).includes(
-            '"decision":"accept"',
-          ),
+        .poll(
+          async () =>
+            (await fs.readFile(path.join(host.baseDir, "fixture-provider.jsonl"), "utf8")).includes(
+              '"decision":"accept"',
+            ),
+          { timeout: 10_000 },
         )
         .toBe(true);
       await recoveredRemote.request("orchestration.dispatchCommand", {
@@ -388,12 +387,12 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       // Separate provider turns must not reuse an item id and merge text rows.
       await page
         .getByText(
-          "REMOTE STREAM STARTED — RECOVERED AFTER RELAY RESTART — COMPLETED WHILE CONTROLLER WAS STOPPED",
+          "REMOTE STREAM STARTED — RECOVERED AFTER CONNECTOR RESTART — COMPLETED WHILE CONTROLLER WAS STOPPED",
           { exact: true },
         )
         .waitFor();
       await page
-        .getByRole("button", { name: new RegExp(`${invitation.bundle.label}.*Connected`) })
+        .getByRole("button", { name: new RegExp(`${preview.label}.*Connected`) })
         .first()
         .waitFor();
       const evidenceDir = process.env.SYNARA_E2E_EVIDENCE;
@@ -418,6 +417,10 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       const refused = await fetch(resourceUrl({ kind: "attachment", attachmentId: attachment.id }));
       expect(refused.ok).toBe(false);
       await host.stop();
+      const connectorPid = Number(
+        await fs.readFile(path.join(host.baseDir, "edge-fixture", "connector.pid"), "utf8"),
+      );
+      expect(() => process.kill(connectorPid, 0)).toThrow();
       const taskPid = providerEvents.find((event) => event.kind === "turn").pid as number;
       await expect
         .poll(() => {
@@ -443,6 +446,11 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       if (evidenceDir)
         await page.screenshot({ path: path.join(evidenceDir, "workspace-local-recovery.png") });
     } catch (error) {
+      if (process.env.SYNARA_E2E_EVIDENCE)
+        await fs.copyFile(
+          path.join(host.baseDir, "fixture-provider.jsonl"),
+          path.join(process.env.SYNARA_E2E_EVIDENCE, "fixture-provider.jsonl"),
+        );
       console.error(await page.locator("body").innerText());
       throw error;
     } finally {

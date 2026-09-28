@@ -1,6 +1,6 @@
 import http from "node:http";
 import tls from "node:tls";
-import type { Duplex } from "node:stream";
+import { Duplex, Writable } from "node:stream";
 import WebSocket, { createWebSocketStream, WebSocketServer } from "ws";
 import {
   remoteTlsAnchor,
@@ -27,11 +27,38 @@ function ciphertextStream(outer: WebSocket): Duplex {
   outer.once("close", () => outer.off("message", onMessage));
   const stream = createWebSocketStream(outer, { highWaterMark: STREAM_HIGH_WATER_BYTES });
   stream.on("error", () => outer.terminate());
-  return stream;
+  // TLS can aggregate an entire write burst into one ciphertext buffer. Outer
+  // messages are byte-stream chunks, not RPC messages: bound each frame without
+  // lifting the receiving limit or buffering an unbounded send queue.
+  const writer = new Writable({
+    highWaterMark: STREAM_HIGH_WATER_BYTES,
+    write(chunk: Buffer, _encoding, callback) {
+      let offset = 0;
+      const next = (error?: Error | null) => {
+        if (error || offset >= chunk.length) {
+          callback(error);
+          return;
+        }
+        const end = Math.min(chunk.length, offset + STREAM_HIGH_WATER_BYTES);
+        const part = chunk.subarray(offset, end);
+        offset = end;
+        stream.write(part, next);
+      };
+      next();
+    },
+    final(callback) {
+      stream.end(callback);
+    },
+    destroy(error, callback) {
+      stream.destroy(error ?? undefined);
+      callback(error);
+    },
+  });
+  return Duplex.from({ readable: stream, writable: writer });
 }
 
 export interface RemoteIngressContext {
-  readonly via: "direct" | "relay" | "ssh-forward";
+  readonly via: "direct" | "relay" | "cloudflare" | "ssh-forward";
   readonly expectedPeer?: { readonly userId: string; readonly deviceJkt: string };
 }
 const DIRECT_INGRESS: RemoteIngressContext = { via: "direct" };

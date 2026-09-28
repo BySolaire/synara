@@ -138,7 +138,6 @@ interface CliInput {
   readonly synaraHome: Option.Option<string>;
   readonly devUrl: Option.Option<URL>;
   readonly publicUrl: Option.Option<URL>;
-  readonly relayUrl: Option.Option<URL>;
   readonly sshForwardPort: Option.Option<number>;
   readonly allowInsecureRemote: BooleanFlagInput;
   readonly noBrowser: BooleanFlagInput;
@@ -206,7 +205,6 @@ const CliEnvConfig = Config.all({
   synaraHome: Config.string("SYNARA_HOME").pipe(Config.option, Config.map(Option.getOrUndefined)),
   devUrl: Config.url("VITE_DEV_SERVER_URL").pipe(Config.option, Config.map(Option.getOrUndefined)),
   publicUrl: Config.url("SYNARA_PUBLIC_URL").pipe(Config.option, Config.map(Option.getOrUndefined)),
-  relayUrl: Config.url("SYNARA_RELAY_URL").pipe(Config.option, Config.map(Option.getOrUndefined)),
   sshForwardPort: Config.port("SYNARA_SSH_FORWARD_PORT").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
@@ -341,7 +339,6 @@ const ServerConfigLive = (input: CliInput) =>
       });
       const noBrowser = resolveBooleanConfig(input.noBrowser, env.noBrowser, mode === "desktop");
       const authToken = Option.getOrUndefined(input.authToken) ?? env.authToken;
-      const relayUrl = Option.getOrUndefined(input.relayUrl) ?? env.relayUrl;
       const sshForwardPort = Option.getOrUndefined(input.sshForwardPort) ?? env.sshForwardPort;
       const desktopShutdownToken = env.desktopShutdownToken ?? liveProcessDesktopShutdownToken;
       const migrationDivergenceConsent =
@@ -399,7 +396,6 @@ const ServerConfigLive = (input: CliInput) =>
         staticDir,
         devUrl,
         publicUrl,
-        relayUrl,
         sshForwardPort,
         allowInsecureRemote,
         noBrowser,
@@ -480,7 +476,7 @@ const makeServerProgram = (input: CliInput) =>
 
     yield* start;
     // Follows the credentials file for the server's lifetime: signing in and
-    // linking this machine starts the relay dial right away, and unlinking
+    // linking this machine starts managed remote connectivity, and unlinking
     // stops it, with no restart in between.
     if (!remoteConnectionsUnavailableReason(config.stateDir)) {
       const outboundConnections = yield* HostConnectionRegistryService;
@@ -508,10 +504,10 @@ const makeServerProgram = (input: CliInput) =>
         Effect.catch((cause) =>
           Effect.logWarning("Host connectivity supervisor did not start.", {
             cause: String(cause),
-          }).pipe(Effect.as({ reconcile: () => Promise.resolve(), stop: () => {} })),
+          }).pipe(Effect.as({ reconcile: () => Promise.resolve(), stop: async () => {} })),
         ),
       );
-      yield* Effect.addFinalizer(() => Effect.sync(() => hostConnectivity.stop()));
+      yield* Effect.addFinalizer(() => Effect.promise(() => hostConnectivity.stop()));
     }
 
     const localUrl = `http://localhost:${config.port}`;
@@ -675,11 +671,6 @@ const publicUrlFlag = Flag.string("public-url").pipe(
   ),
   Flag.optional,
 );
-const relayUrlFlag = Flag.string("relay-url").pipe(
-  Flag.withSchema(Schema.URLFromString),
-  Flag.withDescription("Relay service root URL (equivalent to SYNARA_RELAY_URL)."),
-  Flag.optional,
-);
 const sshForwardPortFlag = Flag.integer("ssh-forward-port").pipe(
   Flag.withSchema(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))),
   Flag.withDescription(
@@ -733,7 +724,6 @@ const baseServerCommand = Command.make("synara", {
   synaraHome: synaraHomeFlag,
   devUrl: devUrlFlag,
   publicUrl: publicUrlFlag,
-  relayUrl: relayUrlFlag,
   sshForwardPort: sshForwardPortFlag,
   allowInsecureRemote: allowInsecureRemoteFlag,
   noBrowser: noBrowserFlag,

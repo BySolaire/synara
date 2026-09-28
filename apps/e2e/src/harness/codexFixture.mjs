@@ -59,16 +59,16 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         return;
       }
       let text = "REMOTE STREAM STARTED";
-      let relayGapRecorded = false;
+      let connectorGapRecorded = false;
       ticker = setInterval(() => {
-        if (!relayGapRecorded && fs.existsSync(path.join(root, "relay-gap-fixture"))) {
-          relayGapRecorded = true;
-          text += " — RECOVERED AFTER RELAY RESTART";
+        if (!connectorGapRecorded && fs.existsSync(path.join(root, "connector-gap-fixture"))) {
+          connectorGapRecorded = true;
+          text += " — RECOVERED AFTER CONNECTOR RESTART";
           notify("item/agentMessage/delta", {
             itemId,
-            delta: " — RECOVERED AFTER RELAY RESTART",
+            delta: " — RECOVERED AFTER CONNECTOR RESTART",
           });
-          record({ kind: "relay-gap", turnId, pid: process.pid });
+          record({ kind: "connector-gap", turnId, pid: process.pid });
         }
         if (!fs.existsSync(path.join(root, "finish-fixture-turn"))) return;
         clearInterval(ticker);

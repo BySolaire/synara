@@ -14,7 +14,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
-export type HostEndpoint = { url: string; transport: "lan" | "tailscale" };
+export type HostEndpoint = { url: string; transport: "lan" | "tailscale" | "cloudflare" };
 
 export const hosts = pgTable(
   "hosts",
@@ -383,3 +383,62 @@ export const usageSkillStats = pgTable(
     index("usage_skill_stats_user_minute").on(table.userId, table.minute),
   ],
 );
+
+/** Retired allocations outlive host deletion so external cleanup is recoverable. */
+export const remoteTunnels = pgTable(
+  "remote_tunnels",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    hostId: uuid("host_id").notNull(),
+    ownerUserId: text("owner_user_id").notNull(),
+    ownerOrgId: text("owner_org_id").notNull(),
+    environmentId: text("environment_id").notNull(),
+    keyGeneration: integer("key_generation").notNull(),
+    hostname: text("hostname").notNull(),
+    tunnelName: text("tunnel_name").notNull(),
+    tunnelId: text("tunnel_id"),
+    dnsRecordId: text("dns_record_id"),
+    originPort: integer("origin_port").notNull(),
+    desired: boolean("desired").notNull().default(true),
+    ready: boolean("ready").notNull().default(false),
+    leaseId: uuid("lease_id"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    cleanedAt: timestamp("cleaned_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("remote_tunnels_active_host_unique")
+      .on(table.hostId)
+      .where(sql`${table.desired} = true`),
+    uniqueIndex("remote_tunnels_hostname_unique").on(table.hostname),
+    uniqueIndex("remote_tunnels_name_unique").on(table.tunnelName),
+    index("remote_tunnels_cleanup_idx").on(table.desired, table.cleanedAt),
+  ],
+);
+
+export const remotePairingCodes = pgTable(
+  "remote_pairing_codes",
+  {
+    inviteId: uuid("invite_id").primaryKey(),
+    hostId: uuid("host_id").notNull(),
+    ownerUserId: text("owner_user_id").notNull(),
+    ownerOrgId: text("owner_org_id").notNull(),
+    keyGeneration: integer("key_generation").notNull(),
+    code: text("code").notNull(),
+    bundle: jsonb("bundle").$type<import("@synara/contracts").RemotePairingBundle | null>(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    claimedJkt: text("claimed_jkt"),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("remote_pairing_codes_code_unique").on(table.code),
+    index("remote_pairing_codes_expiry_idx").on(table.expiresAt),
+  ],
+);
+
+/** Shared fixed-window budgets survive API restarts and multiple replicas. */
+export const remotePairingBudgets = pgTable("remote_pairing_budgets", {
+  key: text("key").primaryKey(),
+  attempts: integer("attempts").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+});

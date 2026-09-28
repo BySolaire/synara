@@ -1,5 +1,8 @@
 import { accountStateDirectory } from "../accountAuth";
-import { calculateJwkThumbprint } from "jose";
+import { createAccountClient } from "@synara/shared/account";
+import { mintHostProof, readHostIdentity } from "../hostIdentity";
+import { randomUUID } from "node:crypto";
+import { calculateJwkThumbprint, SignJWT } from "jose";
 import { X509Certificate } from "node:crypto";
 import {
   EnvironmentId,
@@ -9,7 +12,7 @@ import {
 } from "@synara/contracts";
 import { desktopFlavorFromBundleId } from "@synara/shared/betaFeatures";
 import { Effect } from "effect";
-import { accountApiIssuer, readAccountFile } from "../accountAuth";
+import { accountApiIssuer, readAccountFile, withFreshAccessToken } from "../accountAuth";
 import type { HostsAccountSession } from "../accountSession";
 import type { AuthControlPlaneShape } from "../auth/Services/AuthControlPlane";
 import type { ServerConfigShape } from "../config";
@@ -49,6 +52,7 @@ export function makeRemoteAccessManagement(
   options: RemoteAccessManagementOptions,
 ): RemoteAccessManagement {
   const pairing = new Map<string, AbortController>();
+  const previews = new Map<string, { bundle: RemotePairingBundle; binding: string }>();
   const readContext = async () => {
     const account = await readAccountFile(
       accountStateDirectory(options.config.baseDir, options.config.devUrl),
@@ -67,6 +71,64 @@ export function makeRemoteAccessManagement(
   return async (request, signal) => {
     requireRemoteConnections(options.config.stateDir);
     const { account, local, binding } = await readContext();
+    const client = createAccountClient({ baseUrl: account.accountUrl });
+    const hostProof = async () => {
+      const identity = await readHostIdentity(options.config.hostIdentityPath);
+      if (!identity || !account.hostId || account.hostKeyGeneration === undefined)
+        throw new Error("Link this computer first");
+      return mintHostProof({
+        identity,
+        apiIssuer: binding.accountAuthority,
+        environmentId: local.environmentId,
+        hostId: account.hostId,
+        keyGeneration: account.hostKeyGeneration,
+      });
+    };
+    for (const [id, preview] of previews) {
+      if (
+        Date.parse(preview.bundle.expiresAt) <= Date.now() ||
+        preview.binding !== JSON.stringify(binding)
+      )
+        previews.delete(id);
+    }
+    if (request.operation === "redeem-code") {
+      if (previews.size >= 8) throw new Error("Finish or cancel the pending pairing first");
+      const code = request.code
+        .toUpperCase()
+        .replace(/[^A-Z2-9]/g, "")
+        .replace(/^(.{4})(.{4})$/, "$1-$2");
+      const device = await options.account.dialIdentity();
+      const proof = await new SignJWT({ code })
+        .setProtectedHeader({ alg: "ES256", typ: "synara-pairing-code+jwt" })
+        .setIssuer("synara-device")
+        .setSubject(binding.userId)
+        .setAudience(binding.accountAuthority)
+        .setIssuedAt()
+        .setExpirationTime("60s")
+        .setJti(randomUUID())
+        .sign(device.key);
+      const bundle = await withFreshAccessToken(
+        { baseDir: accountStateDirectory(options.config.baseDir, options.config.devUrl), client },
+        (token) => client.redeemRemotePairingCode(token, { code, deviceJkt: device.jkt, proof }),
+      );
+      if (
+        bundle.accountAuthority !== binding.accountAuthority ||
+        bundle.userId !== binding.userId ||
+        bundle.organizationId !== binding.organizationId
+      )
+        throw new Error("Pairing belongs to another account");
+      if (JSON.stringify((await readContext()).binding) !== JSON.stringify(binding))
+        throw new Error("Account changed during pairing");
+      previews.set(bundle.inviteId, { bundle, binding: JSON.stringify(binding) });
+      return {
+        kind: "pairing-preview",
+        inviteId: bundle.inviteId,
+        environmentId: bundle.environmentId,
+        label: bundle.label,
+        rootFingerprint: bundle.rootFingerprint,
+        expiresAt: bundle.expiresAt,
+      };
+    }
     if (request.operation === "revoke-account-sessions") {
       return {
         kind: "account-sessions-revoked",
@@ -88,8 +150,18 @@ export function makeRemoteAccessManagement(
       await Effect.runPromise(options.hosts.forget(binding, request.environmentId));
       return { kind: "done" };
     }
-    if (request.operation === "pair") {
-      const bundle = request.bundle;
+    if (request.operation === "pair" || request.operation === "confirm-code") {
+      const preview =
+        request.operation === "confirm-code" ? previews.get(request.inviteId) : undefined;
+      const bundle = request.operation === "pair" ? request.bundle : preview?.bundle;
+      if (
+        !bundle ||
+        (request.operation === "confirm-code" &&
+          (preview?.binding !== JSON.stringify(binding) ||
+            request.rootFingerprint !== bundle.rootFingerprint))
+      )
+        throw new Error("Review a fresh pairing code and compare the host fingerprint");
+      previews.delete(bundle.inviteId);
       await Effect.runPromise(options.hosts.importInvitation(binding, bundle));
       const { hosts } = await options.account.listHosts();
       const host = hosts.find(
@@ -110,7 +182,6 @@ export function makeRemoteAccessManagement(
           identity,
           label: local.label,
           signal: AbortSignal.any([signal, lifetime.signal]),
-          relayUrl: options.config.relayUrl?.toString(),
           requestGrant: async () => (await options.account.requestGrant({ hostId: host.id })).grant,
         });
         const current = await readContext();
@@ -152,11 +223,13 @@ export function makeRemoteAccessManagement(
           invitations: [],
           devices: [],
           rootExpiresAt: null,
-          rootNeedsRepair: true,
+          rootNeedsRepair: await Effect.runPromise(
+            options.devices.hasIdentity(local.environmentId),
+          ),
         };
       if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
       if (
-        request.operation !== "create-invitation" ||
+        (request.operation !== "create-invitation" && request.operation !== "create-code") ||
         (await Effect.runPromise(options.devices.hasIdentity(local.environmentId)))
       ) {
         throw new Error(
@@ -174,7 +247,15 @@ export function makeRemoteAccessManagement(
       organizationId: binding.organizationId,
     };
     switch (request.operation) {
+      case "create-code":
       case "create-invitation": {
+        if (request.operation === "create-code") {
+          // Renewal also invalidates already-redeemed pending invitations locally.
+          for (const old of await Effect.runPromise(options.control.remotePairing.list(scope))) {
+            if (!old.approved && !old.revoked)
+              await Effect.runPromise(options.control.remotePairing.revoke(scope, old.inviteId));
+          }
+        }
         const invitation = await Effect.runPromise(options.control.remotePairing.create(scope));
         const flavor = desktopFlavorFromBundleId(process.env.SYNARA_DESKTOP_BUNDLE_ID);
         const channel: RemotePairingBundle["channel"] =
@@ -185,24 +266,38 @@ export function makeRemoteAccessManagement(
               : flavor === "production"
                 ? "stable"
                 : "dev";
-        return {
-          kind: "invitation",
-          bundle: {
-            v: 2,
-            ...anchor,
-            ...scope,
-            ...invitation,
-            channel,
-            hostId: account.hostId,
-            label: local.label,
-          },
+        const bundle: RemotePairingBundle = {
+          v: 2,
+          ...anchor,
+          ...scope,
+          ...invitation,
+          channel,
+          hostId: account.hostId,
+          label: local.label,
         };
+        if (request.operation === "create-code") {
+          try {
+            const code = await client.publishRemotePairingCode(
+              await hostProof(),
+              account.hostId,
+              bundle,
+            );
+            return { kind: "pairing-code", ...code, rootFingerprint: bundle.rootFingerprint };
+          } catch (error) {
+            await Effect.runPromise(
+              options.control.remotePairing.revoke(scope, invitation.inviteId),
+            );
+            throw error;
+          }
+        }
+        return { kind: "invitation", bundle };
       }
       case "list":
         return {
           kind: "host-state",
           invitations: await Effect.runPromise(options.control.remotePairing.list(scope)),
           devices: await Effect.runPromise(options.devices.list(scope)),
+          rootFingerprint: anchor.rootFingerprint,
           rootExpiresAt: new Date(
             new X509Certificate(identity.rootCertificate).validTo,
           ).toISOString(),
@@ -220,6 +315,9 @@ export function makeRemoteAccessManagement(
         return { kind: "done" };
       case "cancel-invitation":
         await Effect.runPromise(options.control.remotePairing.revoke(scope, request.inviteId));
+        await client
+          .cancelRemotePairingCode(await hostProof(), account.hostId, request.inviteId)
+          .catch(() => {});
         return { kind: "done" };
       case "revoke-device":
         await Effect.runPromise(

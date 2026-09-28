@@ -26,6 +26,9 @@ export type AvatarStorageConfig = {
 };
 
 export type ApiConfigBase = {
+  cloudflareTunnel?: CloudflareTunnelConfig;
+  /** Explicit test enrollment only; this is not a paid-subscription entitlement. */
+  remoteTestUserIds?: readonly string[];
   databaseUrl: string;
   baseUrl: string;
   /** Exact JWT issuer and public origin for API-facing host auth. */
@@ -70,7 +73,7 @@ export type ApiConfigBase = {
  */
 export type WorkosApiConfig = ApiConfigBase & {
   identityProvider: "workos";
-  relayServiceToken: string;
+  relayServiceToken?: string;
   workosApiKey: string;
   workosClientId: string;
   /** WorkOS API origin, no trailing slash. Overridable so tests can point at a local server. */
@@ -121,6 +124,42 @@ export class ApiConfigError extends Error {}
 
 type Env = Record<string, string | undefined>;
 
+export type CloudflareTunnelConfig = {
+  accountId: string;
+  zoneId: string;
+  apiToken: string;
+  domain: string;
+};
+
+/** Administrative credentials stay in the account service, never the host config. */
+export function loadCloudflareTunnelConfig(env: Env): CloudflareTunnelConfig | undefined {
+  const names = [
+    "CLOUDFLARE_ACCOUNT_ID",
+    "CLOUDFLARE_ZONE_ID",
+    "CLOUDFLARE_API_TOKEN",
+    "CLOUDFLARE_TUNNEL_DOMAIN",
+  ] as const;
+  if (!names.some((name) => env[name] !== undefined)) return undefined;
+  requireVars(env, names);
+  const domain = env.CLOUDFLARE_TUNNEL_DOMAIN!.trim().toLowerCase();
+  if (domain.length > 190 || !/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/.test(domain))
+    throw new ApiConfigError("CLOUDFLARE_TUNNEL_DOMAIN must be a DNS zone name");
+  if (
+    ![env.CLOUDFLARE_ACCOUNT_ID, env.CLOUDFLARE_ZONE_ID].every((value) =>
+      /^[a-f0-9]{32}$/i.test(value!),
+    )
+  )
+    throw new ApiConfigError("Cloudflare account and zone IDs must be 32 hexadecimal characters");
+  if (!env.CLOUDFLARE_API_TOKEN!.trim())
+    throw new ApiConfigError("CLOUDFLARE_API_TOKEN must not be empty");
+  return {
+    accountId: env.CLOUDFLARE_ACCOUNT_ID!,
+    zoneId: env.CLOUDFLARE_ZONE_ID!,
+    apiToken: env.CLOUDFLARE_API_TOKEN!.trim(),
+    domain,
+  };
+}
+
 const REQUIRED_VARS = [
   "DATABASE_URL",
   "WORKOS_API_KEY",
@@ -128,7 +167,6 @@ const REQUIRED_VARS = [
   "ACCOUNT_BASE_URL",
   "API_PUBLIC_URL",
   "API_SIGNING_KEY",
-  "RELAY_SERVICE_TOKEN",
 ] as const;
 
 /** The dev provider stores rows and serves clients, so these it still needs. */
@@ -235,6 +273,10 @@ export function loadApiConfig(env: Env): ApiConfig {
   const trustedProxyHops = resolveTrustedProxyHops(env.TRUSTED_PROXY_HOPS);
   const profileProxySecret = env.PROFILE_PROXY_SECRET?.trim() || undefined;
   const avatarStorage = loadAvatarStorageConfig(env);
+  const cloudflareTunnel = loadCloudflareTunnelConfig(env);
+  const remoteTestUserIds = env.REMOTE_TEST_USER_IDS?.split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
 
   if (identityProvider === "dev") {
     assertDevIdentityAllowed(env);
@@ -247,14 +289,13 @@ export function loadApiConfig(env: Env): ApiConfig {
     }
     return {
       identityProvider,
+      ...(cloudflareTunnel ? { cloudflareTunnel } : {}),
+      ...(remoteTestUserIds ? { remoteTestUserIds } : {}),
       databaseUrl: env.DATABASE_URL as string,
       baseUrl: env.ACCOUNT_BASE_URL as string,
       apiPublicUrl: (env.API_PUBLIC_URL as string).replace(/\/+$/, ""),
       apiSigningKey,
       ...(apiSigningKeyPrevious ? { apiSigningKeyPrevious } : {}),
-      ...(env.RELAY_SERVICE_TOKEN?.trim()
-        ? { relayServiceToken: env.RELAY_SERVICE_TOKEN.trim() }
-        : {}),
       port,
       trustedProxyHops,
       ...(profileProxySecret ? { profileProxySecret } : {}),
@@ -269,19 +310,16 @@ export function loadApiConfig(env: Env): ApiConfig {
     throw new ApiConfigError("API_SIGNING_KEY must be a base64url-encoded 32-byte Ed25519 seed");
   }
   const apiSigningKeyPrevious = signingSeed(env, "API_SIGNING_KEY_PREVIOUS");
-  const relayServiceToken = env.RELAY_SERVICE_TOKEN?.trim();
-  if (!relayServiceToken) {
-    throw new ApiConfigError("RELAY_SERVICE_TOKEN must not be empty");
-  }
   const workosApiUrl = (env.WORKOS_API_URL ?? DEFAULT_WORKOS_API_URL).replace(/\/+$/, "");
   return {
     identityProvider,
+    ...(cloudflareTunnel ? { cloudflareTunnel } : {}),
+    ...(remoteTestUserIds ? { remoteTestUserIds } : {}),
     databaseUrl: env.DATABASE_URL as string,
     baseUrl: env.ACCOUNT_BASE_URL as string,
     apiPublicUrl: (env.API_PUBLIC_URL as string).replace(/\/+$/, ""),
     apiSigningKey,
     ...(apiSigningKeyPrevious ? { apiSigningKeyPrevious } : {}),
-    relayServiceToken,
     port,
     trustedProxyHops,
     ...(profileProxySecret ? { profileProxySecret } : {}),

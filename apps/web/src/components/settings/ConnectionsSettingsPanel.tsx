@@ -641,6 +641,7 @@ export function DeviceRow({
 }
 
 const SESSION_TRANSPORT_LABELS: Record<HostSession["transport"], string> = {
+  cloudflare: "Cloudflare",
   direct: "Direct",
   relay: "Relay",
   "ssh-forward": "SSH forward",

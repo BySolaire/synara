@@ -1043,7 +1043,6 @@ const makeWsRpcHandlersLayer = () =>
             ({ hostId, environmentId, label }) => ({ hostId, environmentId, label }),
           );
         },
-        relayUrl: config.relayUrl?.toString(),
         readTrust: async (host) => {
           const credentials = await readAccountCredentials(
             accountStateDirectory(config.baseDir, config.devUrl),

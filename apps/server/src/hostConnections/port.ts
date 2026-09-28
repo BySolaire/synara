@@ -37,8 +37,6 @@ export interface HostConnectionsPortDeps {
   readonly readTrust: (
     host: AccountHost,
   ) => Promise<(RemoteTlsAnchor & { executionScope: RemoteExecutionScope }) | undefined>;
-  /** Relay root URL, from `SYNARA_RELAY_URL`; absent means direct paths only. */
-  readonly relayUrl: string | undefined;
 }
 
 /** Turns a dial failure into the one sentence the row can show. */
@@ -136,7 +134,6 @@ export function makeHostConnectionsPort(deps: HostConnectionsPortDeps): HostConn
           identity,
           client,
           signal,
-          relayUrl: deps.relayUrl,
           requestGrant: async () => (await deps.accountSession.requestGrant({ hostId })).grant,
         });
       },
@@ -159,7 +156,6 @@ export function makeHostConnectionsPort(deps: HostConnectionsPortDeps): HostConn
         host: fresh,
         anchor: currentAnchor,
         identity: await deps.accountSession.dialIdentity(),
-        relayUrl: deps.relayUrl,
         credential: session.credential,
         credentialExpiresAtSeconds: session.credentialExpiresAtSeconds,
         requestGrant: async () => (await deps.accountSession.requestGrant({ hostId })).grant,

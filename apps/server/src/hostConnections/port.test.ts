@@ -42,7 +42,6 @@ it.each(["disconnect", "account", "stop"])(
     let trustReads = 0;
     const port = makeHostConnectionsPort({
       registry,
-      relayUrl: undefined,
       accountSession: {
         listHosts: () => discovery.promise,
         requestGrant: async () => {
@@ -82,7 +81,6 @@ it("orders durable disconnect after an already-started desired-state write and s
   let discoveries = 0;
   const port = makeHostConnectionsPort({
     registry,
-    relayUrl: undefined,
     accountSession: {
       listHosts: async () => {
         discoveries++;

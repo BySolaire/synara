@@ -11,7 +11,7 @@ import { HeadlessClient } from "../headlessClient";
 import { createApp } from "../../../api/src/app";
 import { runMigrations } from "../../../api/src/db/migrate";
 import { startFakeWorkos, type FakeWorkos } from "../../../api/src/testing/fakeWorkos";
-import { startBunRelay } from "./relay";
+import { createCloudflareFixture } from "./cloudflare";
 import {
   accountCredentialsPath,
   readAccountFile,
@@ -63,20 +63,23 @@ export interface E2eFixture extends AsyncDisposable {
   readonly baseDir: string;
   prepareController(baseDir: string): Promise<void>;
   readonly apiOrigin: string;
-  readonly relayOrigin: string;
+  readonly remoteOrigin: string;
+  readonly connectorExecutable: string;
+  readonly publicCa: string;
+  waitReady(): Promise<void>;
   readonly owner: TestSession;
   linkHost(): Promise<LinkedHost>;
   relinkHost(): Promise<LinkedHost>;
   linkHostWithDeviceCode(): Promise<DeviceCodeLinkedHost>;
   mintHostProof(host: LinkedHost): Promise<string>;
-  requestRelayTicket(proof: string, hostId: string): Promise<void>;
+  requestTunnel(proof: string, hostId: string): Promise<void>;
   startHost(): Promise<RunningHost>;
   createMember(): Promise<TestSession>;
   createClient(session?: TestSession, pairWithHost?: boolean): Promise<HeadlessClient>;
   createHostSecretsCoordinator(deviceId: string): HostSecretsCoordinatorFixture;
   setDiscoverable(hostId: string, discoverable: boolean): Promise<void>;
-  stopRelay(): Promise<void>;
-  restartRelay(): Promise<void>;
+  stopConnector(): Promise<void>;
+  restartConnector(): Promise<void>;
   stopApi(): Promise<void>;
 }
 
@@ -143,7 +146,7 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
     await fs.rm(baseDir, { recursive: true, force: true });
     throw error;
   });
-  let relayHttp: Awaited<ReturnType<typeof startBunRelay>> | undefined;
+  let edge: Awaited<ReturnType<typeof createCloudflareFixture>> | undefined;
   let workos: FakeWorkos | undefined;
   let api: Awaited<ReturnType<typeof createApp>> | undefined;
   let owner: TestSession | undefined;
@@ -151,15 +154,6 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
   const userIds = new Set<string>();
   const hosts = new Set<RunningHost>();
   const clients = new Set<HeadlessClient>();
-  const relayServiceToken = `e2e-relay-${randomUUID()}`;
-  const relayConfig = {
-    port: 0,
-    apiBaseUrl: apiHttp.origin,
-    apiIssuer: `${apiHttp.origin}/api/v1`,
-    relayServiceToken,
-    maxPairs: 64,
-    highWaterBytes: 32 * 1024,
-  };
 
   async function dispose(): Promise<void> {
     if (disposed) return;
@@ -174,7 +168,7 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
       }
     }
     hosts.clear();
-    await relayHttp?.close().catch(() => undefined);
+    await edge?.close().catch(() => undefined);
     if (api && owner) {
       const hostIds = await api.pool
         .query<{ id: string }>("SELECT id FROM hosts WHERE owner_user_id = $1", [owner.userId])
@@ -200,11 +194,15 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
       await api.pool
         .query("DELETE FROM devices WHERE user_id = ANY($1::text[])", [[...userIds]])
         .catch(() => undefined);
+      for (const table of ["remote_pairing_codes", "remote_tunnels"]) {
+        await api.pool.query(`DELETE FROM ${table} WHERE owner_user_id = $1`, [owner.userId]);
+      }
       await api.pool
         .query("DELETE FROM hosts WHERE owner_user_id = $1", [owner.userId])
         .catch(() => undefined);
     }
     await apiHttp.close().catch(() => undefined);
+    await api?.identity.close().catch(() => undefined);
     await api?.pool.end().catch(() => undefined);
     await workos?.close().catch(() => undefined);
     await fs.rm(baseDir, { recursive: true, force: true });
@@ -212,22 +210,28 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
 
   try {
     workos = await startFakeWorkos();
+    owner = await ownerSession(workos);
+    userIds.add(owner.userId);
+    edge = await createCloudflareFixture(baseDir);
     api = await createApp(
       workos.config({
         databaseUrl,
         baseUrl: apiHttp.origin,
         apiPublicUrl: `${apiHttp.origin}/api/v1`,
-        relayServiceToken,
+        remoteTestUserIds: [owner.userId],
+        cloudflareTunnel: {
+          accountId: "0".repeat(32),
+          zoneId: "0".repeat(32),
+          apiToken: "fixture-only",
+          domain: "fixture.invalid",
+        },
         port: 0,
         trustedProxyHops: 0,
       }),
+      { createTunnels: edge.coordinator },
     );
     apiHttp.setRequestListener(getRequestListener(api.app.fetch));
 
-    relayHttp = await startBunRelay(relayConfig);
-
-    owner = await ownerSession(workos);
-    userIds.add(owner.userId);
     await writeAccountCredentials(baseDir, {
       accountUrl: apiHttp.origin,
       workosClientId: workos.clientId,
@@ -242,14 +246,14 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
     throw error;
   }
 
-  if (!api || !owner || !workos || !relayHttp) {
+  if (!api || !owner || !workos || !edge) {
     await dispose();
     throw new Error("E2E fixture startup did not initialize every service");
   }
   const activeApi = api;
   const activeOwner = owner;
   const activeWorkos = workos;
-  const activeRelayHttp = relayHttp;
+  const activeEdge = edge;
   const account = createAccountClient({ baseUrl: apiHttp.origin });
   const hostSecretsApi = {
     listHosts: () => account.listHosts(activeOwner.accessToken),
@@ -300,7 +304,10 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
       await writeAccountCredentials(controllerDir, session);
     },
     apiOrigin: apiHttp.origin,
-    relayOrigin: activeRelayHttp.origin,
+    remoteOrigin: activeEdge.origin,
+    connectorExecutable: activeEdge.executable,
+    publicCa: activeEdge.cert,
+    waitReady: activeEdge.waitReady,
     owner: activeOwner,
     linkHost: runLink,
     async relinkHost() {
@@ -325,8 +332,8 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
         keyGeneration: host.row.keyGeneration,
       });
     },
-    async requestRelayTicket(proof, hostId) {
-      await account.requestRelayTicket(proof, hostId);
+    async requestTunnel(proof, hostId) {
+      await account.provisionRemoteTunnel(proof, hostId, 12345);
     },
     async linkHostWithDeviceCode() {
       // The headless flow must prove it needs no pre-existing app session.
@@ -358,7 +365,11 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
       return { ...linked, stored };
     },
     async startHost() {
-      const host = await startRealHost({ baseDir, relayOrigin: activeRelayHttp.origin });
+      const host = await startRealHost({
+        baseDir,
+        connectorExecutable: activeEdge.executable,
+        waitReady: activeEdge.waitReady,
+      });
       hosts.add(host);
       return host;
     },
@@ -412,16 +423,8 @@ export async function createE2eFixture(databaseUrl: string): Promise<E2eFixture>
     async setDiscoverable(hostId, discoverable) {
       await account.updateHost(activeOwner.accessToken, hostId, { discoverable });
     },
-    async stopRelay() {
-      await relayHttp?.close();
-    },
-    async restartRelay() {
-      await relayHttp?.close();
-      relayHttp = await startBunRelay({
-        ...relayConfig,
-        port: Number(new URL(activeRelayHttp.origin).port),
-      });
-    },
+    stopConnector: activeEdge.stopConnector,
+    restartConnector: () => activeEdge.restartConnector(),
     async stopApi() {
       await apiHttp.close();
     },
