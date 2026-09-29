@@ -1,3 +1,4 @@
+import { OPEN_CREATE_PROJECT_EVENT } from "../lib/hosts/workspaceFrame";
 import { WorkspaceProjects } from "./hosts/WorkspaceProjects";
 import { CATALOG_OPEN_EVENT, takePendingCatalogCheckout } from "~/lib/projectCatalog/navigation";
 import { readExecutionContext } from "~/lib/hosts/executionContext";
@@ -1529,6 +1530,11 @@ export default function Sidebar() {
   const { activeProjectId: focusedProjectId } = useFocusedChatContext();
   const latestProjectId = useLatestProjectStore((state) => state.latestProjectId);
   const [createProjectDialogOpen, setCreateProjectDialogOpen] = useState(false);
+  useEffect(() => {
+    const open = () => setCreateProjectDialogOpen(true);
+    window.addEventListener(OPEN_CREATE_PROJECT_EVENT, open);
+    return () => window.removeEventListener(OPEN_CREATE_PROJECT_EVENT, open);
+  }, []);
   const [createProjectSpaceId, setCreateProjectSpaceId] = useState<SpaceId | null | undefined>();
   const [searchPaletteOpen, setSearchPaletteOpen] = useState(false);
   const openFeedbackDialog = useFeedbackDialogStore((state) => state.openDialog);
@@ -2498,7 +2504,7 @@ export default function Sidebar() {
   const addProjectFromPath = useCallback(
     async (
       rawCwd: string,
-      options: { createIfMissing?: boolean; spaceId?: SpaceId | null } = {},
+      options: { createIfMissing?: boolean; spaceId?: SpaceId | null; name?: string } = {},
     ) => {
       const cwd = rawCwd.trim();
       if (!cwd) {
@@ -2535,6 +2541,7 @@ export default function Sidebar() {
         const creationResult = await createOrRecoverProjectFromPath({
           api,
           workspaceRoot: cwd,
+          ...(options.name ? { name: options.name } : {}),
           ...(options.createIfMissing === undefined
             ? {}
             : { createIfMissing: options.createIfMissing }),
@@ -3503,6 +3510,7 @@ export default function Sidebar() {
         } else {
           handleSelectSpaceForIncomingProject(destinationSpaceId);
           await addProjectFromPath(value.workspaceRoot, {
+            name: value.name,
             createIfMissing: value.createIfMissing,
             spaceId: value.spaceId,
           });

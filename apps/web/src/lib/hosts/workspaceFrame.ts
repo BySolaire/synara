@@ -1,3 +1,9 @@
+import type {
+  ExecutionEnvironmentDescriptor,
+  FilesystemBrowseInput,
+  FilesystemBrowseResult,
+} from "@synara/contracts";
+import type { WorkspaceSession } from "./workspaceSessions";
 import type { ActiveHost } from "./activeHost";
 import type { ThreadStatusPill } from "../../components/Sidebar.logic";
 import type { Project, ThreadShell } from "../../types";
@@ -15,13 +21,27 @@ export interface WorkspaceSummary {
 
 export interface WorkspaceNavigation {
   navigate(path: string): void;
-  newChat(projectId: string): Promise<string>;
+  newChat(projectId?: string): Promise<string>;
+  browseFolders(input: FilesystemBrowseInput): Promise<FilesystemBrowseResult>;
+  createProject(input: {
+    name: string;
+    workspaceRoot: string;
+    createIfMissing: boolean;
+  }): Promise<string>;
   openProject(projectId: string): Promise<string>;
   recover(): void;
 }
 
 export interface WorkspaceFrameBinding {
   readonly host: ActiveHost;
+  readonly controller: {
+    readonly environment: ExecutionEnvironmentDescriptor;
+    sessions(): readonly WorkspaceSession[];
+    subscribe(listener: () => void): () => void;
+    newChat(): Promise<string>;
+    createProject(): void;
+    navigate(path: string): void;
+  };
   /** Captured in memory, never placed in the frame URL, DOM attributes, or persistence. */
   readonly controllerWsUrl: string;
   publish(summary: WorkspaceSummary): void;
@@ -51,4 +71,11 @@ export function isWorkspacePath(path: string): boolean {
 export function workspaceRoute(environmentId: string, path = "/"): string {
   if (!isWorkspacePath(path)) throw new Error("Invalid workspace route");
   return `/remote?${new URLSearchParams({ environment: environmentId, path })}`;
+}
+
+export const OPEN_CREATE_PROJECT_EVENT = "synara:open-create-project";
+export function requestCreateProjectDialog(): void {
+  const frame = readWorkspaceFrame();
+  if (frame) frame.controller.createProject();
+  else window.dispatchEvent(new Event(OPEN_CREATE_PROJECT_EVENT));
 }

@@ -91,3 +91,23 @@ between chats preserves distinct drafts. Same-path projects on both Macs returne
 README contents. New-chat and catalog navigation wait for the exact destination from the owning
 runtime before revealing it; activating an old route must not supersede draft creation. This
 live check used the isolated controller's DNS override and did not send a real provider prompt.
+
+## Choosing a computer when starting work
+
+Unsent chats expose a **Run on** computer picker beside the project picker. Selecting another
+computer opens that computer's own draft and project choices. The original draft remains on its
+owner; text, attachments and an existing provider session are not migrated. Started chats retain
+their execution host. Offline computers stay identifiable and unavailable; **Connect a computer**
+opens the existing connection setup. Entry points remain gated by the controller's remote capability.
+
+**Create project** now separates its display name from its source folder. Choose a computer before
+**Add folder**, browse that computer's filesystem, then confirm the project. A manual path remains
+available. Changing computers clears the folder selection; local drops and Spaces do not carry over
+to a remote host. The browser uses the same folder UI without requiring a native desktop dialog.
+A project still owns one physical folder on one computer. The existing GitHub clone flow remains
+available for the local computer; a remote computer can add an existing folder through this dialog.
+
+Folder and project actions retain their selected runtime across awaits. A removed/replaced connection
+cannot redirect their completion to another host. The folder picker preserves edits made while a
+listing is loading, and cannot confirm an unvisited typed path. Deferred composer autofocus yields
+to an open menu or dialog, including when a remote pane first receives focus.

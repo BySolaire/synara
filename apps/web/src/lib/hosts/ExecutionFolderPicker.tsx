@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "@synara/contracts";
 import {
@@ -30,16 +30,19 @@ export function ExecutionFolderPicker({
     notifyNativeSurfaceOcclusionChange();
   }, []);
   const [path, setPath] = useState("~/");
+  const pathRevision = useRef(0);
   const [requested, setRequested] = useState({ path: "~/" });
   const [listing, setListing] = useState<FilesystemBrowseResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
+    const revision = pathRevision.current;
     void browse({ partialPath: requested.path }).then(
       (result) => {
         if (cancelled) return;
         setListing(result);
-        setPath(result.parentPath);
+        // A slow listing must not overwrite a path the user has started typing.
+        if (pathRevision.current === revision) setPath(result.parentPath);
       },
       (cause: unknown) => {
         if (!cancelled)
@@ -55,6 +58,7 @@ export function ExecutionFolderPicker({
     };
   }, [browse, requested]);
   const openFolder = (value: string) => {
+    pathRevision.current += 1;
     setListing(null);
     setError(null);
     setRequested({ path: `${value.replace(/[\\/]+$/, "")}/` });
@@ -86,7 +90,10 @@ export function ExecutionFolderPicker({
               <Input
                 id={pathId}
                 value={path}
-                onChange={(event) => setPath(event.target.value)}
+                onChange={(event) => {
+                  pathRevision.current += 1;
+                  setPath(event.target.value);
+                }}
                 autoComplete="off"
                 spellCheck={false}
               />
@@ -144,7 +151,7 @@ export function ExecutionFolderPicker({
             Cancel
           </Button>
           <Button
-            disabled={!listing || Boolean(error)}
+            disabled={!listing || Boolean(error) || path.trim() !== listing.parentPath}
             onClick={() => listing && onClose(listing.parentPath)}
           >
             Use folder

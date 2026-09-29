@@ -7,21 +7,52 @@ import { render } from "vitest-browser-react";
 
 const nativeApi = vi.hoisted(() => ({
   onProvisionProgress: vi.fn(() => () => undefined),
+  browse: vi.fn(async () => ({ parentPath: "/workspace", entries: [] })),
 }));
 
-vi.mock("../nativeApi", () => ({
-  readNativeApi: () => ({
-    projects: {
-      onProvisionProgress: nativeApi.onProvisionProgress,
-    },
-  }),
-}));
+vi.mock("../nativeApi", () => {
+  const api = {
+    filesystem: { browse: nativeApi.browse },
+    projects: { onProvisionProgress: nativeApi.onProvisionProgress },
+  };
+  return { readNativeApi: () => api, ensureNativeApi: () => api };
+});
 
 import { CreateProjectDialog } from "./CreateProjectDialog";
 
 describe("CreateProjectDialog GitHub source", () => {
   afterEach(() => {
     nativeApi.onProvisionProgress.mockClear();
+  });
+
+  it("browses folders in a browser and preserves an explicit project name", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    await render(
+      <CreateProjectDialog
+        open
+        githubProvisioningAvailable
+        spaces={[]}
+        activeSpaceId={null}
+        defaultCloneParent="/workspace"
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+    await page.getByLabelText("Project name", { exact: true }).fill("My workspace");
+    await page.getByRole("button", { name: "Add folder", exact: true }).click();
+    await expect
+      .element(page.getByRole("heading", { name: "Choose a folder on This computer" }))
+      .toBeVisible();
+    await page.getByRole("button", { name: "Use folder" }).click();
+    await page.getByRole("button", { name: "Create project", exact: true }).click();
+    await vi.waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[0]).toEqual({
+      source: "local",
+      name: "My workspace",
+      workspaceRoot: "/workspace",
+      createIfMissing: false,
+      spaceId: null,
+    });
   });
 
   it("disables GitHub when the server does not advertise provisioning", async () => {

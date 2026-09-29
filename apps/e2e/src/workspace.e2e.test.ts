@@ -172,6 +172,12 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         .getByRole("button", { name: "Create new thread in LOCAL checkout", exact: true })
         .click();
       await page.locator('[contenteditable="true"]').first().fill("NEW LOCAL DRAFT");
+      await page.getByRole("button", { name: "Run on: This computer", exact: true }).click();
+      await page.getByRole("menuitem", { name: /E2E host/ }).click();
+      await remotePage.getByRole("button", { name: /^Run on: E2E host/ }).waitFor();
+      await remotePage.getByRole("button", { name: /^Run on: E2E host/ }).click();
+      await remotePage.getByRole("menuitem", { name: /This computer/ }).click();
+      await page.getByRole("button", { name: "Run on: This computer", exact: true }).waitFor();
       await page.getByText("REMOTE checkout", { exact: true }).first().hover();
       await page.getByRole("button", { name: /^New chat in REMOTE checkout on / }).click();
       const newRemoteComposer = remotePage.locator('[contenteditable="true"]').first();
@@ -205,6 +211,58 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       });
       expect(await fs.readFile(path.join(roots[0]!, "same.txt"), "utf8")).toBe("REMOTE changed");
       expect(await fs.readFile(path.join(roots[1]!, "same.txt"), "utf8")).toBe("LOCAL original");
+      const addedRoot = path.join(host.baseDir, "added-from-picker");
+      await fs.mkdir(addedRoot);
+      await fs.writeFile(path.join(addedRoot, "README.md"), "PICKED ON REMOTE");
+      await page.getByText("Projects", { exact: true }).first().hover();
+      await page.getByRole("button", { name: "Add project", exact: true }).click();
+      await page
+        .getByRole("textbox", { name: "Project name", exact: true })
+        .fill("Named remote project");
+      await page.getByRole("button", { name: /^Project computer:/ }).click();
+      await page.getByRole("menuitem", { name: /This computer/ }).click();
+      await page
+        .getByRole("textbox", { name: "Project folder path" })
+        .fill("/must-not-follow-the-computer");
+      await page.getByRole("button", { name: "Project computer: This computer" }).click();
+      await page.getByRole("menuitem", { name: /E2E host/ }).click();
+      expect(await page.getByRole("textbox", { name: "Project folder path" }).inputValue()).toBe(
+        "",
+      );
+      if (process.env.SYNARA_E2E_EVIDENCE)
+        await page.getByRole("dialog", { name: "Create project", exact: true }).screenshot({
+          path: path.join(process.env.SYNARA_E2E_EVIDENCE, "create-project-computer.png"),
+        });
+      await page.getByRole("button", { name: "Add folder", exact: true }).click();
+      await page.getByRole("textbox", { name: "Folder path", exact: true }).fill(addedRoot);
+      await page.getByRole("button", { name: "Go", exact: true }).click();
+      await expect
+        .poll(async () =>
+          page.getByRole("textbox", { name: "Folder path", exact: true }).inputValue(),
+        )
+        .toBe(addedRoot);
+      await page.getByRole("button", { name: "Use folder", exact: true }).click();
+      await page.getByRole("button", { name: "Create project", exact: true }).click();
+      await remotePage
+        .getByTestId("empty-landing-heading")
+        .filter({ hasText: "Named remote project" })
+        .waitFor();
+      const added = await remoteRpc.request<{
+        projects: { title: string; workspaceRoot: string }[];
+      }>("orchestration.getShellSnapshot");
+      expect(added.projects).toContainEqual(
+        expect.objectContaining({
+          title: "Named remote project",
+          workspaceRoot: await fs.realpath(addedRoot),
+        }),
+      );
+      const localProjects = await localRpc.request<{ projects: { workspaceRoot: string }[] }>(
+        "orchestration.getShellSnapshot",
+      );
+      const canonicalAddedRoot = await fs.realpath(addedRoot);
+      expect(
+        localProjects.projects.some((project) => project.workspaceRoot === canonicalAddedRoot),
+      ).toBe(false);
       await page.reload();
       await page
         .getByRole("button", { name: /E2E host .*Connected/ })

@@ -47,3 +47,24 @@ it.each(["light", "dark"])(
     expect(await cancelled).toBeNull();
   },
 );
+
+it("preserves a typed destination while the initial folder listing is still loading", async () => {
+  let resolveInitial!: (value: { parentPath: string; entries: [] }) => void;
+  const initial = new Promise<{ parentPath: string; entries: [] }>((resolve) => {
+    resolveInitial = resolve;
+  });
+  const browse = vi.fn(async ({ partialPath }: { partialPath: string }) =>
+    partialPath === "~/" ? initial : { parentPath: "/chosen", entries: [] },
+  );
+  const selected = showExecutionFolderPicker({ label: "Mac mini", browse });
+  await page.getByRole("textbox", { name: "Folder path", exact: true }).fill("/chosen");
+  resolveInitial({ parentPath: "/home", entries: [] });
+  await expect.element(page.getByText("/home", { exact: true })).toBeVisible();
+  await expect
+    .element(page.getByRole("textbox", { name: "Folder path", exact: true }))
+    .toHaveValue("/chosen");
+  await expect.element(page.getByRole("button", { name: "Use folder" })).toBeDisabled();
+  await page.getByRole("button", { name: "Go", exact: true }).click();
+  await page.getByRole("button", { name: "Use folder" }).click();
+  expect(await selected).toBe("/chosen");
+});

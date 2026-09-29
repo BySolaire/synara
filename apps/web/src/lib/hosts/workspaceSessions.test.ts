@@ -44,8 +44,22 @@ describe("workspace ownership", () => {
     const api = await registry();
     api.addWorkspaceSession(host("one"));
     api.addWorkspaceSession(host("two"));
-    const first = { newChat: vi.fn(), openProject: vi.fn(), navigate: vi.fn(), recover: vi.fn() };
-    const second = { newChat: vi.fn(), openProject: vi.fn(), navigate: vi.fn(), recover: vi.fn() };
+    const first = {
+      browseFolders: vi.fn(),
+      createProject: vi.fn(),
+      newChat: vi.fn(),
+      openProject: vi.fn(),
+      navigate: vi.fn(),
+      recover: vi.fn(),
+    };
+    const second = {
+      browseFolders: vi.fn(),
+      createProject: vi.fn(),
+      newChat: vi.fn(),
+      openProject: vi.fn(),
+      navigate: vi.fn(),
+      recover: vi.fn(),
+    };
     api.updateWorkspaceSession("one", { navigation: first });
     api.updateWorkspaceSession("two", { navigation: second });
     const captured = await api.waitForWorkspaceNavigation("one");
@@ -83,6 +97,8 @@ describe("workspace ownership", () => {
     api.addWorkspaceSession(host("two"));
     api.updateWorkspaceSession("one", {
       navigation: {
+        browseFolders: vi.fn(),
+        createProject: vi.fn(),
         newChat: vi.fn(),
         openProject: vi.fn(),
         navigate: vi.fn(),

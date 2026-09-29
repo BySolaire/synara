@@ -347,3 +347,20 @@ controller recovery. The full repository run preceding this focused follow-up pa
 tasks. The disposable test PostgreSQL instance is stopped. The live MacBook controller continues
 to use its process-scoped DNS override; ordinary DNS and signed Electron distribution are not
 qualified by these browser checks.
+
+### Computer and project pickers — 2026-09-29
+
+The first combined sidebar lacked an explicit destination picker for a new chat, a project-name
+field, and source-folder browsing in a browser. The follow-up adds a shared computer picker in
+unsent chat controls and Create project, reusing existing menus, dialog fields, folder browser,
+project-create recovery and ownership boundaries. Local/remote drafts remain separate. The source
+folder resets when the selected computer changes; unavailable connections cannot silently fall back.
+A remote create uses its host's settings and an explicit unassigned Space rather than local IDs.
+
+The built browser workflow passes (23.37 seconds): choose a computer in both directions, preserve
+project drafts, browse/select a remote folder, create a custom-named project, verify it exists only
+on the remote server, then run the existing streaming, approval and recovery fixtures. It exposed
+and covered two additional UX defects: deferred composer focus closing a newly opened computer
+menu, and a slow initial folder listing overwriting a manually entered path. Eight focused browser
+tests pass, including the delayed-listing regression. Final repository and physical MacBook results
+are recorded after this entry. These changes add no provider prompts, secrets or infrastructure.

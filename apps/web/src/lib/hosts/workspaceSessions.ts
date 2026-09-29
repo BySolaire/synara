@@ -146,14 +146,16 @@ export function reconcileWorkspaceAccount(status: AccountStatus): void {
 export function readWorkspaceSessions(): readonly WorkspaceSession[] {
   return sessions;
 }
+export function subscribeWorkspaceSessions(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 export function useWorkspaceSessions(): readonly WorkspaceSession[] {
   return useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
+    subscribeWorkspaceSessions,
     readWorkspaceSessions,
     readWorkspaceSessions,
   );

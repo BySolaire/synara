@@ -1,14 +1,20 @@
-import { resolveThreadStatusPill } from "../Sidebar.logic";
+import { resolveThreadStatusPill, runExclusiveProjectAddition } from "../Sidebar.logic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation } from "@tanstack/react-router";
 import { ProjectId, ThreadId } from "@synara/contracts";
 import { appHistory } from "../../appNavigation";
+import { useHandleNewChat } from "../../hooks/useHandleNewChat";
+import { useAppSettings } from "../../appSettings";
+import { ensureNativeApi } from "../../nativeApi";
+import { createOrRecoverProjectFromPath } from "../../lib/projectCreation";
+import { readExecutionContext } from "../../lib/hosts/executionContext";
 import { useHandleNewThread } from "../../hooks/useHandleNewThread";
 import { useStore } from "../../store";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { rawSocketUrl } from "../../wsTransport";
 import { addWsTransportStateListener, type WsTransportState } from "../../wsTransportEvents";
 import {
+  OPEN_CREATE_PROJECT_EVENT,
   isWorkspacePath,
   readWorkspaceFrame,
   workspaceRoute,
@@ -16,6 +22,7 @@ import {
 } from "../../lib/hosts/workspaceFrame";
 import {
   readWorkspaceSessions,
+  subscribeWorkspaceSessions,
   removeWorkspaceSession,
   updateWorkspaceSession,
   useWorkspaceSessions,
@@ -44,10 +51,12 @@ function WorkspacePanel({
   session,
   active,
   path,
+  newLocalChat,
 }: {
   session: WorkspaceSession;
   active: boolean;
   path: string;
+  newLocalChat: () => Promise<string>;
 }) {
   const environmentId = session.host.executionScope.environmentId;
   const host = session.host;
@@ -61,6 +70,16 @@ function WorkspacePanel({
       // Same-origin application code only. No repository HTML is ever loaded in this frame.
       frame.synaraWorkspace = {
         host,
+        controller: {
+          environment: readExecutionContext()!.controller,
+          sessions: readWorkspaceSessions,
+          subscribe: subscribeWorkspaceSessions,
+          newChat: newLocalChat,
+          createProject: () => window.dispatchEvent(new Event(OPEN_CREATE_PROJECT_EVENT)),
+          navigate: (path) => {
+            if (isWorkspacePath(path)) appHistory.push(path);
+          },
+        },
         controllerWsUrl: rawSocketUrl(null),
         publish: (summary) => {
           if (frameRef.current !== frame) return;
@@ -101,7 +120,7 @@ function WorkspacePanel({
       if (url.protocol === "http:" || url.protocol === "https:") url.pathname = "/";
       frame.src = url.toString();
     },
-    [environmentId, host],
+    [environmentId, host, newLocalChat],
   );
 
   const navigate = session.navigation?.navigate;
@@ -145,6 +164,15 @@ function WorkspacePanel({
 /** Each connected execution owns a permanent realm: async callbacks cannot change destinations. */
 export function WorkspacePanels() {
   const sessions = useWorkspaceSessions();
+  const { handleNewChat } = useHandleNewChat();
+  const localChatRef = useRef(handleNewChat);
+  localChatRef.current = handleNewChat;
+  const newLocalChat = useCallback(async () => {
+    const result = await localChatRef.current();
+    if (!result.ok) throw new Error(result.error);
+    if (!result.threadId) throw new Error("The local computer is not ready.");
+    return `/${result.threadId}`;
+  }, []);
   const href = useLocation({ select: (location) => location.href });
   if (readWorkspaceFrame()) return null;
   const selected = selection(href);
@@ -154,6 +182,7 @@ export function WorkspacePanels() {
       <WorkspacePanel
         key={JSON.stringify([session.host.hostId, session.host.executionScope])}
         session={session}
+        newLocalChat={newLocalChat}
         active={selected?.environmentId === environmentId}
         path={selected?.environmentId === environmentId ? selected.path : "/"}
       />
@@ -170,8 +199,15 @@ export function WorkspaceFrameNavigation() {
   const drafts = useComposerDraftStore((state) => state.draftThreadsByThreadId);
   const path = useLocation({ select: (location) => location.href });
   const { handleNewThread: newChat } = useHandleNewThread();
+  const { handleNewChat } = useHandleNewChat();
+  const { settings } = useAppSettings();
+  const homeChatRef = useRef(handleNewChat);
+  homeChatRef.current = handleNewChat;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const newChatRef = useRef(newChat);
   newChatRef.current = newChat;
+  const projectAdditionLockRef = useRef(false);
   const [state, setState] = useState<WsTransportState>("connecting");
   useEffect(() => addWsTransportStateListener(setState, { replayCurrent: true }), []);
   useEffect(() => {
@@ -180,7 +216,36 @@ export function WorkspaceFrameNavigation() {
       navigate: (next) => {
         if (isWorkspacePath(next) && next !== appHistory.location.href) appHistory.replace(next);
       },
+      browseFolders: (input) => ensureNativeApi().filesystem.browse(input),
+      createProject: (input) =>
+        runExclusiveProjectAddition(projectAdditionLockRef, async () => {
+          const api = ensureNativeApi();
+          const result = await createOrRecoverProjectFromPath({
+            api,
+            ...input,
+            spaceId: null,
+            defaultProvider: settingsRef.current.defaultProvider,
+            loadSnapshot: () => api.orchestration.getShellSnapshot(),
+          });
+          if (result.snapshot) useStore.getState().syncServerShellSnapshot(result.snapshot);
+          if (!result.project)
+            throw new Error(
+              "The project was added, but is still syncing. Reopen it from the sidebar.",
+            );
+          const id = await newChatRef.current(result.projectId);
+          if (!id)
+            throw new Error(
+              "The project was added, but its chat could not be opened. Reopen it from the sidebar.",
+            );
+          return `/${id}`;
+        }),
       newChat: async (projectId) => {
+        if (!projectId) {
+          const result = await homeChatRef.current();
+          if (!result.ok) throw new Error(result.error);
+          if (!result.threadId) throw new Error("This computer is not ready to create a chat.");
+          return `/${result.threadId}`;
+        }
         const id = await newChatRef.current(ProjectId.makeUnsafe(projectId));
         if (!id) throw new Error("The project is not ready to create a chat.");
         return `/${id}`;

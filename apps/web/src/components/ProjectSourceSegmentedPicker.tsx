@@ -32,6 +32,7 @@ export function ProjectSourceSegmentedPicker(props: {
   readonly value: ProjectSource;
   readonly disabled: boolean;
   readonly githubAvailable: boolean;
+  readonly githubUnavailableReason?: string;
   readonly onValueChange: (value: ProjectSource) => void;
   readonly className?: string;
 }) {
@@ -68,7 +69,10 @@ export function ProjectSourceSegmentedPicker(props: {
               aria-checked={active}
               disabled={props.disabled || sourceUnavailable}
               title={
-                sourceUnavailable ? "Update the Synara server to add GitHub projects." : undefined
+                sourceUnavailable
+                  ? (props.githubUnavailableReason ??
+                    "Update the Synara server to add GitHub projects.")
+                  : undefined
               }
               className={cn(
                 "relative z-10 flex flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-1 text-ui-sm font-medium transition-colors duration-200 disabled:opacity-50",
