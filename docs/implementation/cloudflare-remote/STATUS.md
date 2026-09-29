@@ -432,3 +432,11 @@ adds them to the existing compiler regression guard. The sidebar-control bridge 
 layout commit instead of writing its ref during render. Formatting/lint/typecheck and the compiler
 guards pass; the rebuilt two-server workflow passes again in 23.01 seconds. No runtime API or data
 schema changed in this follow-up.
+
+Physical MacBook status: the isolated controller was rebuilt at `eae747b`; its served HTML matches
+the freshly built web/server artifacts and its health/projection checks pass. The existing account
+session had a durable uncertain-refresh marker predating this rebuild, so it correctly reports
+signed out. Credentials and device pairing were not reset or bypassed. The Mini remains signed in.
+The normal sign-in dialog is ready on the MacBook. Mixed-host navigation on this exact live build
+still requires the operator to complete sign-in; the passing two-server fixture is not a substitute
+for that remaining physical-device check. The installed app and primary checkouts were untouched.
