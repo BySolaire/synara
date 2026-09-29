@@ -56,3 +56,5 @@ export * from "./claudeCache";
 export * from "./remotePairing";
 
 export * from "./remoteResources";
+
+export * from "./remoteAgentGateway";

@@ -1,3 +1,4 @@
+import { remoteUnaryRpc } from "./unaryRpc";
 import { classifyConnectionFailure } from "./failure";
 import type { RemoteResourcePool } from "./resourcePool";
 import { randomUUID } from "node:crypto";
@@ -77,6 +78,10 @@ export class HostConnectionRegistry {
       state: desired?.state ?? "stopped",
       ...(desired?.retryAt ? { nextRetryAt: new Date(desired.retryAt).toISOString() } : {}),
     };
+  }
+  /** Identity/lifetime fence also detects disconnect followed by re-pairing to the same environment. */
+  connectionSignal(hostId: string): AbortSignal | undefined {
+    return this.#desired.get(hostId)?.lifetime.signal;
   }
   hasConnector(hostId: string): boolean {
     return this.#desired.has(hostId);
@@ -218,6 +223,26 @@ export class HostConnectionRegistry {
       const remaining = (this.#opening.get(hostId) ?? 1) - 1;
       if (remaining > 0) this.#opening.set(hostId, remaining);
       else this.#opening.delete(hostId);
+    }
+  }
+
+  /** A tool owns its own authenticated stream, never a renderer's mutable selection. */
+  async call(
+    hostId: string,
+    client: WsBootstrapNegotiateInput,
+    tag: string,
+    payload: unknown,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    const ready = await this.prepare(hostId, client, signal);
+    const id = ready.remoteAttachmentId;
+    const entry = id ? this.#attachments.get(id) : undefined;
+    if (!entry) throw new Error("Remote tool connection is unavailable");
+    clearTimeout(entry.timer);
+    try {
+      return await remoteUnaryRpc(entry.session.socket, tag, payload, signal);
+    } finally {
+      this.closeAttachment(entry.id, 1000, "Tool call finished");
     }
   }
 

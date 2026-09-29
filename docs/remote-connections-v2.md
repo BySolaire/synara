@@ -132,3 +132,40 @@ keys only; opening a remote row uses its original environment and thread ID. Loc
 selection, dragging, and bulk mark-as-read are not applied to remote Activity rows. The outer remote sidebar rows currently expose navigation and project chat creation; rename,
 archive, and pin mutations are not exposed there yet. Same-named folders
 are not automatically grouped as one logical project.
+
+## Agent tools across computers
+
+The internal Synara MCP gateway follows the executing chat's computer. The sidebar's
+combined navigation does not implicitly broaden a tool's target. An agent first calls
+`synara_list_connections`, then passes the returned `environmentId` to the existing
+project/thread tools. Omitting it retains local behavior. List projects and threads once
+per computer; retain `{environmentId, projectId}` and `{environmentId, threadId}` even
+when the raw IDs happen to match. Connections belong to the executing server, so a
+remote chat does not automatically inherit the viewing computer's outgoing connections.
+
+Supported operations are project/thread listing, provider discovery for an explicit
+project, transcript/diagnostic reads, create, send, interrupt, rename, archive, goals,
+PR association, and wait. A create/wait batch targets one computer. Remote creation
+requires a destination project and checks providers/models on that computer. Durable
+creation keys and the one-plan-per-turn limit are scoped by peer, originating
+computer/thread/turn, and destination; retrying the exact same creation request returns
+the existing result. Remote children are standalone tasks, with no fabricated local
+parent. Passive `notifyCreatorOnComplete` delivery is not supported across computers;
+use qualified wait/read calls instead.
+
+Both servers need the `agent-gateway.remote-v1` capability. Requests use a separate
+paired, pinned-TLS RPC stream and the existing connection lifecycle; no provider MCP
+bearer travels to another computer. Disconnect/account changes cancel the stream, and
+an inactive originating turn cancels pending writes. The destination enforces the
+originating runtime/worktree restrictions. Calls are bounded to two minutes and are
+never automatically replayed after a transport failure: an interrupted mutation can
+have an uncertain outcome. Recheck its destination before doing more work.
+
+This does not pair new devices, grant computer/browser control, or delegate automations.
+The separately paired **External MCP** integration remains local and restricted to its
+approved projects/scopes; connecting a computer does not silently expand that grant.
+
+Verification includes colliding IDs, lost authority/account generations, refusal of
+unpaired callers and Stable, private-stream cleanup, JSON wire round trips, and a
+built two-server fixture that uses a real provider-scoped MCP credential. The provider
+process in that fixture is deterministic; it is not a live model or physical-Mac test.

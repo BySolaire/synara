@@ -202,6 +202,8 @@ export function makeServerRuntimeServicesLayer(
     Layer.provideMerge(providerHealthLayer),
   );
   const agentGatewayLayer = AgentGatewayLive.pipe(
+    Layer.provideMerge(ServerEnvironmentLive),
+    Layer.provideMerge(HostConnectionRegistryLive),
     Layer.provideMerge(agentGatewayCredentialsLayer),
     Layer.provideMerge(automationServiceLayer),
     Layer.provideMerge(runtimeServicesLayer),

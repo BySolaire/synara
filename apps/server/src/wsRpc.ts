@@ -1,3 +1,5 @@
+import { AgentGateway } from "./agentGateway/Services/AgentGateway";
+import { RemoteAgentResult } from "@synara/contracts";
 import { parseComputerInvocation } from "@synara/shared/computerInvocation";
 import { superviseHostConnections } from "./hostConnections/supervisor";
 import { remoteConnectionsUnavailableReason } from "./remoteFeaturePolicy";
@@ -429,6 +431,7 @@ const makeWsRpcHandlersLayer = () =>
       const lifecycleEvents = yield* ServerLifecycleEvents;
       const runtimeStartup = yield* ServerRuntimeStartup;
       const serverEnvironment = yield* ServerEnvironment;
+      const agentGateway = Option.getOrUndefined(yield* Effect.serviceOption(AgentGateway));
       const serverSettings = yield* ServerSettingsService;
       const terminalManager = yield* TerminalManager;
       const textGeneration = yield* TextGeneration;
@@ -1129,6 +1132,19 @@ const makeWsRpcHandlersLayer = () =>
       });
 
       return AdmittedWsFeatureRpcGroup.of({
+        [WS_METHODS.agentGatewayCall]: (call) =>
+          rpcEffect(
+            Effect.gen(function* () {
+              const principal = yield* CurrentManagedAttachmentPrincipal;
+              if (!agentGateway?.handleRemoteTool)
+                return yield* Effect.fail(
+                  new WsRpcError({ message: "Remote agent tools require an updated server." }),
+                );
+              const result = yield* agentGateway.handleRemoteTool(call, principal.ownerId);
+              return yield* Schema.decodeUnknownEffect(RemoteAgentResult)(result);
+            }),
+            "Remote agent tool failed",
+          ),
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           rpcEffect(
             Effect.gen(function* () {

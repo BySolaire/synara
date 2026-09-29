@@ -26,7 +26,19 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   if (!request.method || request.id === undefined) return;
   const reply = (result) => send({ id: request.id, result });
   if (request.method === "account/read") return reply({ account: { type: "apiKey" } });
-  if (request.method === "model/list") return reply({ data: [], nextCursor: null });
+  if (request.method === "model/list")
+    return reply({
+      data: [
+        {
+          id: "gpt-6-astra",
+          model: "gpt-6-astra",
+          displayName: "Fixture",
+          isDefault: true,
+          supportedReasoningEfforts: [],
+        },
+      ],
+      nextCursor: null,
+    });
   if (request.method.startsWith("thread/")) {
     threadId = request.params?.threadId ?? threadId;
     return reply({ thread: { id: threadId, cwd: request.params?.cwd, turns: [] } });
@@ -36,6 +48,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     const itemId = `${turnId}-message`;
     record({ kind: "turn", turnId, pid: process.pid });
     const approval = JSON.stringify(request.params?.input).includes("APPROVAL FIXTURE");
+    const remoteMcp = JSON.stringify(request.params?.input).includes("REMOTE MCP FIXTURE");
     reply({ turn: { id: turnId } });
     setTimeout(() => {
       notify("turn/started", { turn: { id: turnId, status: "inProgress", items: [] } });
@@ -44,6 +57,38 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         itemId,
         delta: "REMOTE STREAM STARTED",
       });
+      if (remoteMcp) {
+        void (async () => {
+          const plan = JSON.parse(
+            fs.readFileSync(path.join(root, "mcp-fixture-plan.json"), "utf8"),
+          );
+          const results = [];
+          for (const step of plan.steps) {
+            const response = await fetch(plan.endpoint, {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                authorization: `Bearer ${process.env.SYNARA_AGENT_GATEWAY_TOKEN}`,
+              },
+              body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: results.length + 1,
+                method: "tools/call",
+                params: step,
+              }),
+            });
+            results.push({ status: response.status, body: await response.json() });
+          }
+          // Only tool results are recorded. The process-scoped bearer never leaves memory.
+          fs.writeFileSync(path.join(root, "mcp-fixture-results.json"), JSON.stringify(results));
+        })().catch(() =>
+          fs.writeFileSync(
+            path.join(root, "mcp-fixture-results.json"),
+            JSON.stringify({ failed: true }),
+          ),
+        );
+        return;
+      }
       if (approval) {
         send({
           id: 9900,

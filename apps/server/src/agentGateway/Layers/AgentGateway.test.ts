@@ -1,3 +1,5 @@
+import { ServerEnvironment } from "../../environment/Services/ServerEnvironment";
+import { EnvironmentId, type RemoteAgentCall } from "@synara/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import type { ModelInfo, Options as ClaudeQueryOptions } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -357,6 +359,7 @@ function makeHarnessLayer(
   threads: ReadonlyArray<OrchestrationThreadShell>,
   automationDefinitions: ReadonlyArray<AutomationDefinition> = [],
   options: {
+    readonly remoteEnvironment?: boolean;
     readonly listModels?: (typeof ProviderDiscoveryService)["Service"]["listModels"];
     readonly threadDetails?: ReadonlyMap<string, OrchestrationThread>;
     readonly failDispatch?: (command: OrchestrationCommand) => boolean;
@@ -1250,6 +1253,24 @@ function makeHarnessLayer(
   } as unknown as (typeof ProjectionTurnRepository)["Service"]);
 
   const gatewayLayer = AgentGatewayLive.pipe(
+    Layer.provide(
+      options.remoteEnvironment
+        ? Layer.succeed(ServerEnvironment, {
+            getDescriptor: Effect.succeed({
+              environmentId: EnvironmentId.makeUnsafe("mini"),
+              label: "Mini",
+              channel: "dev",
+              platform: { os: "darwin", arch: "arm64" },
+              serverVersion: "test",
+              capabilities: {
+                repositoryIdentity: true,
+                remoteConnections: true,
+                remoteResources: true,
+              },
+            } as const),
+          })
+        : Layer.empty,
+    ),
     Layer.provide(credentialsLayer),
     Layer.provide(snapshotLayer),
     Layer.provide(engineLayer),
@@ -2598,6 +2619,111 @@ describe("AgentGateway", () => {
         (payload.findings as Array<{ code: string }>).map((finding) => finding.code),
         ["provider_delivery_blocked", "THREAD_STREAM_CAPACITY_EXCEEDED"],
       );
+    }).pipe(Effect.provide(gatewayLayer));
+  });
+
+  it.effect(
+    "delegates creation durably without using a colliding local caller or its privileges",
+    () => {
+      const { gatewayLayer, makeHarness } = makeHarnessLayer(baseThreads, [], {
+        remoteEnvironment: true,
+      });
+      return Effect.gen(function* () {
+        const harness = yield* makeHarness;
+        const gateway = yield* AgentGateway;
+        const call: RemoteAgentCall = {
+          environmentId: EnvironmentId.makeUnsafe("mini"),
+          caller: {
+            environmentId: EnvironmentId.makeUnsafe("book"),
+            threadId: ThreadId.makeUnsafe("thread-parent"),
+            turnId: TurnId.makeUnsafe("remote-turn"),
+            provider: "codex",
+            runtimeMode: "approval-required",
+            envMode: "worktree",
+            capabilities: ["thread:read", "thread:write"],
+          },
+          tool: "synara_create_thread",
+          arguments: {
+            requestId: "remote-create",
+            prompt: "remote fixture",
+            target: { provider: "grok", model: DEFAULT_MODEL_BY_PROVIDER.grok },
+          },
+        };
+        const invoke = (request = call) =>
+          gateway.handleRemoteTool!(request, "remote-device:fixture");
+        assert.isTrue(
+          (yield* invoke()).isError,
+          "remote creation must not inherit a local project",
+        );
+        const input = { ...call, arguments: { ...call.arguments, projectId: PROJECT_ID } };
+        assert.isTrue(
+          (yield* invoke({ ...input, arguments: { ...input.arguments, environment: "local" } }))
+            .isError,
+        );
+        assert.isTrue(
+          (yield* invoke({
+            ...input,
+            arguments: { ...input.arguments, runtimeMode: "full-access" },
+          })).isError,
+        );
+        assert.isTrue(
+          (yield* invoke({
+            ...input,
+            arguments: { ...input.arguments, notifyCreatorOnComplete: true },
+          })).isError,
+        );
+        assert.lengthOf(harness.dispatched, 0);
+        const first = yield* invoke(input);
+        assert.isNotTrue(first.isError, JSON.stringify(first));
+        assert.deepEqual(yield* invoke(input), first, "retry returns the same durable result");
+        assert.lengthOf(harness.dispatched, 2);
+        const create = harness.dispatched[0]!;
+        assert.equal(create.type, "thread.create");
+        if (create.type === "thread.create") {
+          assert.equal(create.envMode, "worktree");
+          assert.equal(create.runtimeMode, "approval-required");
+          assert.notProperty(create, "sourceThreadId");
+          assert.notProperty(create, "parentThreadId");
+        }
+        assert.isTrue(
+          (yield* invoke({ ...input, arguments: { ...input.arguments, prompt: "different" } }))
+            .isError,
+        );
+        assert.lengthOf(harness.dispatched, 2);
+      }).pipe(Effect.provide(gatewayLayer));
+    },
+  );
+
+  it.effect("enforces origin privilege when sending messages to a remote thread", () => {
+    const { gatewayLayer, makeHarness } = makeHarnessLayer(baseThreads, [], {
+      remoteEnvironment: true,
+    });
+    return Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const gateway = yield* AgentGateway;
+      const call: RemoteAgentCall = {
+        environmentId: EnvironmentId.makeUnsafe("mini"),
+        caller: {
+          environmentId: EnvironmentId.makeUnsafe("book"),
+          threadId: ThreadId.makeUnsafe("thread-parent"),
+          turnId: TurnId.makeUnsafe("turn"),
+          provider: "codex",
+          runtimeMode: "approval-required",
+          envMode: "worktree",
+          capabilities: ["thread:write"],
+        },
+        tool: "synara_send_message",
+        arguments: { threadId: "thread-parent", message: "do work" },
+      };
+      const denied = yield* gateway.handleRemoteTool!(call, "remote-device:fixture");
+      assert.isTrue(denied.isError);
+      assert.lengthOf(harness.dispatched, 0);
+      const allowed = yield* gateway.handleRemoteTool!(
+        { ...call, caller: { ...call.caller, envMode: "local" } },
+        "remote-device:fixture",
+      );
+      assert.isNotTrue(allowed.isError, JSON.stringify(allowed));
+      assert.lengthOf(harness.dispatched, 1);
     }).pipe(Effect.provide(gatewayLayer));
   });
 

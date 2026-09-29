@@ -1,3 +1,4 @@
+import { verifyRemoteMcp } from "./harness/remoteMcp";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
@@ -31,6 +32,15 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       JSON.stringify({
         providers: {
           codex: { binaryPath: fixtureBinary, homePath: path.join(fixture.baseDir, "codex-home") },
+        },
+      }),
+    );
+    await fs.mkdir(path.join(controllerDir, "userdata"), { recursive: true });
+    await fs.writeFile(
+      path.join(controllerDir, "userdata/settings.json"),
+      JSON.stringify({
+        providers: {
+          codex: { binaryPath: fixtureBinary, homePath: path.join(controllerDir, "codex-home") },
         },
       }),
     );
@@ -184,6 +194,10 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       await page.getByText("REMOTE checkout", { exact: true }).first().waitFor();
       await page.getByText(/^Opening E2E host/).waitFor({ state: "hidden" });
       await page.getByText("LOCAL checkout", { exact: true }).first().waitFor();
+      await verifyRemoteMcp({ controller, host, projectId });
+      const providerEvidenceOffset = (
+        await fs.readFile(path.join(host.baseDir, "fixture-provider.jsonl"), "utf8")
+      ).length;
       const projectsList = page.getByTestId("workspace-project-list");
       await projectsList.getByText("REMOTE checkout", { exact: true }).waitFor();
       await projectsList.getByText("LOCAL checkout", { exact: true }).waitFor();
@@ -500,6 +514,7 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       const providerEvents = (
         await fs.readFile(path.join(host.baseDir, "fixture-provider.jsonl"), "utf8")
       )
+        .slice(providerEvidenceOffset)
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line));

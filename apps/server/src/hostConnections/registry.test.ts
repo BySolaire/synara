@@ -8,7 +8,10 @@ const cleanups: Array<() => void> = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 });
-async function fixture(firstTtlSeconds = 3600) {
+async function fixture(
+  firstTtlSeconds = 3600,
+  rpcReply?: (socket: WebSocket, frame: { id: string; tag: string }) => void,
+) {
   const host = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await once(host, "listening");
   let hostOpens = 0;
@@ -16,7 +19,11 @@ async function fixture(firstTtlSeconds = 3600) {
   host.on("connection", (socket) => {
     hostOpens++;
     socket.on("close", () => hostCloses++);
-    socket.on("message", (data, binary) => socket.send(data, { binary }));
+    socket.on("message", (data, binary) => {
+      if (rpcReply && data.toString().startsWith("{"))
+        rpcReply(socket, JSON.parse(data.toString()));
+      else socket.send(data, { binary });
+    });
   });
   const registry = new HostConnectionRegistry();
   const compatibility = {
@@ -127,6 +134,52 @@ describe("renderer remote streams", () => {
     await Promise.all([once(b, "close"), once(c, "close")]);
     await vi.waitFor(() => expect(f.counts().hostCloses).toBe(3));
     expect(f.registry.list()).toEqual([]);
+  });
+
+  it("uses a private tool stream and keeps the renderer alive after success", async () => {
+    let calls = 0;
+    const f = await fixture(3600, (socket, frame) => {
+      calls++;
+      socket.send(
+        JSON.stringify({
+          _tag: "Exit",
+          requestId: frame.id,
+          exit: { _tag: "Success", value: { side: "remote" } },
+        }),
+      );
+    });
+    const ready = await f.registry.prepare("host", controllerProtocol);
+    const renderer = await f.attach(ready.remoteAttachmentId!);
+    expect(
+      await f.registry.call(
+        "host",
+        controllerProtocol,
+        "agentGateway.call",
+        {},
+        new AbortController().signal,
+      ),
+    ).toEqual({ side: "remote" });
+    await vi.waitFor(() => expect(f.counts().hostCloses).toBe(1));
+    expect(calls).toBe(1);
+    expect(f.counts().hostOpens).toBe(2);
+    const echo = once(renderer, "message");
+    renderer.send("renderer still connected");
+    expect((await echo)[0].toString()).toBe("renderer still connected");
+  });
+
+  it("aborts the tool stream without replaying a submitted mutation", async () => {
+    let calls = 0;
+    const abort = new AbortController();
+    const f = await fixture(3600, () => {
+      calls++;
+      abort.abort();
+    });
+    await expect(
+      f.registry.call("host", controllerProtocol, "agentGateway.call", {}, abort.signal),
+    ).rejects.toThrow("may have completed");
+    await vi.waitFor(() => expect(f.counts().hostCloses).toBe(1));
+    expect(calls).toBe(1);
+    expect(f.registry.hasConnector("host")).toBe(true);
   });
 
   it("cancels an in-flight dial on disconnect and never publishes its late result", async () => {

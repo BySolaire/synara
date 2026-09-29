@@ -1,3 +1,4 @@
+import { RemoteAgentCall } from "./remoteAgentGateway";
 import { RemoteAccessInput } from "./remotePairing";
 import { Schema, Struct } from "effect";
 import { ImportProjectInput, ListProjectImportsInput } from "./projectImport";
@@ -217,6 +218,7 @@ export type HostsEnrollmentResult = typeof HostsEnrollmentResult.Type;
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
 export const WS_METHODS = {
+  agentGatewayCall: "agentGateway.call",
   // Project registry methods
   projectsDiscoverScripts: "projects.discoverScripts",
   projectsListDirectories: "projects.listDirectories",
@@ -600,6 +602,8 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.accountDeleteAvatar, Schema.Struct({})),
   tagRequestBody(WS_METHODS.accountSignOut, Schema.Struct({})),
   tagRequestBody(WS_METHODS.accountOpenVerificationUrl, AccountOpenVerificationUrlInput),
+
+  tagRequestBody(WS_METHODS.agentGatewayCall, RemoteAgentCall),
 
   // Hosts
   tagRequestBody(WS_METHODS.hostsList, Schema.Struct({})),
