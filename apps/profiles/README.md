@@ -1,90 +1,113 @@
 # @synara/profiles
 
-The public profile pages — `trysynara.com/@handle`.
+Public profile pages at `/@handle`, rendered by Next.js on Cloudflare Workers
+through OpenNext. The existing account API owns identities, handles, avatars,
+visibility and usage. This app reads `GET /api/v1/profiles/:handle`; it has no
+separate database or authentication system.
 
-A deliberately tiny Next.js app: one dynamic route that server-renders a
-profile from the account service's public JSON endpoint
-(`GET /api/v1/profiles/:handle`). No client-side data fetching, no auth, no
-state — the page must unfurl in link previews and paint without hydration.
+## Application activation
 
-## How it is reached
+The account profile flow is a controlled Beta/development trial. Start the
+Synara server with `SYNARA_ACCOUNT_PROFILE_SYNC=1` to enable it. Stable rejects
+it even when this variable is set. Without it, the local profile remains
+available and account profile RPCs and usage reporting stay disabled. The web
+UI reads the server's `accountProfileSync` capability; old servers default off.
 
-`trysynara.com` stays pointed at the marketing site's Vercel project. That
-project carries two rewrites:
+Opting in starts the existing reporter for signed-in accounts, including the
+initial backfill of historical aggregate usage to the account service recorded
+at sign-in. Use an isolated Synara home and a test account for qualification.
+This is separate from making a profile public: new profiles are private, and
+Edit profile controls publication. No chat text is part of the usage buckets.
+Remove the variable and restart to disable the trial without deleting data.
 
-```json
-{
-  "rewrites": [
-    { "source": "/@:handle", "destination": "https://<this-app>.vercel.app/@:handle" },
-    { "source": "/profiles-assets/:path*", "destination": "https://<this-app>.vercel.app/:path*" }
-  ]
-}
-```
+## Privacy and rendering
 
-so `/@dylan` proxies here while every other path stays marketing. This is the
-domain's routing seam: future sub-apps (a hosted web app, say) get their own
-rewrite the same way, and because rewrites can target any origin, a future
-Railway-hosted app slots in identically.
+Unknown and private handles both return 404. Publication state is fetched with
+`cache: "no-store"` for each request; an upstream outage is an error, not a
+missing profile. Social preview responses also use `private, no-store`.
+External social services may retain previews they fetched while a profile was
+public. The app does not need persistent R2/DO caching for this read path.
 
-The second rewrite exists because only the `/@handle` _document_ is proxied:
-this app's root-relative `/_next/static` asset URLs would otherwise resolve
-against the marketing deployment and 404 (no CSS/JS). Production therefore
-sets `PROFILES_ASSET_PREFIX` (below) so assets are requested under
-`/profiles-assets/…`, which the rewrite routes back to this deployment.
+## Configuration
 
-The dynamic segment arrives URL-encoded (`%40dylan`); the page refuses
-anything without the `@` and anything that is not a well-formed handle, so
-this app never serves content on paths the rewrite did not intend.
+| Variable                 | Purpose                                                                                                                                                                              |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ACCOUNT_API_URL`        | Verified account API origin. The historical deployment defaults to `https://api.synara.vrbty.dev`; the isolated trial deliberately uses a non-routable placeholder until configured. |
+| `PROFILES_PUBLIC_ORIGIN` | Public origin used for absolute social preview URLs. The trial points to `https://synara-profiles-trial.synara-orgs.workers.dev`; defaults to `https://trysynara.com` elsewhere.     |
+| `PROFILE_PROXY_SECRET`   | Optional shared secret matching the account API; allows per-visitor rate limiting. Set as a Worker secret, never in source.                                                          |
+| `PROFILES_ASSET_PREFIX`  | Build-time asset prefix only when marketing proxies profile documents, e.g. `https://trysynara.com/profiles-assets`. Leave unset on the standalone trial.                            |
+| `MARKETING_ORIGIN`       | Optional origin for non-profile routes in the historical single-domain deployment. Unset on the trial.                                                                               |
 
-## Environment
-
-| Variable                | Default                        | Purpose                                                                                                                                                  |
-| ----------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ACCOUNT_API_URL`       | `https://api.synara.vrbty.dev` | The account service to read from.                                                                                                                        |
-| `PROFILE_PROXY_SECRET`  | unset                          | Shared secret (same value as the API's `PROFILE_PROXY_SECRET`) that lets the API rate-limit per visitor instead of per egress IP. Keying only, not auth. |
-| `PROFILES_ASSET_PREFIX` | unset                          | Asset prefix for the production split-domain deploy, e.g. `https://trysynara.com/profiles-assets`. Leave unset in dev — unset changes nothing.           |
-
-Profiles are served only when their owner made them public; a 404 covers
-unknown and private handles indistinguishably, and the page mirrors that
-ambiguity.
-
-## Develop
+## Local development and verification
 
 ```sh
-bun run --cwd apps/profiles dev        # http://localhost:4321/@somehandle
+bun run --cwd apps/profiles dev
+bun run --cwd apps/profiles test
+bun run --cwd apps/profiles typecheck
 ```
 
-Point `ACCOUNT_API_URL` at a local API for offline work.
-
-## Deploy
-
-Cloudflare Workers via OpenNext (`@opennextjs/cloudflare`). The Next data
-cache reuses the existing avatar bucket (`synara`, EU jurisdiction — the
-API's `S3_BUCKET`) under the `profiles-next-cache/` prefix, so there is no
-bucket to create. One-time setup:
+Point `ACCOUNT_API_URL` at an isolated local API. From `apps/profiles`, build
+and dry-run the trial without publishing:
 
 ```sh
-bunx wrangler secret put PROFILE_PROXY_SECRET          # if used in this environment
+bunx opennextjs-cloudflare build --config wrangler.trial.jsonc
+bunx wrangler deploy --config wrangler.trial.jsonc --dry-run
 ```
 
-then
+If this machine cannot run Turbopack's local build process, the supported
+Webpack build can be packaged separately:
 
 ```sh
-bun run --cwd apps/profiles deploy     # opennextjs-cloudflare build && deploy
-bun run --cwd apps/profiles preview    # same build, served locally by wrangler
+NEXT_PRIVATE_STANDALONE=true bunx next build --webpack
+bunx opennextjs-cloudflare build --skipNextBuild --config wrangler.trial.jsonc
 ```
 
-Bindings live in `wrangler.jsonc`: the R2 bucket plus a Durable Object queue
-back the `revalidate: 15` data cache (without them each isolate re-fetches
-the API on every page load); `ACCOUNT_API_URL` is a plain var there. The
-marketing project's rewrites (above) point at the worker's URL instead of a
-Vercel deployment — rewrites can target any origin, so nothing else changes.
+## Trial deployment
 
-Production must also set:
+`wrangler.trial.jsonc` names a separate `synara-profiles-trial` Worker with
+`workers_dev` enabled, no custom-domain route and no dependency on Dylan's
+R2 bucket. First authenticate, verify the selected account, check whether that
+Worker already exists, and replace the `ACCOUNT_API_URL` placeholder with the
+matching account service. Then, from `apps/profiles`:
 
-- `PROFILES_ASSET_PREFIX` (e.g. `https://trysynara.com/profiles-assets`), and
-  the marketing project needs the matching `/profiles-assets/:path*` rewrite —
-  without both, proxied profile pages render with no CSS/JS.
-- `PROFILE_PROXY_SECRET`, mirrored into the API's Railway environment, so
-  visitor traffic gets per-viewer rate-limit buckets instead of one shared
-  budget for this deployment's egress IP.
+```sh
+bunx wrangler whoami
+bunx wrangler secret put PROFILE_PROXY_SECRET --config wrangler.trial.jsonc
+bunx opennextjs-cloudflare build --config wrangler.trial.jsonc
+bunx opennextjs-cloudflare deploy --config wrangler.trial.jsonc
+```
+
+The secret command is needed only when the matching API uses that secret.
+The manual **Deploy Profiles** workflow deploys this same trial configuration;
+it requires an explicit HTTPS account API origin plus repository/environment
+`CLOUDFLARE_API_TOKEN` and `SYNARA_PROFILE_PROXY_SECRET` secrets. The account ID
+is pinned to Synara, and the workflow installs `PROFILE_PROXY_SECRET` from the
+same repository secret used by the API workflow. It uses the verified Webpack
+build followed by OpenNext packaging. Application release tags do not deploy profiles.
+
+`wrangler.jsonc` retains Dylan's historical `synara-profiles` deployment,
+`synara.vrbty.dev` custom domain and cache bindings for reference/compatibility.
+The existing `deploy` script still targets that configuration; use it only
+when ownership and that destination are confirmed. Do not remove existing
+Durable Object migrations or data as part of the trial.
+
+## Final marketing routing
+
+The marketing Vercel configuration currently points to the former profiles
+Vercel origin; it has **not** yet been switched to the new Worker. After the
+actual Worker passes live checks, change all three rewrite destinations:
+
+- `/@:handle` → the Worker's `/@:handle`.
+- `/@:handle/:path*` → the Worker's `/@:handle/:path*` (including OG images).
+- `/profiles-assets/:path*` → the Worker's `/:path*`.
+
+Build the Worker with the corresponding `PROFILES_ASSET_PREFIX` at the same
+time. Verify document HTML, CSS/JS, OG images, unknown/private profiles and a
+public → private transition at both the Worker and final marketing origins.
+Never point routing at an unverified URL. Trial links can be tested directly;
+set `VITE_PROFILES_PUBLIC_ORIGIN` to the trial origin when building/running the
+web app so its open/copy/share links use that Worker too. The default remains
+`trysynara.com` for ordinary builds.
+
+See the [implementation plan](../../docs/implementation/cloudflare-profiles/PLAN.md)
+for evidence, remaining dependencies and rollback.

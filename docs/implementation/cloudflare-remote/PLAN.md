@@ -217,7 +217,7 @@ Solo dopo la qualifica locale preparare configurazione concreta e minimizzare le
 
 - Account Cloudflare, zona/dominio dedicato, permessi API necessari e ambiente di test.
 - WorkOS di test: client, redirect desktop/CLI, organizzazione/workspace e login sui due Mac.
-- Un solo Postgres isolato per l'API. Il provider può essere deciso al setup; non richiedere insieme Supabase, PlanetScale e Railway.
+- Un solo Postgres isolato per l'API. Decisione aggiornata: Supabase per il database e WorkOS per identità/login; seguire READINESS.md. PlanetScale resta una possibile migrazione futura, non una dipendenza richiesta. L'hosting dell'API è separato dal database.
 - Hosting dell'API, issuer/JWKS, DNS e variabili realmente richieste.
 - Modalità di distribuzione/installazione delle build test sui due Mac.
 - Eventuale provider reale e limiti di spesa autorizzati.

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 import { EnvironmentId, type AccountMe } from "@synara/contracts";
 import {
@@ -14,6 +14,8 @@ import {
 import { accountCredentialsPath, readAccountFile, writeAccountCredentials } from "./accountAuth.ts";
 import { createAccountSession } from "./accountSession.ts";
 import { generateAndPersistHostIdentity } from "./hostIdentity";
+
+afterEach(() => vi.unstubAllEnvs());
 
 const temporaryDirectories: string[] = [];
 
@@ -718,10 +720,24 @@ describe("transient sign-in recovery", () => {
   });
 });
 
-describe("excluded profile sync", () => {
+describe("account profile sync policy", () => {
+  it("updates an existing private profile when explicitly enabled", async () => {
+    vi.stubEnv("SYNARA_DESKTOP_BUNDLE_ID", undefined);
+    vi.stubEnv("SYNARA_ACCOUNT_PROFILE_SYNC", "1");
+    const baseDir = makeBaseDir();
+    await writeAccountCredentials(baseDir, credentials());
+    const profile = { handle: "ada", displayName: "Ada", avatarColor: "#22c55e", public: false };
+    const written = meResponse({ profile });
+    const updateProfile = vi.fn(async () => written);
+    const session = sessionFor(baseDir, makeClient({ updateProfile }));
+    await expect(session.updateProfile(profile)).resolves.toEqual(written);
+    expect(updateProfile).toHaveBeenCalledWith(expect.any(String), profile);
+  });
+
   it("refuses profile and avatar mutations before contacting the account service", async () => {
     const baseDir = makeBaseDir();
     await writeAccountCredentials(baseDir, credentials());
+    vi.stubEnv("SYNARA_ACCOUNT_PROFILE_SYNC", undefined);
     const updateProfile = vi.fn();
     const updateOrganization = vi.fn();
     const uploadAvatar = vi.fn();

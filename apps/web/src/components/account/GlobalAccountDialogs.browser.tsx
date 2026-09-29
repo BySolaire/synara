@@ -20,6 +20,15 @@ const accountApi = vi.hoisted(() => ({
 
 vi.mock("~/nativeApi", () => ({
   ensureNativeApi: () => ({ account: accountApi }),
+  readNativeApi: () => ({ account: accountApi }),
+}));
+
+const profileCapability = vi.hoisted(() => ({ enabled: true }));
+vi.mock("~/lib/hosts/executionContext", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/lib/hosts/executionContext")>()),
+  readExecutionContext: () => ({
+    controller: { capabilities: { accountProfileSync: profileCapability.enabled } },
+  }),
 }));
 
 import { invalidateAccountStatus } from "~/lib/accountReactQuery";
@@ -74,7 +83,16 @@ function renderDialogs() {
 describe("GlobalAccountDialogs — status-authoritative dismissal", () => {
   afterEach(() => {
     vi.clearAllMocks();
+    profileCapability.enabled = true;
     useAccountDialogStore.setState({ view: "closed" });
+  });
+
+  it("keeps onboarding closed when the server has not enabled profile sync", async () => {
+    profileCapability.enabled = false;
+    const { queryClient } = renderDialogs();
+    accountApi.status.mockResolvedValue({ state: "signed-in", me: makeMe(null) });
+    await invalidateAccountStatus(queryClient);
+    await vi.waitFor(() => expect(useAccountDialogStore.getState().view).toBe("closed"));
   });
 
   // The live bug: sign-in completed in the browser, status flipped to

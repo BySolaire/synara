@@ -56,3 +56,40 @@ Checks: focused regressions 4/4; PostgreSQL API 318/318; rebuilt desktop/server 
 The disposable PostgreSQL instance has been stopped again. This review used logs `/private/tmp/synara-remote-review-*` and browser evidence `/private/tmp/synara-remote-review-evidence`. No external credentials were configured, no real tunnel was provisioned and no live/signed/two-Mac qualification is claimed.
 
 Follow [Configure the remote MVP](READINESS.md) for the remaining service setup and live test. API hosting is still required alongside WorkOS, PostgreSQL and Cloudflare. Internal test enrollment remains distinct from commercial paid-entitlement enforcement.
+
+## Supabase database selection — 2026-09-28
+
+The selected stack is WorkOS AuthKit for identity, Supabase PostgreSQL for account
+metadata, and Cloudflare Tunnel for remote transport. WorkOS tokens and session
+flows are unchanged. The API continues using `pg`/Drizzle with a server-only
+`DATABASE_URL`; no Supabase Auth, client SDK or third-party JWT bridge is needed.
+
+Migration `0015_account_table_rls` enables default-deny RLS on all 15 account API
+tables. This prevents untrusted database roles with table grants (such as
+Supabase's Data API roles) from reading or changing rows outside Synara's API.
+The database-owner runtime remains authoritative for WorkOS-scoped checks. The
+new PostgreSQL regression verifies table coverage, denied reads/writes and
+preserved access for a non-superuser table owner. No historical migration was
+changed; the generated snapshot adds only RLS flags.
+
+The API README, environment example and readiness checklist now cover Supabase
+direct/session-pooler URLs, verified TLS/project CA, disabled Data API, database
+ownership and isolation from automated-test fixtures. Future migration to another
+standard PostgreSQL host remains possible.
+
+Validation uses a disposable local PostgreSQL instance, not the connected
+Supabase project. The first parallel API run raced while creating the empty
+Drizzle migration table; applying migrations once before the test run resolved
+that fixture bootstrap race. The full API suite passed 319/319. Workspace
+checks and migration lineage are recorded with the completion report. Live
+Supabase TLS, WorkOS and Cloudflare qualification remains pending service setup;
+no hosted database or authentication settings were changed.
+
+## Shared account service update — 2026-09-29
+
+The profiles trial now has a deployed Cloudflare account API, verified Supabase
+TLS/database role and hosted synthetic privacy checks. See
+[profiles qualification](../cloudflare-profiles/READINESS.md) for current service
+state; earlier no-resource statements describe the preceding remote-only work.
+Real WorkOS login, tunnel provisioning, remote enrollment and two-Mac acceptance
+remain unverified. This deployment does not mark remote access complete.

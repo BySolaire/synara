@@ -1,5 +1,5 @@
-// The public-profile read, kept dependency-free: this app deploys to Vercel
-// on its own and deliberately does not import the Effect-based contracts
+// The public-profile read, kept dependency-free: this app deploys to Cloudflare Workers
+// through OpenNext and deliberately does not import the Effect-based contracts
 // packages — the response shape below mirrors `PublicProfile` in
 // packages/contracts/src/accountUsage.ts, which is the canonical definition.
 
@@ -81,9 +81,9 @@ async function viewerIp(): Promise<string | null> {
   } catch {
     return null;
   }
-  const forwardedFor = incoming.get("x-forwarded-for");
-  const firstHop = forwardedFor?.split(",")[0]?.trim();
-  const candidate = firstHop || incoming.get("x-real-ip")?.trim();
+  // Cloudflare overwrites this at ingress. Never sign a caller-supplied
+  // x-forwarded-for/x-real-ip value with our trusted proxy secret.
+  const candidate = incoming.get("cf-connecting-ip")?.trim();
   return candidate && looksLikeIp(candidate) ? candidate : null;
 }
 
@@ -101,10 +101,9 @@ export async function fetchPublicProfile(handle: string): Promise<PublicProfile 
   };
   const response = await fetch(`${ACCOUNT_API_URL}/api/v1/profiles/${encodeURIComponent(handle)}`, {
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
-    // Freshness over caching, but not per-request: usage pushes land every
-    // few seconds, and a minute-stale profile is indistinguishable to a
-    // visitor while keeping the API out of every page load.
-    next: { revalidate: 15 },
+    // Publication can be revoked at any time. A stale cache entry must not
+    // keep exposing a profile after the account API makes it private.
+    cache: "no-store",
   });
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Profile request failed with ${response.status}`);

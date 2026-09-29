@@ -11,6 +11,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { accountQueryKeys, accountStatusQueryOptions } from "~/lib/accountReactQuery";
 import { useAccount } from "./useAccount";
+const profilePolicy = vi.hoisted(() => ({ beta: true, available: false }));
+vi.mock("~/betaFeatures", () => ({ isBetaFeatureOn: () => profilePolicy.beta }));
+vi.mock("~/lib/hosts/executionContext", () => ({
+  readExecutionContext: () => ({
+    controller: { capabilities: { accountProfileSync: profilePolicy.available } },
+  }),
+}));
 
 const accountApiMock = {
   status: vi.fn<() => Promise<AccountStatus>>(),
@@ -32,6 +39,8 @@ vi.mock("~/nativeApi", () => ({
 
 afterEach(() => {
   vi.clearAllMocks();
+  profilePolicy.beta = true;
+  profilePolicy.available = false;
 });
 
 function makeMe(profile: AccountMe["profile"] = null): AccountMe {
@@ -60,6 +69,15 @@ function renderUseAccount(queryClient: QueryClient) {
 }
 
 describe("useAccount", () => {
+  it("requires both the server capability and a non-Stable UI", () => {
+    const queryClient = new QueryClient();
+    expect(renderUseAccount(queryClient).profileSyncEnabled).toBe(false);
+    profilePolicy.available = true;
+    expect(renderUseAccount(queryClient).profileSyncEnabled).toBe(true);
+    profilePolicy.beta = false;
+    expect(renderUseAccount(queryClient).profileSyncEnabled).toBe(false);
+  });
+
   it("projects a cached signed-in status into `me`", () => {
     const queryClient = new QueryClient();
     const me = makeMe();

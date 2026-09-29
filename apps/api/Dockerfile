@@ -2,7 +2,7 @@
 # Synara account API. Build context is the repository root so the Bun
 # workspace graph (root package.json + bun.lock + workspace packages) resolves;
 # point the builder at this file with dockerfilePath=apps/api/Dockerfile.
-FROM oven/bun:1.3-slim AS deps
+FROM oven/bun:1.4.2-slim AS deps
 WORKDIR /app
 
 # Workspace manifests only, so dependency installation caches independently of
@@ -18,7 +18,7 @@ COPY patches patches
 COPY --parents apps/*/package.json packages/*/package.json scripts/package.json ./
 RUN bun install --frozen-lockfile --ignore-scripts
 
-FROM oven/bun:1.3-slim
+FROM oven/bun:1.4.2-slim
 WORKDIR /app
 ENV NODE_ENV=production
 

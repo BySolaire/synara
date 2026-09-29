@@ -3,6 +3,11 @@
 .env.*
 **/.env
 **/.env.*
+.dev.vars
+.dev.vars.*
+**/.dev.vars
+**/.dev.vars.*
+**/.wrangler
 **/node_modules
 .git
 .claude

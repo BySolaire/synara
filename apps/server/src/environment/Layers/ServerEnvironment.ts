@@ -1,4 +1,7 @@
-import { remoteConnectionsUnavailableReason } from "../../remoteFeaturePolicy";
+import {
+  accountProfileSyncUnavailableReason,
+  remoteConnectionsUnavailableReason,
+} from "../../remoteFeaturePolicy";
 import { desktopFlavorFromBundleId } from "@synara/shared/betaFeatures";
 import { EnvironmentId, type ExecutionEnvironmentDescriptor } from "@synara/contracts";
 import { Effect, FileSystem, Layer, Path, Random } from "effect";
@@ -93,6 +96,7 @@ export const makeServerEnvironment = Effect.fn(function* () {
     serverVersion: packageJson.version,
     capabilities: {
       repositoryIdentity: true,
+      accountProfileSync: accountProfileSyncUnavailableReason() === undefined,
       remoteConnections: remoteUnavailableReason === undefined,
       remoteResources: remoteUnavailableReason === undefined,
       ...(remoteUnavailableReason ? { remoteUnavailableReason } : {}),

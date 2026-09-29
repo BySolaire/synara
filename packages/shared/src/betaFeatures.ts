@@ -17,7 +17,11 @@ import {
  * is its ProviderKind: today that is "omp" only.
  */
 export type BetaOnlyFeature = string;
-export const BETA_ONLY_FEATURES: readonly BetaOnlyFeature[] = ["omp", "remoteConnections"];
+export const BETA_ONLY_FEATURES: readonly BetaOnlyFeature[] = [
+  "omp",
+  "remoteConnections",
+  "accountProfileSync",
+];
 
 /**
  * Whether a Beta-only feature is on for this host. Only the Stable
@@ -76,5 +80,4 @@ export function desktopFlavorFromProtocol(
 }
 
 /** Deferred features retain their data but have no active consumers. */
-export const ACCOUNT_PROFILE_SYNC_ENABLED = false;
 export const HOST_SECRETS_SYNC_ENABLED = false;

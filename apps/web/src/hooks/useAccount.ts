@@ -22,6 +22,8 @@ import {
   removeAccountScopedQueries,
 } from "~/lib/accountReactQuery";
 import { ensureNativeApi } from "~/nativeApi";
+import { isBetaFeatureOn } from "~/betaFeatures";
+import { readExecutionContext } from "~/lib/hosts/executionContext";
 
 // Shared by every hook instance in this window, including dialogs and footer.
 const mutationGenerations = new WeakMap<QueryClient, number>();
@@ -203,6 +205,9 @@ export function useAccount() {
 
   return {
     status,
+    profileSyncEnabled:
+      isBetaFeatureOn("accountProfileSync") &&
+      readExecutionContext()?.controller.capabilities.accountProfileSync === true,
     me: status?.state === "signed-in" ? status.me : null,
     statusQuery,
     sendOtp,

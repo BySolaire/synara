@@ -2,10 +2,13 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
 
-export const metadata: Metadata = {
-  title: "Synara",
-  description: "Public Synara profiles",
-};
+export function generateMetadata(): Metadata {
+  return {
+    metadataBase: new URL(process.env.PROFILES_PUBLIC_ORIGIN ?? "https://trysynara.com"),
+    title: "Synara",
+    description: "Public Synara profiles",
+  };
+}
 
 /**
  * Applies `.dark` before first paint from the `synara-theme` localStorage

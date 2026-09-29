@@ -4,19 +4,23 @@ This is the handoff from implementation to the first real MacBook ↔ Mac Mini t
 
 ## What must run
 
-| Component                       | Where it runs                                              | What the operator supplies                                                |
-| ------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------- |
-| Synara account API (`apps/api`) | A continuously running Bun service behind public HTTPS     | Public URL, environment variables and persistent signing key              |
-| WorkOS AuthKit                  | WorkOS                                                     | Application/client ID, API key, authentication settings                   |
-| PostgreSQL                      | Any supported PostgreSQL host reachable by the account API | A persistent database and connection URL                                  |
-| Cloudflare Tunnel               | Cloudflare plus the bundled connector on the Mini          | Active DNS zone and scoped API token, kept on the account API             |
-| Synara                          | Both Macs, separate installation homes                     | Same account/workspace and a Beta/Canary build with remote access enabled |
+| Component                       | Where it runs                                          | What the operator supplies                                                |
+| ------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------- |
+| Synara account API (`apps/api`) | A continuously running Bun service behind public HTTPS | Public URL, environment variables and persistent signing key              |
+| WorkOS AuthKit                  | WorkOS                                                 | Application/client ID, API key, authentication settings                   |
+| PostgreSQL                      | Supabase PostgreSQL, reachable by the account API      | A persistent database and connection URL                                  |
+| Cloudflare Tunnel               | Cloudflare plus the bundled connector on the Mini      | Active DNS zone and scoped API token, kept on the account API             |
+| Synara                          | Both Macs, separate installation homes                 | Same account/workspace and a Beta/Canary build with remote access enabled |
 
-There is no Synara traffic-relay service to deploy. The account API still needs hosting: Cloudflare Tunnel does not execute `apps/api`, and this implementation is not a Cloudflare Worker. Any suitable API host is acceptable; Railway is not required. No additional database vendor, avatar bucket or iOS work is required for this test.
+There is no Synara traffic-relay service to deploy. The shared account API is
+now hosted on Cloudflare Containers for the profiles trial; see the
+[deployed trial and evidence](../cloudflare-profiles/READINESS.md). This does not
+configure remote tunnel provisioning, test enrollment or prove two-Mac access.
+Railway is excluded. Avatar storage and iOS work are not required for remote.
 
 ## Configuration in dependency order
 
-1. Create a dedicated test PostgreSQL database. Set `DATABASE_URL` on the API, using the database provider's TLS requirements. Do not point test suites at a personal or production database. The API applies its committed migrations before opening its HTTP listener; do not generate new migrations for setup.
+1. Reuse the existing Supabase Synara project and dedicated account role configured for the profiles trial. Account tables use default-deny RLS and deny Data API roles; preserve the sponsor tables and their enabled Data API. `DATABASE_URL` is already a Cloudflare secret with verified TLS. Do not point automated test suites at this database. See [database instructions](../../../apps/api/README.md#supabase-postgresql-with-workos).
 2. Configure a WorkOS AuthKit application using [the API setup instructions](../../../apps/api/README.md#dashboard-setup). Set `IDENTITY_PROVIDER=workos`, `WORKOS_API_KEY`, and `WORKOS_CLIENT_ID`. Enable Magic Auth for the email-code login; configure social providers only if testing their buttons. The desktop browser flow needs the documented loopback redirect. Leave issuer/JWKS overrides unset for ordinary WorkOS discovery. Use the same application for both Macs.
 3. Choose the public HTTPS origin of the account API. `ACCOUNT_BASE_URL` is that origin (for example `https://accounts.example.com`); `API_PUBLIC_URL` is the exact same origin plus `/api/v1`. Persist one `API_SIGNING_KEY` across redeploys; it is a base64url 32-byte Ed25519 seed, generated once and stored in the host's secret manager. Configure `TRUSTED_PROXY_HOPS` for the actual proxy chain, as described in the API README.
 4. Set all four Cloudflare variables from [the operations guide](../../cloudflare-remote.md#test-service-configuration): account ID, zone ID, API token and tunnel domain. Use an active zone with HTTPS certificate coverage for one generated label beneath the domain. Grant tunnel administration for that account and DNS administration for that zone. Synara creates named tunnels, ingress configuration and DNS records automatically; do not manually create a tunnel for each device or copy an administrative token to a Mac.

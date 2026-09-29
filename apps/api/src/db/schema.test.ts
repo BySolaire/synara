@@ -1,11 +1,12 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, getTableName } from "drizzle-orm";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { createDb } from "./index";
 import { runMigrations } from "./migrate";
 import { devices, hosts, revocationEvents } from "./schema";
+import * as schema from "./schema";
 
 const url = process.env.TEST_DATABASE_URL;
 
@@ -26,6 +27,82 @@ function hostRow(overrides: Partial<typeof hosts.$inferInsert> = {}) {
 describe.skipIf(!url)("schema", () => {
   beforeAll(async () => {
     await runMigrations(url!);
+  });
+
+  it("blocks untrusted table access while preserving the account API owner", async () => {
+    const { pool } = createDb(url!);
+    const client = await pool.connect();
+    const suffix = crypto.randomUUID().replaceAll("-", "");
+    const reader = `untrusted_${suffix}`;
+    const owner = `api_owner_${suffix}`;
+    const userId = `user_${suffix}`;
+    try {
+      await client.query("BEGIN");
+      const tables = Object.values(schema).map(getTableName).toSorted();
+      const flags = await client.query<{ name: string; enabled: boolean }>(
+        `SELECT relname AS name, relrowsecurity AS enabled
+         FROM pg_class JOIN pg_namespace ON pg_namespace.oid = relnamespace
+         WHERE nspname = 'public' AND relname = ANY($1::text[]) ORDER BY relname`,
+        [tables],
+      );
+      expect(flags.rows).toEqual(tables.map((name) => ({ name, enabled: true })));
+
+      // Mimic an exposed Data API role even when it has ordinary table grants.
+      // All setup is transactional: rollback removes roles, grants and data.
+      await client.query(`CREATE ROLE "${reader}" NOLOGIN NOSUPERUSER NOBYPASSRLS`);
+      await client.query(`CREATE ROLE "${owner}" NOLOGIN NOSUPERUSER NOBYPASSRLS`);
+      await client.query(`GRANT USAGE, CREATE ON SCHEMA public TO "${owner}"`);
+      await client.query(`GRANT USAGE ON SCHEMA public TO "${reader}"`);
+      await client.query(
+        `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "${reader}"`,
+      );
+      await client.query(`ALTER TABLE profiles OWNER TO "${owner}"`);
+      await client.query(`SET LOCAL ROLE "${owner}"`);
+      await client.query(
+        `INSERT INTO profiles (user_id, handle, display_name, avatar_color)
+         VALUES ($1, $2, 'Private profile', 'blue')`,
+        [userId, suffix],
+      );
+      expect(
+        (await client.query("SELECT user_id FROM profiles WHERE user_id = $1", [userId])).rowCount,
+      ).toBe(1);
+      await client.query("RESET ROLE");
+      await client.query(`SET LOCAL ROLE "${reader}"`);
+      expect(
+        (await client.query("SELECT user_id FROM profiles WHERE user_id = $1", [userId])).rowCount,
+      ).toBe(0);
+      expect(
+        (
+          await client.query("UPDATE profiles SET display_name = 'Changed' WHERE user_id = $1", [
+            userId,
+          ])
+        ).rowCount,
+      ).toBe(0);
+      expect(
+        (await client.query("DELETE FROM profiles WHERE user_id = $1", [userId])).rowCount,
+      ).toBe(0);
+      await client.query("SAVEPOINT denied_insert");
+      await expect(
+        client.query(
+          `INSERT INTO profiles (user_id, handle, display_name, avatar_color)
+         VALUES ($1, $2, 'Injected profile', 'blue')`,
+          [`intruder_${suffix}`, `intruder_${suffix}`],
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+      await client.query("ROLLBACK TO SAVEPOINT denied_insert");
+      await client.query("RESET ROLE");
+      await client.query(`SET LOCAL ROLE "${owner}"`);
+      expect(
+        (await client.query("SELECT display_name FROM profiles WHERE user_id = $1", [userId])).rows,
+      ).toEqual([{ display_name: "Private profile" }]);
+      expect(
+        (await client.query("DELETE FROM profiles WHERE user_id = $1", [userId])).rowCount,
+      ).toBe(1);
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+      await pool.end();
+    }
   });
 
   it("enforces unique (ownerOrgId, environmentId)", async () => {

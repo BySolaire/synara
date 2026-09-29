@@ -8,7 +8,8 @@
     "start": "next start",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@synara/profile-ui": "workspace:*",
@@ -23,6 +24,7 @@
     "@types/react-dom": "^19.2.0",
     "tailwindcss": "^4.1.0",
     "typescript": "catalog:",
+    "vitest": "catalog:",
     "wrangler": "^4.122.0"
   }
 }

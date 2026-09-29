@@ -86,7 +86,7 @@ function genericCard() {
         <span style={{ fontSize: 64, color: INK, letterSpacing: "-0.02em" }}>Synara</span>
       </div>
     </div>,
-    size,
+    { ...size, headers: { "Cache-Control": "private, no-store" } },
   );
 }
 
@@ -229,6 +229,6 @@ export default async function OgImage({ params }: Params) {
         ))}
       </div>
     </div>,
-    size,
+    { ...size, headers: { "Cache-Control": "private, no-store" } },
   );
 }

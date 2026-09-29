@@ -314,32 +314,94 @@ trusting an instance against real WorkOS, confirm by hand:
 A missing required variable fails the boot with an explicit
 `Missing required environment variables: …` rather than starting half-configured.
 
-## Deploying to Railway
+## Supabase PostgreSQL with WorkOS
 
-The service runs TypeScript directly under Bun, with no build step at all.
+Supabase is the selected PostgreSQL host for the remote MVP. WorkOS remains the
+identity authority: login, organizations, sessions and refresh tokens continue
+through the account API. Supabase only stores Synara's application data through
+the existing `pg`/Drizzle connection. No Supabase Auth setup, WorkOS-to-Supabase
+JWT integration, `supabase-js`, publishable key or service-role API key is needed.
 
-- **Build command:** `bun install`
-- **Start command:** `bun run start`
-- **Root directory:** `apps/api` (or run the commands with `--cwd apps/api` from
-  the monorepo root, since this is a workspace package).
-- **Variables:** set `DATABASE_URL`, `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`,
-  `ACCOUNT_BASE_URL`, `API_PUBLIC_URL`, and `API_SIGNING_KEY` at minimum. Leave `PORT` to
-  Railway — it injects one, and `loadApiConfig` honours it. Set
-  `TRUSTED_PROXY_HOPS=1`: Railway terminates TLS in front of the service and
-  appends exactly one `x-forwarded-for` hop; without it every caller shares the
-  proxy's rate-limit bucket. Set `PROFILE_PROXY_SECRET` to the same value as
-  the profiles deployment's, so public-profile rate limits key per visitor.
+1. The current trial uses the existing Synara project
+   (`ubdkfrnaqfbdymgipddq`), alongside its advertising tables. Account migrations
+   0000–0015 and their Drizzle journal were applied through MCP on 2026-09-28.
+   For another existing project, first check for account-table name collisions
+   (including historical tables such as `user` and `session`). Keep hosted data
+   separate from disposable automated-test databases.
+2. In the project's **Connect** dialog, copy the **Direct connection** URL when
+   the API host supports IPv6. For an IPv4-only host, use the **Session pooler**
+   URL (port `5432`). This is a persistent Bun service; transaction pooling
+   (port `6543`) is not the setup qualified here. Copy the actual hostname and
+   username from the dashboard; do not infer a pooler hostname from the region.
+3. Set that URL as server-only `DATABASE_URL`, using the database password
+   (URL-encoded), not a Supabase API key. Add `sslmode=verify-full`. If the
+   certificate requires Supabase's project CA, download it from **Database
+   Settings**, mount it on the API host and add `sslrootcert` with that absolute
+   path. The existing PostgreSQL driver reads the CA file; do not disable
+   certificate verification to fix a connection error. Do not reset the shared
+   database password or change project-wide settings used by the sponsor service.
+4. Keep this shared project's **Data API** enabled for the sponsor service.
+   Account tables are accessed only through Synara's API. Their bootstrap
+   revokes all table grants from `PUBLIC`, `anon`, `authenticated` and
+   `service_role`, without changing advertising grants or schema defaults.
+   Migration 0015 also enables RLS without client-facing policies. Apply the
+   same explicit grant restrictions to future account tables on this shared
+   project; do not add them to Realtime replication.
+5. Use the same database-owner role for migrations and API runtime (the
+   dashboard's `postgres` connection works). The API applies migrations before
+   listening. RLS deliberately allows the table owner; a separate non-owner
+   role with ordinary grants alone cannot serve the API. Never distribute this
+   database credential to desktop, web or mobile clients.
+6. Configure WorkOS and Cloudflare through the [remote setup guide](../../docs/implementation/cloudflare-remote/READINESS.md).
+   After startup, inspect the tables with the Supabase plugin/SQL editor and
+   verify login, profile creation, pairing, reconnect and revocation through
+   Synara. Passing local PostgreSQL tests is not live Supabase qualification.
 
-For Postgres, either add Railway's own Postgres plugin or point at
-**PlanetScale**. A PlanetScale Postgres `DATABASE_URL` must include TLS:
+Example URL shapes (replace placeholders with the values from **Connect**):
+
+```dotenv
+# Direct connection, when the API host can reach IPv6:
+DATABASE_URL=postgresql://postgres:URL_ENCODED_PASSWORD@db.PROJECT_REF.supabase.co:5432/postgres?sslmode=verify-full
+# Session pooler: use the exact dashboard hostname, not this placeholder:
+# DATABASE_URL=postgresql://postgres.PROJECT_REF:URL_ENCODED_PASSWORD@POOLER_HOST:5432/postgres?sslmode=verify-full
+# If the selected endpoint needs the project's CA, append:
+# &sslrootcert=/run/secrets/supabase-ca.crt
+```
+
+Keep this integration standard PostgreSQL so a future provider move transfers
+the schema/data and connection configuration, rather than replacing login.
+Provider references: [connections](https://supabase.com/docs/guides/database/connecting-to-postgres),
+[SSL](https://supabase.com/docs/guides/platform/ssl-enforcement),
+[Data API settings](https://supabase.com/docs/guides/api/securing-your-api),
+[RLS](https://supabase.com/docs/guides/database/postgres/row-level-security).
+
+## Deploying to Cloudflare
+
+Synara's selected API host is Cloudflare Containers. The public profiles run in
+a separate Cloudflare Worker; PostgreSQL stays on Supabase and identity stays on
+WorkOS. Railway is not part of this deployment.
+
+The existing Dockerfile runs TypeScript under Bun. The small ingress Worker in
+`cloudflare/worker.ts` forwards to one container and replaces untrusted forwarded
+IP headers with Cloudflare's caller address. The API retains its existing
+transactions, rate limits, startup migrations and maintenance loop.
+
+See [Cloudflare deployment](cloudflare/README.md) for secrets, build verification,
+the manual GitHub Actions workflow and the final live checks. The checked-in
+configuration targets a new trial service; it does not overwrite another Worker.
+
+API hosting and database hosting are independent: use the selected
+[Supabase database](#supabase-postgresql-with-workos) while the API runs on
+Cloudflare. Other standard PostgreSQL hosts, including PlanetScale Postgres, remain
+compatible alternatives. A hosted `DATABASE_URL` must verify TLS:
 
 ```
 postgres://USER:PASSWORD@HOST/DATABASE?sslmode=verify-full
 ```
 
-`sslmode=require` also connects but skips certificate verification; prefer
-`verify-full`. Migrations run on boot, so the first deploy provisions the schema
-with no extra release step.
+Use the provider's root certificate when its CA is not trusted by the runtime.
+Migrations run on boot, so the first deploy provisions the schema with no extra
+release step.
 
 Other platforms work the same way: any host that can run `bun run start` with a
 Postgres URL and a persistent public origin is enough. There is no filesystem

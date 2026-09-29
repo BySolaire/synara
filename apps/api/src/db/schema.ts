@@ -16,6 +16,10 @@ import {
 
 export type HostEndpoint = { url: string; transport: "lan" | "tailscale" | "cloudflare" };
 
+// Only the account API accesses these tables, as their database owner. WorkOS
+// authorization stays in API routes; default-deny RLS blocks non-owner roles
+// (including Supabase anon/authenticated) even when table grants are present.
+// Keep new tables RLS-enabled without client-facing policies.
 export const hosts = pgTable(
   "hosts",
   {
@@ -48,7 +52,7 @@ export const hosts = pgTable(
     // linking critical section.
     index("hosts_environment_idx").on(table.environmentId),
   ],
-);
+).enableRLS();
 
 export const devices = pgTable(
   "devices",
@@ -70,7 +74,7 @@ export const devices = pgTable(
       .on(table.userId, table.jkt)
       .where(sql`${table.revokedAt} IS NULL`),
   ],
-);
+).enableRLS();
 
 /** Verified provider sessions bound to a device; never populated from client claims. */
 export const deviceAccountSessions = pgTable(
@@ -88,7 +92,7 @@ export const deviceAccountSessions = pgTable(
     uniqueIndex("device_account_sessions_binding_unique").on(table.deviceId, table.sessionId),
     index("device_account_sessions_session_idx").on(table.userId, table.sessionId),
   ],
-);
+).enableRLS();
 
 /** Durable host acknowledgements outlive the short-lived relay event feed. */
 export const deviceRevocationDeliveries = pgTable(
@@ -105,7 +109,7 @@ export const deviceRevocationDeliveries = pgTable(
     uniqueIndex("device_revocation_deliveries_unique").on(table.deviceId, table.hostId),
     index("device_revocation_deliveries_host_idx").on(table.hostId),
   ],
-);
+).enableRLS();
 
 export const linkChallenges = pgTable(
   "link_challenges",
@@ -135,7 +139,7 @@ export const linkChallenges = pgTable(
     uniqueIndex("link_challenges_user_code_unique").on(table.userCode),
     index("link_challenges_expires_at_idx").on(table.expiresAt),
   ],
-);
+).enableRLS();
 
 export const revocationEvents = pgTable(
   "revocation_events",
@@ -150,7 +154,7 @@ export const revocationEvents = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index("revocation_events_created_at_idx").on(table.createdAt)],
-);
+).enableRLS();
 
 /**
  * One host's end-to-end encrypted configuration — SSH destination, launcher
@@ -188,7 +192,7 @@ export const hostSecrets = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index("host_secrets_owner_user_idx").on(table.ownerUserId)],
-);
+).enableRLS();
 
 /**
  * Bounded history of superseded Host Secret versions — recovery from a bad
@@ -224,7 +228,7 @@ export const hostSecretVersions = pgTable(
     // every write.
     uniqueIndex("host_secret_versions_host_version_unique").on(table.hostId, table.version),
   ],
-);
+).enableRLS();
 
 /**
  * A wrapped Sync Key in flight between two of ONE user's devices during
@@ -261,7 +265,7 @@ export const syncKeyWraps = pgTable(
     index("sync_key_wraps_owner_user_idx").on(table.ownerUserId),
     index("sync_key_wraps_expires_at_idx").on(table.expiresAt),
   ],
-);
+).enableRLS();
 
 /**
  * The part of a user's identity Synara owns. Keyed by WorkOS user id because
@@ -307,7 +311,7 @@ export const profiles = pgTable("profiles", {
   avatarSsoUrl: text("avatar_sso_url"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}).enableRLS();
 
 /**
  * Per-minute model-attributed usage counters — the account-side mirror of the
@@ -353,7 +357,7 @@ export const usageModelStats = pgTable(
     ),
     index("usage_model_stats_user_minute").on(table.userId, table.minute),
   ],
-);
+).enableRLS();
 
 /**
  * Per-minute skill/agent run counters. Synced for the owner's own
@@ -382,7 +386,7 @@ export const usageSkillStats = pgTable(
     ),
     index("usage_skill_stats_user_minute").on(table.userId, table.minute),
   ],
-);
+).enableRLS();
 
 /** Retired allocations outlive host deletion so external cleanup is recoverable. */
 export const remoteTunnels = pgTable(
@@ -414,7 +418,7 @@ export const remoteTunnels = pgTable(
     uniqueIndex("remote_tunnels_name_unique").on(table.tunnelName),
     index("remote_tunnels_cleanup_idx").on(table.desired, table.cleanedAt),
   ],
-);
+).enableRLS();
 
 export const remotePairingCodes = pgTable(
   "remote_pairing_codes",
@@ -434,11 +438,11 @@ export const remotePairingCodes = pgTable(
     uniqueIndex("remote_pairing_codes_code_unique").on(table.code),
     index("remote_pairing_codes_expiry_idx").on(table.expiresAt),
   ],
-);
+).enableRLS();
 
 /** Shared fixed-window budgets survive API restarts and multiple replicas. */
 export const remotePairingBudgets = pgTable("remote_pairing_budgets", {
   key: text("key").primaryKey(),
   attempts: integer("attempts").notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-});
+}).enableRLS();

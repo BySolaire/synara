@@ -4,7 +4,7 @@
 // Layer: Web account feature unit tests.
 
 import type { AccountMe } from "@synara/contracts";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   accountErrorMessage,
@@ -185,6 +185,7 @@ describe("handleFormatError", () => {
 });
 
 describe("display derivations", () => {
+  afterEach(() => vi.unstubAllEnvs());
   it("derives the avatar initial from the display name", () => {
     expect(accountInitial("ada")).toBe("A");
     expect(accountInitial("  ")).toBe("?");
@@ -204,6 +205,14 @@ describe("display derivations", () => {
   it("builds the public profile URL from the handle", () => {
     expect(publicProfileUrl("ada")).toBe("https://trysynara.com/@ada");
     expect(publicProfileDisplayUrl("ada")).toBe("trysynara.com/@ada");
+  });
+
+  it("uses the trial origin for opening, copying and sharing a public profile", () => {
+    vi.stubEnv("VITE_PROFILES_PUBLIC_ORIGIN", "https://profiles.example/");
+    expect(publicProfileUrl("ada")).toBe("https://profiles.example/@ada");
+    expect(publicProfileDisplayUrl("ada")).toBe("profiles.example/@ada");
+    expect(profileShareUrl({ handle: "ada", public: true })).toBe("https://profiles.example/@ada");
+    expect(profileShareUrl({ handle: "ada", public: false })).toBeNull();
   });
 
   it("only yields a share URL for a profile that is explicitly public", () => {

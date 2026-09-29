@@ -270,8 +270,12 @@ To put a feature behind the list:
 
 Promote a feature to Stable by deleting its entry; every gate resolves itself.
 
-The list currently contains `omp` (Oh My Pi), available in Beta and gated off in
-Stable. The rail sidebar layout is available in both Stable and Beta.
+The list currently contains `omp` (Oh My Pi), `remoteConnections`, and
+`accountProfileSync`. Account profiles additionally require the server opt-in
+`SYNARA_ACCOUNT_PROFILE_SYNC=1`; it activates historical aggregate usage sync
+for the signed-in account. The UI reads the server capability, and publication
+remains a separate explicit choice. See the [profiles trial guide](apps/profiles/README.md).
+The rail sidebar layout is available in both Stable and Beta.
 
 ## Diagnostics
 

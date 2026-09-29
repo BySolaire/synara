@@ -138,16 +138,17 @@ export function accountFirstName(me: AccountMe): string {
   return display.trim().split(/\s+/)[0] ?? display;
 }
 
-/** Where public profiles are served. Single source for the URL and its copy. */
-const PUBLIC_PROFILE_HOST = "trysynara.com";
-
+/** Override at build time for an isolated profiles trial. */
 export function publicProfileUrl(handle: string): string {
-  return `https://${PUBLIC_PROFILE_HOST}/@${handle}`;
+  return new URL(
+    `/@${encodeURIComponent(handle)}`,
+    import.meta.env.VITE_PROFILES_PUBLIC_ORIGIN || "https://trysynara.com",
+  ).href;
 }
 
 /** Schemeless form for inline copy ("trysynara.com/@ada"). */
 export function publicProfileDisplayUrl(handle: string): string {
-  return `${PUBLIC_PROFILE_HOST}/@${handle}`;
+  return publicProfileUrl(handle).replace(/^https?:\/\//, "");
 }
 
 /**

@@ -27,8 +27,18 @@ export function requireRemoteConnections(stateDir?: string): void {
   if (reason) throw new Error(reason);
 }
 
+export function accountProfileSyncUnavailableReason(): string | undefined {
+  const flavor = desktopFlavorFromBundleId(process.env.SYNARA_DESKTOP_BUNDLE_ID);
+  if (!isBetaFeatureEnabled("accountProfileSync", flavor))
+    return "Account profile sync is unavailable in Stable.";
+  if (process.env.SYNARA_ACCOUNT_PROFILE_SYNC !== "1")
+    return "Account profile sync is unavailable until SYNARA_ACCOUNT_PROFILE_SYNC=1 is set.";
+  return undefined;
+}
+
 export function requireAccountProfileSync(): void {
-  throw new Error("Account profile sync is unavailable in this build.");
+  const reason = accountProfileSyncUnavailableReason();
+  if (reason) throw new Error(reason);
 }
 
 export function requireHostSecretsSync(): void {

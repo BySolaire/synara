@@ -1,4 +1,3 @@
-import { ACCOUNT_PROFILE_SYNC_ENABLED } from "@synara/shared/betaFeatures";
 // FILE: GlobalAccountDialogs.tsx
 // Purpose: Mounts the single sign-in and onboarding dialogs and sequences them:
 // any successful auth with a null profile flows straight into onboarding, which
@@ -22,7 +21,7 @@ export function GlobalAccountDialogs() {
   // A signed-in session without a profile means onboarding never finished —
   // whether the sign-in just happened here or was recovered on reconnect.
   const needsOnboarding =
-    ACCOUNT_PROFILE_SYNC_ENABLED && account.me !== null && (account.me.profile ?? null) === null;
+    account.profileSyncEnabled && account.me !== null && (account.me.profile ?? null) === null;
   useEffect(() => {
     if (needsOnboarding && view !== "onboarding") openOnboarding();
   }, [needsOnboarding, view, openOnboarding]);
@@ -39,12 +38,12 @@ export function GlobalAccountDialogs() {
   const signedInProfile = account.me === null ? undefined : (account.me.profile ?? null);
   useEffect(() => {
     if (view !== "sign-in" || signedInProfile === undefined) return;
-    if (ACCOUNT_PROFILE_SYNC_ENABLED && signedInProfile === null) {
+    if (account.profileSyncEnabled && signedInProfile === null) {
       openOnboarding();
     } else {
       close();
     }
-  }, [view, signedInProfile, openOnboarding, close]);
+  }, [view, signedInProfile, openOnboarding, close, account.profileSyncEnabled]);
 
   return (
     <>
@@ -55,7 +54,7 @@ export function GlobalAccountDialogs() {
         }}
         onSignedIn={(status) => {
           if (
-            ACCOUNT_PROFILE_SYNC_ENABLED &&
+            account.profileSyncEnabled &&
             status.state === "signed-in" &&
             (status.me.profile ?? null) === null
           ) {
@@ -65,7 +64,7 @@ export function GlobalAccountDialogs() {
           }
         }}
       />
-      {ACCOUNT_PROFILE_SYNC_ENABLED && account.me ? (
+      {account.profileSyncEnabled && account.me ? (
         <OnboardingDialog open={view === "onboarding"} me={account.me} onFinished={close} />
       ) : null}
     </>

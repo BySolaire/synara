@@ -4,8 +4,10 @@ import { HostConnectionRegistryService } from "./hostConnections/registry";
 import { observeControllerAccount } from "./hostConnections/accountObserver";
 import { RemoteDeviceTrustRepository } from "./persistence/Services/RemoteDeviceTrust";
 import { AuthControlPlane } from "./auth/Services/AuthControlPlane";
-import { remoteConnectionsUnavailableReason } from "./remoteFeaturePolicy";
-import { ACCOUNT_PROFILE_SYNC_ENABLED } from "@synara/shared/betaFeatures";
+import {
+  accountProfileSyncUnavailableReason,
+  remoteConnectionsUnavailableReason,
+} from "./remoteFeaturePolicy";
 /**
  * CliConfig - CLI/runtime bootstrap service definitions.
  *
@@ -539,7 +541,7 @@ const makeServerProgram = (input: CliInput) =>
     // buckets from the local projections, and pushes absolute values to the
     // account. Best-effort and fully inert while signed out — like the host
     // registration above, it must never delay or fail a boot.
-    if (ACCOUNT_PROFILE_SYNC_ENABLED) {
+    if (!accountProfileSyncUnavailableReason()) {
       const usageReporterSql = yield* SqlClient.SqlClient;
       const accountUsageReporter = createAccountUsageReporter({
         sql: usageReporterSql,
