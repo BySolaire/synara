@@ -2191,11 +2191,23 @@ describe("ChatView transcript geometry (full app)", () => {
   // simulated. The main agent must keep running while the panel toggles.
   it("opens one sidechat, preserves its draft on toggle, and restores composer focus", async () => {
     useRightDockStore.setState({ dockStateByThreadId: {} });
-    const snapshot = createSnapshotForTargetUser({
+    const mainSnapshot = createSnapshotForTargetUser({
       targetMessageId: MessageId.makeUnsafe("sidechat-shortcut-main"),
       targetText: "Main conversation continues",
       sessionStatus: "running",
     });
+    const expiredId = ThreadId.makeUnsafe("expired-sidechat-shortcut");
+    const withExpiredSidechat = addThreadToSnapshot(mainSnapshot, expiredId);
+    const snapshot = {
+      ...withExpiredSidechat,
+      threads: withExpiredSidechat.threads.map((thread) =>
+        thread.id === expiredId
+          ? { ...thread, sidechatSourceThreadId: THREAD_ID, sidechatExpiredAt: NOW_ISO }
+          : thread,
+      ),
+    };
+    useRightDockStore.getState().openPane(THREAD_ID, { kind: "sidechat", threadId: expiredId });
+    useRightDockStore.getState().setDockOpen(THREAD_ID, false);
     const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
     const previousNativeApi = window.nativeApi;
     const api = readNativeApi()!;
@@ -2269,6 +2281,8 @@ describe("ChatView transcript geometry (full app)", () => {
       await vi.waitFor(() => expect(document.activeElement).toBe(sideEditor));
       await userEvent.type(sideEditor, "Keep this tangent");
       const panes = useRightDockStore.getState().dockStateByThreadId[THREAD_ID]!.panes;
+      const livePane = panes.find((pane) => pane.threadId === commands[0]!.threadId)!;
+      expect(livePane.threadId).not.toBe(expiredId);
       const closeShortcut = dispatchConfiguredShortcut(sideEditor, { key: "s", altKey: true });
       expect(closeShortcut.defaultPrevented).toBe(true);
       expect(useRightDockStore.getState().dockStateByThreadId[THREAD_ID]!.open).toBe(false);
@@ -2310,12 +2324,14 @@ describe("ChatView transcript geometry (full app)", () => {
       await expectMainFocus();
       expect(useRightDockStore.getState().dockStateByThreadId[THREAD_ID]!.open).toBe(false);
       // Removing the tab must not force another fork of the source conversation.
-      useRightDockStore.getState().closePane(THREAD_ID, panes[0]!.id);
+      useRightDockStore.getState().closePane(THREAD_ID, livePane.id);
       dispatchConfiguredShortcut(mainEditor, { key: "s", altKey: true });
       await vi.waitFor(() => {
         const reopened = useRightDockStore.getState().dockStateByThreadId[THREAD_ID]!;
         expect(reopened.open).toBe(true);
-        expect(reopened.panes[0]?.threadId).toBe(panes[0]!.threadId);
+        expect(reopened.panes.find((pane) => pane.id === reopened.activePaneId)?.threadId).toBe(
+          livePane.threadId,
+        );
       });
       expect(commands.filter((c) => c.type === "thread.fork.create")).toHaveLength(1);
       expect(mounted.router.state.location.pathname).toBe(`/${THREAD_ID}`);

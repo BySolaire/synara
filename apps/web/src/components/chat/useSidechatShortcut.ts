@@ -6,7 +6,7 @@ import { resolveShortcutCommand } from "../../keybindings";
 import { isTerminalFocused } from "../../lib/terminalFocus";
 import { selectRightDockState, useRightDockStore } from "../../rightDockStore";
 import { scheduleDeferredChatMount } from "./deferredChatMount";
-import { resolveActivePane } from "../../rightDockStore.logic";
+import { type RightDockPane, resolveActivePane } from "../../rightDockStore.logic";
 
 function hasOpenDismissibleOverlay(): boolean {
   return Array.from(
@@ -25,7 +25,7 @@ export function useSidechatShortcut(input: {
   threadId: ThreadId;
   enabled: boolean;
   keybindings: ResolvedKeybindingsConfig;
-  existingSidechatId: ThreadId | null;
+  sidechats: readonly { id: ThreadId; sidechatExpiredAt?: string | null }[];
   createSidechat: () => Promise<void>;
   revealSidechat: () => void;
 }) {
@@ -75,13 +75,19 @@ export function useSidechatShortcut(input: {
       }
       if (creatingFor.current.has(threadId)) return;
       input.revealSidechat();
+      const latestLiveSidechatId =
+        input.sidechats.find((thread) => !thread.sidechatExpiredAt)?.id ?? null;
+      const isReusablePane = (pane: RightDockPane) =>
+        pane.kind === "sidechat" &&
+        pane.threadId !== null &&
+        !input.sidechats.some((thread) => thread.id === pane.threadId && thread.sidechatExpiredAt);
       const existingPane =
-        (activePane?.kind === "sidechat" ? activePane : null) ??
+        (activePane && isReusablePane(activePane) ? activePane : null) ??
         state.panes.find(
-          (pane) => pane.kind === "sidechat" && pane.threadId === input.existingSidechatId,
+          (pane) => pane.kind === "sidechat" && pane.threadId === latestLiveSidechatId,
         ) ??
-        state.panes.findLast((pane) => pane.kind === "sidechat" && pane.threadId !== null);
-      const targetId = existingPane?.threadId ?? input.existingSidechatId;
+        state.panes.findLast(isReusablePane);
+      const targetId = existingPane?.threadId ?? latestLiveSidechatId;
       if (targetId) {
         if (existingPane) store.setActivePane(threadId, existingPane.id);
         else store.openPane(threadId, { kind: "sidechat", threadId: targetId });
@@ -142,7 +148,7 @@ export function useSidechatShortcut(input: {
     input.enabled,
     input.threadId,
     input.keybindings,
-    input.existingSidechatId,
+    input.sidechats,
     input.createSidechat,
     input.revealSidechat,
   ]);

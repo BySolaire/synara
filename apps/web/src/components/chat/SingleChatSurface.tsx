@@ -893,7 +893,7 @@ export function SingleChatSurface(props: {
     threadId: props.threadId,
     enabled: props.search.view !== "editor",
     keybindings: shortcutConfig.data?.keybindings ?? [],
-    existingSidechatId: sourceSidechats[0]?.id ?? null,
+    sidechats: sourceSidechats,
     createSidechat: createDockSidechat,
     revealSidechat: () => requestImmediateDockHydration("sidechat"),
   });
