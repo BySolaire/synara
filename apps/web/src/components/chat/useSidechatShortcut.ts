@@ -21,7 +21,14 @@ function hasOpenDismissibleOverlay(): boolean {
 
 // The single-chat surface owns its dock; embedded ChatViews must not each create
 // or toggle a sidechat in response to the same key event.
-export function useSidechatShortcut(input: {
+export function useSidechatShortcut({
+  threadId,
+  enabled,
+  keybindings,
+  sidechats,
+  createSidechat,
+  revealSidechat,
+}: {
   threadId: ThreadId;
   enabled: boolean;
   keybindings: ResolvedKeybindingsConfig;
@@ -29,24 +36,22 @@ export function useSidechatShortcut(input: {
   createSidechat: () => Promise<void>;
   revealSidechat: () => void;
 }) {
-  const dockState = useRightDockStore(
-    useMemo(() => selectRightDockState(input.threadId), [input.threadId]),
-  );
+  const dockState = useRightDockStore(useMemo(() => selectRightDockState(threadId), [threadId]));
   const [focusRequest, setFocusRequest] = useState<{
     sourceId: ThreadId;
     targetId: ThreadId;
   } | null>(null);
   const creatingFor = useRef(new Set<ThreadId>());
-  const currentSource = useRef<ThreadId | null>(input.threadId);
+  const currentSource = useRef<ThreadId | null>(threadId);
   useEffect(() => {
-    currentSource.current = input.threadId;
+    currentSource.current = threadId;
     return () => {
       currentSource.current = null;
     };
-  }, [input.threadId]);
+  }, [threadId]);
 
   useEffect(() => {
-    if (!focusRequest || focusRequest.sourceId !== input.threadId || !input.enabled) return;
+    if (!focusRequest || focusRequest.sourceId !== threadId || !enabled) return;
     const activePane = resolveActivePane(dockState);
     if (!dockState.open || activePane?.threadId !== focusRequest.targetId) return;
     // A reopened dock may remount its composer and restore the saved Lexical
@@ -55,11 +60,10 @@ export function useSidechatShortcut(input: {
       requestComposerFocus(focusRequest.targetId);
       setFocusRequest(null);
     });
-  }, [dockState, focusRequest, input.threadId, input.enabled]);
+  }, [dockState, focusRequest, threadId, enabled]);
 
   useEffect(() => {
-    if (!input.enabled) return;
-    const { threadId } = input;
+    if (!enabled) return;
     const hideSidechat = () => {
       useRightDockStore.getState().setDockOpen(threadId, false);
       setFocusRequest(null);
@@ -74,13 +78,13 @@ export function useSidechatShortcut(input: {
         return;
       }
       if (creatingFor.current.has(threadId)) return;
-      input.revealSidechat();
+      revealSidechat();
       const latestLiveSidechatId =
-        input.sidechats.find((thread) => !thread.sidechatExpiredAt)?.id ?? null;
+        sidechats.find((thread) => !thread.sidechatExpiredAt)?.id ?? null;
       const isReusablePane = (pane: RightDockPane) =>
         pane.kind === "sidechat" &&
         pane.threadId !== null &&
-        !input.sidechats.some((thread) => thread.id === pane.threadId && thread.sidechatExpiredAt);
+        !sidechats.some((thread) => thread.id === pane.threadId && thread.sidechatExpiredAt);
       const existingPane =
         (activePane && isReusablePane(activePane) ? activePane : null) ??
         state.panes.find(
@@ -95,7 +99,7 @@ export function useSidechatShortcut(input: {
         return;
       }
       creatingFor.current.add(threadId);
-      void input.createSidechat().finally(() => {
+      void createSidechat().finally(() => {
         creatingFor.current.delete(threadId);
         if (currentSource.current !== threadId) return;
         const nextPane = resolveActivePane(
@@ -133,7 +137,7 @@ export function useSidechatShortcut(input: {
         return;
       }
       if (
-        resolveShortcutCommand(event, input.keybindings, {
+        resolveShortcutCommand(event, keybindings, {
           context: { terminalFocus: isTerminalFocused() },
         }) !== "sidechat.toggle"
       )
@@ -144,12 +148,5 @@ export function useSidechatShortcut(input: {
     };
     window.addEventListener("keydown", capture, { capture: true });
     return () => window.removeEventListener("keydown", capture, { capture: true });
-  }, [
-    input.enabled,
-    input.threadId,
-    input.keybindings,
-    input.sidechats,
-    input.createSidechat,
-    input.revealSidechat,
-  ]);
+  }, [enabled, threadId, keybindings, sidechats, createSidechat, revealSidechat]);
 }
