@@ -440,3 +440,34 @@ signed out. Credentials and device pairing were not reset or bypassed. The Mini 
 The normal sign-in dialog is ready on the MacBook. Mixed-host navigation on this exact live build
 still requires the operator to complete sign-in; the passing two-server fixture is not a substitute
 for that remaining physical-device check. The installed app and primary checkouts were untouched.
+
+### Internal agent MCP routing — 2026-09-29
+
+Implementation `ac27fd7` closes the gap between the combined sidebar and the provider-session
+MCP gateway. `synara_list_connections` discovers the executing server and its paired outgoing
+connections. Existing project/thread tools accept an explicit `environmentId`; local remains
+the default. Results and wait/read continuations retain the owning environment. Remote calls
+reuse paired TLS, caller runtime/worktree limits, and durable creation/recovery; no provider
+bearer is forwarded. External MCP integration grants remain local and unchanged. See the
+[agent-tool boundary](../../remote-connections-v2.md#agent-tools-across-computers) for supported
+operations and cross-computer completion/automation limitations.
+
+Validation: formatting passed; lint 0 errors / 790 existing warnings; workspace typecheck 13/13;
+final full repository tests 12/12 tasks (server 6,778 passed, 26 intentionally skipped). Focused
+provider-policy and delegation regressions passed 337/337, and the JSON contract checks passed
+12/12. The final rebuilt two-server browser flow passed in 26.33 seconds, including actual
+provider-scoped MCP discovery, listing, reading, provider discovery, idempotent creation,
+rename, message dispatch and wait over the paired transport. It keeps a colliding local ID
+untouched and verifies test-turn cleanup. The provider in this fixture is deterministic.
+The disposable PostgreSQL server is stopped.
+
+Both isolated physical-Mac servers were rebuilt/restarted at `ac27fd7` after confirming no active
+chats, preserving their homes, login and approved pairing. The MacBook now reports signed in;
+the earlier sign-in prerequisite above has been satisfied. A read-only `agentGateway.call` from
+the MacBook over the existing Mini bridge listed three threads and read the existing test chat
+successfully. This physical check used the real local caller's metadata and read capability;
+it did not submit a new model prompt, create a task, or alter messages. One bridge negotiation
+returned HTTP 503; a fresh negotiation succeeded without reconnecting or re-pairing the host.
+That transient transport failure remains an observation, not a claim of seamless reconnect.
+The physical RPC check and provider-fixture MCP check establish different parts of the path;
+they do not qualify a signed release or every live provider.
