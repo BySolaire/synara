@@ -58,8 +58,9 @@ if (!bootstrapSignedOutScreen()) {
           main.style.cssText = "font:16px system-ui;max-width:32rem;margin:12vh auto;padding:2rem";
           const cached = readVerifiedControllerForRecovery();
           const title = document.createElement("h1");
-          title.textContent = cached
-            ? `${cached.label} · connection unavailable`
+          const label = readWorkspaceFrame()?.host.hostName ?? cached?.label;
+          title.textContent = label
+            ? `${label} · connection unavailable`
             : "Connection unavailable";
           const detail = document.createElement("p");
           detail.textContent =

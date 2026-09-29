@@ -1,7 +1,11 @@
 import { ThreadStatusPillChip } from "../ThreadStatusPillChip";
 import { useState } from "react";
 import { useLocation } from "@tanstack/react-router";
-import { useWorkspaceSessions, type WorkspaceSession } from "../../lib/hosts/workspaceSessions";
+import {
+  readWorkspaceSessions,
+  useWorkspaceSessions,
+  type WorkspaceSession,
+} from "../../lib/hosts/workspaceSessions";
 import { checkoutKey } from "../../lib/projectCatalog/model";
 import { openWorkspacePath } from "./WorkspacePanels";
 import {
@@ -98,14 +102,26 @@ function WorkspaceProjectGroup({ session }: { session: WorkspaceSession }) {
                     label={`New chat in ${project.name} on ${session.host.hostName}`}
                     disabled={!online}
                     onClick={() => {
-                      openWorkspacePath(environmentId, session.summary?.path ?? "/");
-                      void session.navigation?.newChat(project.id).catch((error: unknown) =>
-                        toastManager.add({
-                          type: "error",
-                          title: "Could not create chat",
-                          description: error instanceof Error ? error.message : "Try again.",
-                        }),
-                      );
+                      const navigation = session.navigation;
+                      // Create in the owning host first; activating its old route can cancel creation.
+                      void navigation
+                        ?.newChat(project.id)
+                        .then((path) => {
+                          if (
+                            readWorkspaceSessions().some(
+                              (entry) =>
+                                entry.host === session.host && entry.navigation === navigation,
+                            )
+                          )
+                            openWorkspacePath(environmentId, path);
+                        })
+                        .catch((error: unknown) =>
+                          toastManager.add({
+                            type: "error",
+                            title: "Could not create chat",
+                            description: error instanceof Error ? error.message : "Try again.",
+                          }),
+                        );
                     }}
                   />
                 </SidebarSectionToolbar>

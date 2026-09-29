@@ -14,13 +14,16 @@ function RemoteWorkspaceRoute() {
   const session = useWorkspaceSessions().find(
     (item) => item.host.executionScope.environmentId === environment,
   );
+  // The pane owns its loading/error UI once its router is ready. Do not leave
+  // an obscured loading status in the outer document’s accessibility tree.
+  if (session?.navigation) return null;
   return (
     <div
       className="flex flex-1 items-center justify-center p-6 text-ui text-muted-foreground"
       role="status"
     >
       {session
-        ? `Opening ${session.host.hostName}…`
+        ? (session.error ?? `Opening ${session.host.hostName}…`)
         : "This computer is not connected. Open Settings → Connections to reconnect it."}
     </div>
   );

@@ -15,8 +15,8 @@ export interface WorkspaceSummary {
 
 export interface WorkspaceNavigation {
   navigate(path: string): void;
-  newChat(projectId: string): Promise<void>;
-  openProject(projectId: string): Promise<void>;
+  newChat(projectId: string): Promise<string>;
+  openProject(projectId: string): Promise<string>;
   recover(): void;
 }
 

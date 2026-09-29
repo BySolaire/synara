@@ -157,6 +157,7 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         .first()
         .waitFor();
       await page.getByText("REMOTE checkout", { exact: true }).first().waitFor();
+      await page.getByText(/^Opening E2E host/).waitFor({ state: "hidden" });
       await page.getByText("LOCAL checkout", { exact: true }).first().waitFor();
       expect(
         await page.evaluate(
@@ -164,15 +165,28 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         ),
       ).toBe("same-renderer");
       const remotePage = page.frameLocator('iframe[title^="Synara workspace on"]');
-      await page.getByText("REMOTE checkout", { exact: true }).first().hover();
-      await page.getByRole("button", { name: /^New chat in REMOTE checkout on / }).click();
-      const newRemoteComposer = remotePage.locator('[contenteditable="true"]').first();
-      await newRemoteComposer.fill("NEW REMOTE DRAFT");
+      // The remote frame is hidden when creation begins: activating its old Home route
+      // must not supersede the project-specific draft navigation.
       await page.getByText("LOCAL checkout", { exact: true }).first().hover();
       await page
         .getByRole("button", { name: "Create new thread in LOCAL checkout", exact: true })
         .click();
       await page.locator('[contenteditable="true"]').first().fill("NEW LOCAL DRAFT");
+      await page.getByText("REMOTE checkout", { exact: true }).first().hover();
+      await page.getByRole("button", { name: /^New chat in REMOTE checkout on / }).click();
+      const newRemoteComposer = remotePage.locator('[contenteditable="true"]').first();
+      await newRemoteComposer.fill("NEW REMOTE DRAFT");
+      await remotePage.getByRole("button", { name: "Toggle right sidebar", exact: true }).click();
+      await remotePage.getByRole("button", { name: "Open Files", exact: true }).click();
+      await remotePage.getByText("same.txt", { exact: true }).first().waitFor();
+      await page.getByRole("button", { name: "Local chats", exact: true }).click();
+      await page.getByText("LOCAL checkout", { exact: true }).first().hover();
+      await page
+        .getByRole("button", { name: "Create new thread in LOCAL checkout", exact: true })
+        .click();
+      expect(await page.locator('[contenteditable="true"]').first().innerText()).toBe(
+        "NEW LOCAL DRAFT",
+      );
       await page.getByRole("button", { name: /E2E host .*Connected/ }).click();
       expect(await newRemoteComposer.innerText()).toBe("NEW REMOTE DRAFT");
       await using localRpc = await workspaceRpc(controller.origin);

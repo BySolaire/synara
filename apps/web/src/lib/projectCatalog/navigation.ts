@@ -1,6 +1,11 @@
-import { activateHost } from "../hosts/activeHost";
+import { appHistory } from "../../appNavigation";
+import { workspaceRoute } from "../hosts/workspaceFrame";
 import { readExecutionContext } from "../hosts/executionContext";
-import { waitForWorkspaceNavigation } from "../hosts/workspaceSessions";
+import {
+  addWorkspaceSession,
+  readWorkspaceSessions,
+  waitForWorkspaceNavigation,
+} from "../hosts/workspaceSessions";
 import { ensureHostsApi } from "../hosts/api";
 import { projectCatalogKey } from "./storage";
 import type { CatalogCheckout, CheckoutRef } from "./model";
@@ -21,14 +26,22 @@ export async function openCatalogCheckout(checkout: CatalogCheckout): Promise<vo
     throw new Error("This host's identity changed. Pair it again before opening the checkout.");
   if (catalogKey !== projectCatalogKey())
     throw new Error("The account changed. Reopen the catalog.");
-  await activateHost({
+  const session = addWorkspaceSession({
     hostId: connection.hostId,
     hostName: connection.hostName,
     wsPath: connection.wsPath,
     executionScope: connection.executionScope,
   });
   const navigation = await waitForWorkspaceNavigation(checkout.environmentId);
-  await navigation.openProject(checkout.projectId);
+  const path = await navigation.openProject(checkout.projectId);
+  if (
+    catalogKey !== projectCatalogKey() ||
+    !readWorkspaceSessions().some(
+      (entry) => entry.host === session.host && entry.navigation === navigation,
+    )
+  )
+    throw new Error("The connection changed. Reopen the catalog.");
+  appHistory.push(workspaceRoute(checkout.environmentId, path));
 }
 export function takePendingCatalogCheckout(): CheckoutRef | null {
   const raw = sessionStorage.getItem(pendingKey);

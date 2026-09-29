@@ -183,6 +183,7 @@ export function WorkspaceFrameNavigation() {
       newChat: async (projectId) => {
         const id = await newChatRef.current(ProjectId.makeUnsafe(projectId));
         if (!id) throw new Error("The project is not ready to create a chat.");
+        return `/${id}`;
       },
       openProject: async (projectId) => {
         const store = useStore.getState();
@@ -193,9 +194,10 @@ export function WorkspaceFrameNavigation() {
           .toSorted((a, b) =>
             (b.updatedAt ?? b.createdAt).localeCompare(a.updatedAt ?? a.createdAt),
           )[0];
-        if (thread) appHistory.push(`/${thread.id}`);
-        else if (!(await newChatRef.current(ProjectId.makeUnsafe(projectId))))
-          throw new Error("This project is not ready.");
+        if (thread) return `/${thread.id}`;
+        const id = await newChatRef.current(ProjectId.makeUnsafe(projectId));
+        if (!id) throw new Error("This project is not ready.");
+        return `/${id}`;
       },
       recover: recoverBeforeLocalEscape,
     });
