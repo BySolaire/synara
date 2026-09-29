@@ -310,8 +310,8 @@ deterministic provider fixture, not a real provider account.
 The existing transport/pairing and per-environment storage boundaries are reused. The sidebar
 uses the shared sidebar, button, disclosure and status components. A remote workspace is a
 same-origin frame loading the bundled app; no provider/repository content creates frames.
-File-backed Electron, large numbers of connected hosts and the new MacBook live UI flow remain
-separate qualification steps. No DNS, Cloudflare, trust, provider-choice or database change is
+File-backed Electron and large numbers of connected hosts remain separate qualification steps.
+The MacBook browser UI result is recorded below. No DNS, Cloudflare, trust, provider-choice or database change is
 part of this renderer update.
 
 Validation: root formatting passed; lint reports 0 errors and the unchanged 792 warnings;
@@ -321,3 +321,29 @@ workflow passed in 22.42 seconds, including new-chat buttons on both projects an
 local composer usable during the remote connector outage. A first unfiltered build encountered
 the sandbox's port-binding restriction in the unrelated profiles/Turbopack build; the relevant
 desktop/server build above completed.
+
+### Two-Mac project/chat navigation follow-up
+
+The MacBook browser test initially exposed a creation race: activating a hidden remote pane at
+its previous Home route could supersede creation in the selected remote project. Commit
+`59922f0` returns the exact destination from the owning workspace and only then opens that route.
+Catalog project opening uses the same ordering; late completion after an account/connection
+change cannot select a stale workspace. Ready panes no longer leave an obscured "Opening…"
+status in the outer accessibility tree, and connection failures name the affected computer.
+
+After rebuilding the isolated MacBook controller at `59922f0`, the live browser check passed:
+local chat → remote new-project "+" → correct project heading → Mini README, without using the
+inner project picker. A fresh disposable Mini project had no existing chats/drafts before the
+check. Separate local/remote drafts survived navigation in both directions. Earlier reads also
+verified distinct README contents for the same filesystem path on the two computers. The
+controller retained login/pairing and served the verified rebuilt index. No real provider prompt
+was sent and the approved device was not revoked.
+
+Follow-up validation: formatting, lint (0 errors / 792 existing warnings), typecheck (13 tasks),
+desktop/server build (5 tasks), and 38 focused tests passed. The strengthened built Chromium
+workflow passed in 17.96 seconds, including remote creation from an active local draft, Files
+in the selected remote project, distinct drafts, streaming/approval fixtures and connector/
+controller recovery. The full repository run preceding this focused follow-up passed 12/12
+tasks. The disposable test PostgreSQL instance is stopped. The live MacBook controller continues
+to use its process-scoped DNS override; ordinary DNS and signed Electron distribution are not
+qualified by these browser checks.

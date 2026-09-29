@@ -84,3 +84,10 @@ The combined sidebar supports opening existing chats and creating chats in a sel
 project. Cross-host split panes and moving an existing chat between computers are not implemented.
 A frame retains one environment's UI and caches, so memory use grows with connected workspaces;
 large host counts and file-backed Electron behavior need separate qualification.
+
+The physical MacBook browser check also passed with the Mini connected: a new remote project
+chat opens directly from a local chat, its Files pane reads the Mini's directory, and switching
+between chats preserves distinct drafts. Same-path projects on both Macs returned their own
+README contents. New-chat and catalog navigation wait for the exact destination from the owning
+runtime before revealing it; activating an old route must not supersede draft creation. This
+live check used the isolated controller's DNS override and did not send a real provider prompt.
