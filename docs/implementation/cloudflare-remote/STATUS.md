@@ -364,3 +364,25 @@ and covered two additional UX defects: deferred composer focus closing a newly o
 menu, and a slow initial folder listing overwriting a manually entered path. Eight focused browser
 tests pass, including the delayed-listing regression. Final repository and physical MacBook results
 are recorded after this entry. These changes add no provider prompts, secrets or infrastructure.
+
+Automated final pass at `9163d31`: full repository suite 12/12 tasks passed in 321.9 seconds;
+web suite 4,262 passing tests; formatting passed; lint 0 errors / 791 existing warnings;
+typecheck 13/13 tasks; desktop/server build 5/5 tasks. The eight focused Chromium tests and
+23.37-second two-server workflow passed separately. The updated E2E source also typechecks.
+The disposable PostgreSQL cluster is stopped. No Windows process boundary or migration changed.
+
+The physical MacBook browser check also passed at `9163d31`: Run on selected the Mini and returned
+to This computer; both menus stayed usable. Create project accepted a custom name, browsed a
+folder present only on the Mini, and opened its README with the expected proof marker. A separate
+read-only RPC check on the Mini confirmed that project's name and canonical folder. The existing
+paired connection briefly showed Reconnecting during startup and recovered without intervention.
+No enrollment, DNS, provider prompt or device-revocation change was needed. The browser preview
+is left on the new Mini project; this is not a signed desktop release. The existing process-scoped
+DNS override remains in use, so this check does not qualify ordinary DNS resolution.
+
+A controlled unsent-draft check on the MacBook retained a harmless test marker on the same
+local route through MacBook → Mini → MacBook and a normal browser reload. Returning from a
+project-specific draft via Run on selects the destination computer's home draft; it does not
+move that project's text. The earlier observation of an empty composer was a different draft,
+not a reproduced loss. GitHub cloning still targets the local computer; remote project creation
+uses a source folder on the selected computer.
