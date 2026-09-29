@@ -506,12 +506,15 @@ export function createWsNativeApi(): NativeApi {
   transport.subscribe(WS_CHANNELS.automationEvent, (message) => {
     automationEventListeners.emit(message.data);
   });
-  transport.subscribe(DEVICE_WS_CHANNELS.event, (message) => {
-    deviceEventListeners.emit(message.data);
-  });
-  transport.subscribe(COMPUTER_WS_CHANNELS.event, (message) => {
-    computerEventListeners.emit(message.data);
-  });
+  // Remote hosts reject these local-only streams; subscribing would trigger reconnects.
+  if (!remoteExecution) {
+    transport.subscribe(DEVICE_WS_CHANNELS.event, (message) => {
+      deviceEventListeners.emit(message.data);
+    });
+    transport.subscribe(COMPUTER_WS_CHANNELS.event, (message) => {
+      computerEventListeners.emit(message.data);
+    });
+  }
   transport.subscribe(ORCHESTRATION_WS_CHANNELS.shellEvent, (message) => {
     orchestrationShellEventListeners.emit(message.data);
   });

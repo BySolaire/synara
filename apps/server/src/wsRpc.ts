@@ -2464,7 +2464,7 @@ const makeRpcWebSocketHttpEffect = RpcServer.toHttpEffectWebsocket(AdmittedWsFea
   // JSON keeps the wire format symmetric with any web build. A serialization
   // mismatch on this single multiplexed socket is a hard connect failure, and the
   // desktop/dev setup routinely runs server and web on independently-built copies.
-}).pipe(Effect.provide(makeWsRpcLayer().pipe(Layer.provideMerge(RpcSerialization.layerJson))));
+});
 
 const makeBootstrapWebSocketHttpEffect = RpcServer.toHttpEffectWebsocket(WsBootstrapRpcGroup, {
   spanPrefix: "ws.bootstrap",
@@ -2780,6 +2780,8 @@ export const websocketRpcRouteLayer = Layer.mergeAll(
   // The registry must be provided here so the upgrade route and the RPC
   // middleware (built from the same source effect) share one instance.
   makeWebsocketRpcRouteLayer(makeRpcWebSocketHttpEffect).pipe(
+    // Handler resources, including the remote supervisor, live until server shutdown.
+    Layer.provide(makeWsRpcLayer().pipe(Layer.provideMerge(RpcSerialization.layerJson))),
     Layer.provide(WsConnectionSessionsLive),
   ),
 );

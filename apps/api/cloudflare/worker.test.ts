@@ -9,7 +9,7 @@ vi.mock("@cloudflare/containers", () => ({
   },
 }));
 
-import worker, { type AccountApi } from "./worker";
+import worker, { AccountApi } from "./worker";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -105,4 +105,43 @@ describe("Cloudflare account API ingress", () => {
       expect(forwarded.headers.has("x-synara-client-ip")).toBe(false);
     },
   );
+});
+
+describe("Cloudflare account API container configuration", () => {
+  const ctx = {} as ConstructorParameters<typeof AccountApi>[0];
+
+  it("enables managed tunnels and explicit enrollment through Worker bindings", () => {
+    const { env } = setup();
+    const container = new AccountApi(ctx, {
+      ...env,
+      CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
+      CLOUDFLARE_ZONE_ID: "b".repeat(32),
+      CLOUDFLARE_API_TOKEN: "test-tunnel-token",
+      CLOUDFLARE_TUNNEL_DOMAIN: "example.com",
+      REMOTE_TEST_USER_IDS: "user_mini, user_macbook",
+    });
+
+    expect(container.envVars).toMatchObject({
+      NODE_ENV: "production",
+      IDENTITY_PROVIDER: "workos",
+      CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
+      CLOUDFLARE_ZONE_ID: "b".repeat(32),
+      CLOUDFLARE_API_TOKEN: "test-tunnel-token",
+      CLOUDFLARE_TUNNEL_DOMAIN: "example.com",
+      REMOTE_TEST_USER_IDS: "user_mini, user_macbook",
+    });
+  });
+
+  it("keeps remote access unconfigured and unrelated bindings out of the container", () => {
+    const { env } = setup();
+    const bindings = { ...env, MIGRATION_PROXY_SECRET: "worker-only-secret" };
+    const container = new AccountApi(ctx, bindings);
+    expect(container.envVars).not.toHaveProperty("CLOUDFLARE_ACCOUNT_ID");
+    expect(container.envVars).not.toHaveProperty("CLOUDFLARE_ZONE_ID");
+    expect(container.envVars).not.toHaveProperty("CLOUDFLARE_API_TOKEN");
+    expect(container.envVars).not.toHaveProperty("CLOUDFLARE_TUNNEL_DOMAIN");
+    expect(container.envVars).not.toHaveProperty("REMOTE_TEST_USER_IDS");
+    expect(container.envVars).not.toHaveProperty("MIGRATION_PROXY_SECRET");
+    expect(container.envVars).not.toHaveProperty("ACCOUNT_API");
+  });
 });

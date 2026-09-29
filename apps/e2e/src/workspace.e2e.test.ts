@@ -296,7 +296,20 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         fixture,
         controller.origin,
       );
-      await page.reload();
+      // Recovery must restore durable intent without reloading the renderer,
+      // whose bootstrap would issue hosts.connect and mask a stopped supervisor.
+      await using restartedLocal = await workspaceRpc(restartedController.origin);
+      await expect
+        .poll(
+          async () =>
+            (
+              await restartedLocal.request<{ connections: HostConnection[] }>(
+                "hosts.listConnections",
+              )
+            ).connections.some((item) => item.hostId === linked.row.id),
+          { timeout: 40_000 },
+        )
+        .toBe(true);
       await page
         .getByText(
           "REMOTE STREAM STARTED — RECOVERED AFTER CONNECTOR RESTART — COMPLETED WHILE CONTROLLER WAS STOPPED",

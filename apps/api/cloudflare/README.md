@@ -53,13 +53,26 @@ port 8788 and one trusted proxy hop.
 
 Optional Worker secrets are forwarded only by explicit name:
 `API_SIGNING_KEY_PREVIOUS`, `PROFILE_PROXY_SECRET`, and the existing `S3_*`
-avatar configuration. Configure the complete avatar set or leave all of it
+avatar configuration, plus `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_ZONE_ID`,
+`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_TUNNEL_DOMAIN` and `REMOTE_TEST_USER_IDS`
+for remote access. Configure the complete avatar set or leave all of it
 unset; the API rejects a partial set. The deployed trial now has all five
 required S3 settings as secrets and a bucket-scoped R2 token. Restart the API
 Container after changing runtime storage settings; updating Worker secrets
 alone does not reconfigure an already running API process. Confirm with an
-authenticated upload. Remote tunnel provisioning credentials are deliberately absent
-from this profiles trial.
+authenticated upload.
+
+For remote access, set all four `CLOUDFLARE_*` runtime bindings together, or
+leave all four unset. A partial tunnel configuration prevents API startup.
+The runtime API token must grant Tunnel Edit for the selected account and DNS
+Edit for the selected zone; it is separate from Wrangler's deployment login.
+It stays in Worker secrets and the API Container, never in the desktop app.
+Set `REMOTE_TEST_USER_IDS` to the comma-separated WorkOS IDs of the enrolled
+test users; an empty list denies remote access. Restart the Container after
+changing these bindings so the API loads them. See the
+[remote setup checklist](../../../docs/implementation/cloudflare-remote/READINESS.md)
+for DNS prerequisites and the two-Mac test. Forwarding these optional bindings
+does not provision a tunnel or enroll anyone by itself.
 
 ## Verify and deploy
 

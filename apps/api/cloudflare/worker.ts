@@ -7,6 +7,11 @@ type OptionalSecrets = Partial<
   Record<
     | "API_SIGNING_KEY_PREVIOUS"
     | "PROFILE_PROXY_SECRET"
+    | "CLOUDFLARE_ACCOUNT_ID"
+    | "CLOUDFLARE_ZONE_ID"
+    | "CLOUDFLARE_API_TOKEN"
+    | "CLOUDFLARE_TUNNEL_DOMAIN"
+    | "REMOTE_TEST_USER_IDS"
     | "S3_ENDPOINT"
     | "S3_BUCKET"
     | "S3_ACCESS_KEY_ID"
@@ -37,6 +42,11 @@ export class AccountApi extends Container<Cloudflare.Env & OptionalSecrets> {
         [
           "API_SIGNING_KEY_PREVIOUS",
           "PROFILE_PROXY_SECRET",
+          "CLOUDFLARE_ACCOUNT_ID",
+          "CLOUDFLARE_ZONE_ID",
+          "CLOUDFLARE_API_TOKEN",
+          "CLOUDFLARE_TUNNEL_DOMAIN",
+          "REMOTE_TEST_USER_IDS",
           "S3_ENDPOINT",
           "S3_BUCKET",
           "S3_ACCESS_KEY_ID",

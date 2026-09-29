@@ -6,7 +6,9 @@
 import {
   ApprovalRequestId,
   CommandId,
+  COMPUTER_WS_CHANNELS,
   type ContextMenuItem,
+  DEVICE_WS_CHANNELS,
   EventId,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
@@ -219,6 +221,9 @@ describe("wsNativeApi", () => {
       WS_METHODS.serverGetEnvironment,
     ]);
     expect(transportInstances[0]!.subscriptions).toEqual([]);
+    expect(transportInstances[1]!.subscriptions).toContain(WS_CHANNELS.serverWelcome);
+    expect(transportInstances[1]!.subscriptions).not.toContain(DEVICE_WS_CHANNELS.event);
+    expect(transportInstances[1]!.subscriptions).not.toContain(COMPUTER_WS_CHANNELS.event);
     const cursors = await import("./threadDetailResumeCursors");
     const thread = ThreadId.makeUnsafe("same-thread");
     cursors.setThreadDetailResumeCursor(thread, 42);
@@ -227,6 +232,15 @@ describe("wsNativeApi", () => {
     transportInstances[1]!.options.onGenerationChanged?.();
     expect(cursors.getThreadDetailResumeCursor(thread)).toBeUndefined();
     Reflect.deleteProperty(getWindowForTest(), "sessionStorage");
+  });
+
+  it("keeps device and computer events subscribed for local execution", async () => {
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    createWsNativeApi();
+
+    expect(transportInstances).toHaveLength(1);
+    expect(transportInstances[0]!.subscriptions).toContain(DEVICE_WS_CHANNELS.event);
+    expect(transportInstances[0]!.subscriptions).toContain(COMPUTER_WS_CHANNELS.event);
   });
 
   it("gives a slow provider refresh a bounded deadline beyond the generic RPC timeout", async () => {

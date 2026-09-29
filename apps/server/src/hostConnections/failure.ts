@@ -43,8 +43,8 @@ export function classifyConnectionFailure(error: unknown): HostConnectionState {
         return "revoked";
       if (value.status === 401) return "needs-sign-in";
     }
-    if (value instanceof HostDialError && value.detail.stage === "no-route") return "stopped";
     value = value instanceof Error ? value.cause : undefined;
   }
+  // Published routes can disappear temporarily while the host or connector restarts.
   return "reconnecting";
 }
