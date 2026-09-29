@@ -60,6 +60,7 @@ import { resetHomeChatProjectPrewarmStateForTests } from "../lib/chatProjects";
 import { resetStudioProjectPrewarmStateForTests } from "../lib/studioProjects";
 import { hasReconciledServerProviderStatuses } from "../lib/serverReactQuery";
 import { getRouter } from "../router";
+import { useRightDockStore } from "../rightDockStore";
 import { useSplitViewStore } from "../splitViewStore";
 import { useSpacesUiStore } from "../spacesUiStore";
 import { useRailShellStore } from "../railShellStore";
@@ -2184,6 +2185,150 @@ describe("ChatView transcript geometry (full app)", () => {
     await resetStudioProjectPrewarmStateForTests();
     resetRetainedThreadDetailSubscriptionsForTests();
     document.body.innerHTML = "";
+  });
+
+  // #1374: real route, dock and Lexical composers; only the server boundary is
+  // simulated. The main agent must keep running while the panel toggles.
+  it("opens one sidechat, preserves its draft on toggle, and restores composer focus", async () => {
+    useRightDockStore.setState({ dockStateByThreadId: {} });
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: MessageId.makeUnsafe("sidechat-shortcut-main"),
+      targetText: "Main conversation continues",
+      sessionStatus: "running",
+    });
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+    const previousNativeApi = window.nativeApi;
+    const api = readNativeApi()!;
+    const commands: Record<string, unknown>[] = [];
+    let releaseFork!: () => void;
+    const forkBarrier = new Promise<void>((resolve) => {
+      releaseFork = resolve;
+    });
+    Object.defineProperty(window, "nativeApi", {
+      configurable: true,
+      value: {
+        ...api,
+        orchestration: {
+          ...api.orchestration,
+          dispatchCommand: async (command: Record<string, unknown>) => {
+            commands.push(command);
+            if (command.type === "thread.fork.create") {
+              await forkBarrier;
+              const next = addThreadToSnapshot(fixture.snapshot, command.threadId as ThreadId);
+              fixture.snapshot = {
+                ...next,
+                threads: next.threads.map((thread) =>
+                  thread.id === command.threadId
+                    ? { ...thread, sidechatSourceThreadId: THREAD_ID }
+                    : thread,
+                ),
+              };
+            }
+            return { sequence: fixture.snapshot.snapshotSequence };
+          },
+          getShellSnapshot: async () => createShellSnapshotFromReadModel(fixture.snapshot),
+        },
+      },
+    });
+    try {
+      let mainEditor = await waitForComposerEditor();
+      const expectMainFocus = async () => {
+        await vi.waitFor(() => {
+          const current = document.querySelector<HTMLElement>(
+            '[data-chat-pane-scope="single"] [contenteditable="true"]',
+          );
+          expect(current).not.toBeNull();
+          expect(document.activeElement).toBe(current);
+          mainEditor = current!;
+        });
+      };
+      mainEditor.focus();
+      await dispatchConfiguredShortcutWhenReady(mainEditor, { key: "s", altKey: true });
+      dispatchConfiguredShortcut(mainEditor, { key: "s", altKey: true });
+      await vi.waitFor(() =>
+        expect(commands.filter((c) => c.type === "thread.fork.create")).toHaveLength(1),
+      );
+      expect(commands[0]).toMatchObject({
+        sourceThreadId: THREAD_ID,
+        sidechatSourceThreadId: THREAD_ID,
+        projectId: PROJECT_ID,
+        envMode: "local",
+        branch: "main",
+        worktreePath: null,
+        runtimeMode: "full-access",
+        modelSelection: { provider: "codex", model: "gpt-5" },
+      });
+      releaseFork();
+      let sideEditor = await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(
+            '[data-chat-pane-scope^="dock-sidechat:"] [contenteditable="true"]',
+          ),
+        "Sidechat composer missing",
+      );
+      await vi.waitFor(() => expect(document.activeElement).toBe(sideEditor));
+      await userEvent.type(sideEditor, "Keep this tangent");
+      const panes = useRightDockStore.getState().dockStateByThreadId[THREAD_ID]!.panes;
+      const closeShortcut = dispatchConfiguredShortcut(sideEditor, { key: "s", altKey: true });
+      expect(closeShortcut.defaultPrevented).toBe(true);
+      expect(useRightDockStore.getState().dockStateByThreadId[THREAD_ID]!.open).toBe(false);
+      await expectMainFocus();
+      expect(useRightDockStore.getState().dockStateByThreadId[THREAD_ID]!.open).toBe(false);
+      dispatchConfiguredShortcut(mainEditor, { key: "s", altKey: true });
+      await vi.waitFor(() => {
+        const current = document.querySelector<HTMLElement>(
+          '[data-chat-pane-scope^="dock-sidechat:"] [contenteditable="true"]',
+        );
+        expect(current).not.toBeNull();
+        expect(document.activeElement).toBe(current);
+        sideEditor = current!;
+      });
+      expect(sideEditor.textContent).toContain("Keep this tangent");
+      expect(useRightDockStore.getState().dockStateByThreadId[THREAD_ID]!.panes).toEqual(panes);
+      expect(commands.filter((c) => c.type === "thread.fork.create")).toHaveLength(1);
+
+      // A menu closing on Escape gets the first key, even if it removes its DOM.
+      const menu = document.createElement("div");
+      menu.setAttribute("role", "menu");
+      menu.textContent = "Open menu";
+      menu.addEventListener("keydown", () => menu.remove());
+      document.body.append(menu);
+      menu.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+      expect(useRightDockStore.getState().dockStateByThreadId[THREAD_ID]!.open).toBe(true);
+      sideEditor = document.querySelector<HTMLElement>(
+        '[data-chat-pane-scope^="dock-sidechat:"] [contenteditable="true"]',
+      )!;
+      const escape = new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      });
+      sideEditor.dispatchEvent(escape);
+      expect(escape.defaultPrevented).toBe(true);
+      await expectMainFocus();
+      expect(useRightDockStore.getState().dockStateByThreadId[THREAD_ID]!.open).toBe(false);
+      // Removing the tab must not force another fork of the source conversation.
+      useRightDockStore.getState().closePane(THREAD_ID, panes[0]!.id);
+      dispatchConfiguredShortcut(mainEditor, { key: "s", altKey: true });
+      await vi.waitFor(() => {
+        const reopened = useRightDockStore.getState().dockStateByThreadId[THREAD_ID]!;
+        expect(reopened.open).toBe(true);
+        expect(reopened.panes[0]?.threadId).toBe(panes[0]!.threadId);
+      });
+      expect(commands.filter((c) => c.type === "thread.fork.create")).toHaveLength(1);
+      expect(mounted.router.state.location.pathname).toBe(`/${THREAD_ID}`);
+      expect(useStore.getState().threadSessionById?.[THREAD_ID]?.status).toBe("running");
+      expect(
+        commands.some((c) => c.type === "thread.turn.interrupt" || c.type === "thread.delete"),
+      ).toBe(false);
+    } finally {
+      releaseFork();
+      Object.defineProperty(window, "nativeApi", { configurable: true, value: previousNativeApi });
+      await mounted.cleanup();
+      useRightDockStore.setState({ dockStateByThreadId: {} });
+    }
   });
 
   it("preserves the automatic project name when saving only its appearance", async () => {

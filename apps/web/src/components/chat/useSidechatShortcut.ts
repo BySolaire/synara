@@ -1,0 +1,149 @@
+import type { ResolvedKeybindingsConfig, ThreadId } from "@synara/contracts";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import { requestComposerFocus } from "../../composerFocusRequestStore";
+import { resolveShortcutCommand } from "../../keybindings";
+import { isTerminalFocused } from "../../lib/terminalFocus";
+import { selectRightDockState, useRightDockStore } from "../../rightDockStore";
+import { scheduleDeferredChatMount } from "./deferredChatMount";
+import { resolveActivePane } from "../../rightDockStore.logic";
+
+function hasOpenDismissibleOverlay(): boolean {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>(
+      '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [data-testid="composer-extras-panel"]',
+    ),
+  ).some(
+    (element) =>
+      !element.closest('[inert], [aria-hidden="true"]') && element.getClientRects().length > 0,
+  );
+}
+
+// The single-chat surface owns its dock; embedded ChatViews must not each create
+// or toggle a sidechat in response to the same key event.
+export function useSidechatShortcut(input: {
+  threadId: ThreadId;
+  enabled: boolean;
+  keybindings: ResolvedKeybindingsConfig;
+  existingSidechatId: ThreadId | null;
+  createSidechat: () => Promise<void>;
+  revealSidechat: () => void;
+}) {
+  const dockState = useRightDockStore(
+    useMemo(() => selectRightDockState(input.threadId), [input.threadId]),
+  );
+  const [focusRequest, setFocusRequest] = useState<{
+    sourceId: ThreadId;
+    targetId: ThreadId;
+  } | null>(null);
+  const creatingFor = useRef(new Set<ThreadId>());
+  const currentSource = useRef<ThreadId | null>(input.threadId);
+  useEffect(() => {
+    currentSource.current = input.threadId;
+    return () => {
+      currentSource.current = null;
+    };
+  }, [input.threadId]);
+
+  useEffect(() => {
+    if (!focusRequest || focusRequest.sourceId !== input.threadId || !input.enabled) return;
+    const activePane = resolveActivePane(dockState);
+    if (!dockState.open || activePane?.threadId !== focusRequest.targetId) return;
+    // A reopened dock may remount its composer and restore the saved Lexical
+    // draft. Request focus after that commit rather than on the hidden editor.
+    return scheduleDeferredChatMount(window, () => {
+      requestComposerFocus(focusRequest.targetId);
+      setFocusRequest(null);
+    });
+  }, [dockState, focusRequest, input.threadId, input.enabled]);
+
+  useEffect(() => {
+    if (!input.enabled) return;
+    const { threadId } = input;
+    const hideSidechat = () => {
+      useRightDockStore.getState().setDockOpen(threadId, false);
+      setFocusRequest(null);
+      requestComposerFocus(threadId);
+    };
+    const toggleSidechat = () => {
+      const store = useRightDockStore.getState();
+      const state = selectRightDockState(threadId)(store);
+      const activePane = resolveActivePane(state);
+      if (state.open && activePane?.kind === "sidechat") {
+        hideSidechat();
+        return;
+      }
+      if (creatingFor.current.has(threadId)) return;
+      input.revealSidechat();
+      const existingPane =
+        (activePane?.kind === "sidechat" ? activePane : null) ??
+        state.panes.find(
+          (pane) => pane.kind === "sidechat" && pane.threadId === input.existingSidechatId,
+        ) ??
+        state.panes.findLast((pane) => pane.kind === "sidechat" && pane.threadId !== null);
+      const targetId = existingPane?.threadId ?? input.existingSidechatId;
+      if (targetId) {
+        if (existingPane) store.setActivePane(threadId, existingPane.id);
+        else store.openPane(threadId, { kind: "sidechat", threadId: targetId });
+        setFocusRequest({ sourceId: threadId, targetId });
+        return;
+      }
+      creatingFor.current.add(threadId);
+      void input.createSidechat().finally(() => {
+        creatingFor.current.delete(threadId);
+        if (currentSource.current !== threadId) return;
+        const nextPane = resolveActivePane(
+          selectRightDockState(threadId)(useRightDockStore.getState()),
+        );
+        if (nextPane?.kind === "sidechat" && nextPane.threadId) {
+          setFocusRequest({ sourceId: threadId, targetId: nextPane.threadId });
+        }
+      });
+    };
+    // Editors can consume Escape before it bubbles. Check overlays first, then
+    // handle it alongside the configured chord in capture phase.
+    const capture = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.repeat ||
+        hasOpenDismissibleOverlay()
+      )
+        return;
+      if (
+        event.key === "Escape" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        !isTerminalFocused()
+      ) {
+        const state = selectRightDockState(threadId)(useRightDockStore.getState());
+        if (state.open && resolveActivePane(state)?.kind === "sidechat") {
+          event.preventDefault();
+          event.stopPropagation();
+          hideSidechat();
+        }
+        return;
+      }
+      if (
+        resolveShortcutCommand(event, input.keybindings, {
+          context: { terminalFocus: isTerminalFocused() },
+        }) !== "sidechat.toggle"
+      )
+        return;
+      event.preventDefault();
+      event.stopPropagation();
+      toggleSidechat();
+    };
+    window.addEventListener("keydown", capture, { capture: true });
+    return () => window.removeEventListener("keydown", capture, { capture: true });
+  }, [
+    input.enabled,
+    input.threadId,
+    input.keybindings,
+    input.existingSidechatId,
+    input.createSidechat,
+    input.revealSidechat,
+  ]);
+}
