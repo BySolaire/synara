@@ -386,3 +386,8 @@ project-specific draft via Run on selects the destination computer's home draft;
 move that project's text. The earlier observation of an empty composer was a different draft,
 not a reproduced loss. GitHub cloning still targets the local computer; remote project creation
 uses a source folder on the selected computer.
+
+One live reconnect limitation remains: after the controlled reload the Mini pane briefly reported
+`fetch failed` although Settings subsequently showed Connected over Cloudflare. The existing Retry
+action restored the project and its README without restarting or pairing again. Its cause was not
+diagnosed; the picker and draft results above do not establish seamless live reconnect on every reload.
