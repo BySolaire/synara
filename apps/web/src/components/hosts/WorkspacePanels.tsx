@@ -1,5 +1,13 @@
 import { resolveThreadStatusPill, runExclusiveProjectAddition } from "../Sidebar.logic";
-import { useCallback, useEffect, useRef, useState, useMemo, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useMemo,
+  useSyncExternalStore,
+  useLayoutEffect,
+} from "react";
 import { useLocation } from "@tanstack/react-router";
 import { ProjectId, ThreadId } from "@synara/contracts";
 import { appHistory } from "../../appNavigation";
@@ -65,7 +73,6 @@ function WorkspacePanel({
   const host = session.host;
   const sidebar = useSidebar();
   const sidebarRef = useRef(sidebar);
-  sidebarRef.current = sidebar;
   const sidebarListeners = useRef(new Set<() => void>());
   const sidebarBridge = useMemo(
     () => ({
@@ -79,7 +86,8 @@ function WorkspacePanel({
     }),
     [],
   );
-  useEffect(() => {
+  useLayoutEffect(() => {
+    sidebarRef.current = sidebar;
     for (const listener of sidebarListeners.current) listener();
   }, [sidebar]);
   const frameRef = useRef<WorkspaceFrameElement | null>(null);

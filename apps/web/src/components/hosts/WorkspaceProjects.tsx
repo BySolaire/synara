@@ -81,13 +81,15 @@ function selectedThreadPath(href: string, environmentId: string, threadId: strin
 
 export function WorkspaceThreadRow({
   entry,
-  topLevel = false,
-  depth = 0,
+  topLevel: topLevelProp,
+  depth: depthProp,
 }: {
   entry: WorkspaceThreadEntry;
   topLevel?: boolean;
   depth?: number | undefined;
 }) {
+  const topLevel = topLevelProp ?? false;
+  const depth = depthProp ?? 0;
   const href = useLocation({ select: (location) => location.href });
   const { session, thread } = entry;
   if (!session) return null;
@@ -154,7 +156,7 @@ export function WorkspaceProjectItem({
   onToggle,
   threadSortOrder,
   dragHandleProps,
-  manualSorting = false,
+  manualSorting: manualSortingProp,
 }: {
   entry: WorkspaceProjectEntry;
   expanded: boolean;
@@ -163,6 +165,7 @@ export function WorkspaceProjectItem({
   dragHandleProps?: SortableProjectHandleProps | null;
   manualSorting?: boolean;
 }) {
+  const manualSorting = manualSortingProp ?? false;
   const [extraPages, setExtraPages] = useState(0);
   const href = useLocation({ select: (location) => location.href });
   const { project, session } = entry;

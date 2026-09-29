@@ -418,3 +418,17 @@ During validation, the built browser caught an empty-path branded-ID failure at 
 publisher now guards the empty route. The compiler regression caught an incompatible manual memo;
 the paging derivation now allows React Compiler to manage its memoization. Neither issue was left
 as an accepted failure.
+
+Validation for `65021d0`: formatting passes; lint has 0 errors and 790 existing warnings; typecheck
+passes 13/13 tasks; the complete repository suite passes 12/12 tasks with disposable PostgreSQL.
+The sidebar compiler guard and ten Chromium component regressions pass. The final built two-server
+browser flow passes in 24.22 seconds, covering unified rows, Activity routing, same-ID isolation,
+independent drafts, remote files/terminal/attachments, approvals, connector/controller restart,
+refused remote access, local recovery, and sidebar collapse/reopen from the remote pane. These
+provider checks use a deterministic fixture. The disposable database has been stopped.
+
+A small rendering follow-up keeps the new remote row components eligible for React Compiler and
+adds them to the existing compiler regression guard. The sidebar-control bridge publishes after
+layout commit instead of writing its ref during render. Formatting/lint/typecheck and the compiler
+guards pass; the rebuilt two-server workflow passes again in 23.01 seconds. No runtime API or data
+schema changed in this follow-up.

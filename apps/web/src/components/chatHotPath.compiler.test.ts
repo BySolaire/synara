@@ -158,6 +158,7 @@ const HOT_PATH_MODULES: readonly HotPathModule[] = [
     allowedBailoutReasons: [],
   },
   { relativePath: "Sidebar.tsx", allowedBailoutReasons: [] },
+  { relativePath: "hosts/WorkspaceProjects.tsx", allowedBailoutReasons: [] },
   {
     relativePath: "chat/MessagesTimeline.tsx",
     // `useStableRows` deliberately reads and rewrites a previous-state ref inside
