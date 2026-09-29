@@ -1,3 +1,4 @@
+import { readWorkspaceFrame } from "./lib/hosts/workspaceFrame";
 // FILE: wsTransport.ts
 // Purpose: Browser-side Effect RPC transport over the Synara WebSocket endpoint.
 // Layer: Web transport
@@ -267,7 +268,7 @@ function resolveRpcUrl(rawUrl: string, path: string): string {
 
 export function rawSocketUrl(explicitUrl: string | null): string {
   if (explicitUrl) return explicitUrl;
-  const bridgeUrl = window.desktopBridge?.getWsUrl();
+  const bridgeUrl = readWorkspaceFrame()?.controllerWsUrl ?? window.desktopBridge?.getWsUrl();
   const envUrl = import.meta.env.VITE_WS_URL as string | undefined;
   return bridgeUrl && bridgeUrl.length > 0
     ? bridgeUrl

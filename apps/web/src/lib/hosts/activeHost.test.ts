@@ -1,10 +1,10 @@
-// The active-host choice survives a reload (sessionStorage), rejects junk,
-// and turns into the socket prefix the transport prepends. Web unit tests run
+// Legacy selections are migration input only. Each remote runtime captures
+// its own host; the main window always retains local execution. Web unit tests run
 // without a DOM, so `window` is stubbed with an in-memory sessionStorage the
 // same way the storage-migration tests stub localStorage.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { readActiveHost, readActiveHostSocketPrefix } from "./activeHost";
+import { readActiveHost, readLegacyActiveHost, readActiveHostSocketPrefix } from "./activeHost";
 
 const KEY = "synara:active-host:v1";
 
@@ -39,29 +39,30 @@ describe("activeHost", () => {
     expect(readActiveHostSocketPrefix()).toBeNull();
   });
 
-  it("reads a stored choice and derives the socket prefix without a trailing slash", () => {
+  it("leaves a legacy remote selection for migration without changing local execution", () => {
     sessionStorage.setItem(
       KEY,
       JSON.stringify({ hostId: "host_1", hostName: "Ada", wsPath: "/ws/remote/host_1/" }),
     );
-    expect(readActiveHost()).toEqual({
+    expect(readLegacyActiveHost()).toEqual({
       hostId: "host_1",
       hostName: "Ada",
       wsPath: "/ws/remote/host_1/",
     });
-    expect(readActiveHostSocketPrefix()).toBe("/ws/remote/host_1");
+    expect(readActiveHost()).toBeNull();
+    expect(readActiveHostSocketPrefix()).toBeNull();
   });
 
   it("drops a corrupt or non-path value rather than pointing the transport at it", () => {
     sessionStorage.setItem(KEY, "not json");
-    expect(readActiveHost()).toBeNull();
+    expect(readLegacyActiveHost()).toBeNull();
     expect(sessionStorage.getItem(KEY)).toBeNull();
 
     sessionStorage.setItem(
       KEY,
       JSON.stringify({ hostId: "host_1", hostName: "Ada", wsPath: "https://evil.test/ws" }),
     );
-    expect(readActiveHost()).toBeNull();
+    expect(readLegacyActiveHost()).toBeNull();
   });
 
   it("is null when there is no window at all", () => {

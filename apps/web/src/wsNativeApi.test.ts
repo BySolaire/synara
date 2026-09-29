@@ -165,6 +165,7 @@ beforeEach(() => {
   latestPushByChannel.clear();
   nextPushSequence = 1;
   Reflect.deleteProperty(getWindowForTest(), "desktopBridge");
+  Reflect.deleteProperty(getWindowForTest(), "frameElement");
 });
 
 afterEach(() => {
@@ -188,7 +189,9 @@ describe("wsNativeApi", () => {
       executionScope: scope,
     };
     Object.assign(getWindowForTest(), {
-      sessionStorage: { getItem: () => JSON.stringify(selected) },
+      frameElement: {
+        synaraWorkspace: { host: selected, controllerWsUrl: "ws://127.0.0.1:58001" },
+      },
     });
     let environments = 0;
     requestMock.mockImplementation(async (method) => {
@@ -231,7 +234,7 @@ describe("wsNativeApi", () => {
     expect(cursors.getThreadDetailResumeCursor(thread)).toBe(42);
     transportInstances[1]!.options.onGenerationChanged?.();
     expect(cursors.getThreadDetailResumeCursor(thread)).toBeUndefined();
-    Reflect.deleteProperty(getWindowForTest(), "sessionStorage");
+    Reflect.deleteProperty(getWindowForTest(), "frameElement");
   });
 
   it("keeps device and computer events subscribed for local execution", async () => {

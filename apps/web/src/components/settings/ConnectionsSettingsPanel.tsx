@@ -1,3 +1,4 @@
+import { removeWorkspaceSession } from "~/lib/hosts/workspaceSessions";
 import { readExecutionContext } from "~/lib/hosts/executionContext";
 import { RemotePairingPanel } from "./RemotePairingPanel";
 // FILE: ConnectionsSettingsPanel.tsx
@@ -195,7 +196,7 @@ export function ConnectionsSettingsPanel({ active }: { active: boolean }) {
 
   /**
    * Open a session to the host (the shell dials, races transports, mints) and
-   * move this window onto it. The reload is the whole point — see activeHost.ts.
+   * add its projects alongside the local workspace.
    */
   const connectToHost = useCallback(
     async (host: AccountHost) => {
@@ -220,7 +221,6 @@ export function ConnectionsSettingsPanel({ active }: { active: boolean }) {
 
   const disconnectFromHost = useCallback(
     async (hostId: string) => {
-      const wasActive = readActiveHost()?.hostId === hostId;
       try {
         await connections.disconnect.mutateAsync({ hostId });
       } catch (cause) {
@@ -231,7 +231,7 @@ export function ConnectionsSettingsPanel({ active }: { active: boolean }) {
         });
         return;
       }
-      if (wasActive) deactivateHost();
+      removeWorkspaceSession(hostId);
     },
     [connections.disconnect],
   );

@@ -297,3 +297,27 @@ Synara Orgs with read-only OAuth scopes. A DNS listing through this CLI matched
 all ten baseline records exactly, including DNS-only website CNAMEs. Runtime
 tunnel writes use the separate scoped service token, and deployment operations
 use the existing authorized deployment credentials.
+
+## Multi-host navigation — 2026-09-29
+
+The previous whole-window host selection is replaced by a local controller shell with a combined
+project/chat sidebar. Each verified remote environment retains a separate application runtime;
+chat navigation changes the visible pane, not the destination of pending operations. The built
+Chromium test passes with identical IDs on both servers, separate local/remote drafts, approval
+routing, connector and controller restart, and local use after remote refusal. This uses the
+deterministic provider fixture, not a real provider account.
+
+The existing transport/pairing and per-environment storage boundaries are reused. The sidebar
+uses the shared sidebar, button, disclosure and status components. A remote workspace is a
+same-origin frame loading the bundled app; no provider/repository content creates frames.
+File-backed Electron, large numbers of connected hosts and the new MacBook live UI flow remain
+separate qualification steps. No DNS, Cloudflare, trust, provider-choice or database change is
+part of this renderer update.
+
+Validation: root formatting passed; lint reports 0 errors and the unchanged 792 warnings;
+typecheck passed 13/13 tasks; desktop/server build passed 5/5 tasks. The complete repository
+test run passed 12/12 tasks with the isolated PostgreSQL database. The separately built browser
+workflow passed in 22.42 seconds, including new-chat buttons on both projects and keeping the
+local composer usable during the remote connector outage. A first unfiltered build encountered
+the sandbox's port-binding restriction in the unrelated profiles/Turbopack build; the relevant
+desktop/server build above completed.

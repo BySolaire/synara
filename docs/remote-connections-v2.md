@@ -4,7 +4,7 @@ The transport now uses managed Cloudflare tunnels; see [operations](cloudflare-r
 
 ## Boundaries
 
-A window has one execution environment. Account, host directory and connection management always use the local controller; projects, provider sessions, filesystem, Git and terminals use the selected execution host. Switching flushes editors and reloads. Returning locally does not wait for the remote host: unsaved editor snapshots are retained in scoped recovery storage. “Export editor drafts” also retrieves remote recoveries for the currently verified account when the window is local. It never writes those paths on the controller.
+A window shows projects and chats from the local computer and its connected hosts together. Opening a chat selects its owning environment; it does not switch or reload the whole application. Account, host directory and connection management always use the local controller. Projects, provider sessions, filesystem, Git and terminals remain owned by their execution host. Each remote workspace uses a persistent, same-origin application frame with its own verified execution context, RPC clients, stores, query cache, resume cursors and router. The outer sidebar receives project/thread navigation summaries; it never substitutes the active host in an in-flight operation. Frames load only the bundled application, never repository HTML. The local workspace stays available when a remote workspace cannot start or reconnect. Scoped editor recovery survives explicit disconnection. “Export editor drafts” also retrieves remote recoveries for the currently verified account when the window is local. It never writes those paths on the controller.
 
 Remote v2 requires Node 24, including Electron's Node runtime. Local Bun development still works; Bun cannot enable v2. Stable rejects remote connections. Beta/Canary enable the locally qualified transport; a headless development server requires `SYNARA_REMOTE_CONNECTIONS=1`. Importing Stable state into Beta suspends remote activation and preserves the destination identity. Account profile sync and host secrets sync remain disabled on both client and server.
 
@@ -29,9 +29,9 @@ The invitation file is created exclusively with mode `0600`; its secret is not p
 
 ## Linked projects
 
-“Linked projects” in the host menu opens a controller-origin catalog. Its storage key includes the verified controller EnvironmentId and account authority/user/organization. Opening the catalog records a project-only snapshot of the selected host; other hosts remain cached metadata, without transcript subscriptions. Open the catalog on each host to capture its project list.
+“Linked projects” in the host menu opens a controller-origin catalog. Its storage key includes the verified controller EnvironmentId and account authority/user/organization. Opening the catalog records a project-only snapshot of its owning environment; its other entries remain cached metadata. The combined sidebar receives live summaries from every connected workspace. The optional grouping catalog retains its separate snapshot-based behavior.
 
-A checkout is `{environmentId, projectId}`; a thread remains `{environmentId, threadId}` in its original environment. Group names, appearance, members and preferred checkout are local presentation metadata. Linking, unlinking or splitting never moves files or chats. A preferred checkout is a visible preference, not execution failover. Opening another member explicitly checks its host identity, saves editor state and switches the window. Missing checkouts fail explicitly. Offline catalogs are read-only.
+A checkout is `{environmentId, projectId}`; a thread remains `{environmentId, threadId}` in its original environment. Group names, appearance, members and preferred checkout are local presentation metadata. Linking, unlinking or splitting never moves files or chats. A preferred checkout is a visible preference, not execution failover. Opening another member explicitly checks its host identity and navigates to its workspace inside the same application. Local and remote projects remain visible together. Missing checkouts fail explicitly. Offline catalogs are read-only.
 
 GitHub suggestions normalize SSH/HTTPS and `.git` conservatively and require confirmation. Fork owners remain distinct; multiple repository identities do not produce suggestions. Other Git servers and no-remote projects can be linked manually. The normalization utility preserves significant case and ports on self-hosted servers. Dismissed suggestions and unlink/split corrections persist. Two clones remain two members even on the same computer.
 
@@ -64,3 +64,23 @@ The Cua benchmark snapshot test now creates a temporary repository from the actu
 The root `TEST_DATABASE_URL=... bun run test` command passes the isolated database URL to API/E2E tasks. The E2E package enables development remote admission only inside its Vitest configuration; do not globally opt the server's default-gate tests into remote access. The ordinary root suite skips the build-dependent browser workflow intentionally; run `test:workspace` separately after `bun run build`. The obsolete browser-owned grant/mint helper has been removed: credentials and dialing belong to the controller server.
 
 The browser workflow also verifies the persisted interrupted turn after Stop. Successful parent interrupts retire the runtime generation, which can fence late terminal events; the command reactor now settles the targeted projection after confirmed retirement using the existing session compare-and-set. It preserves replacement turns and leaves targeted child interrupts scoped to the child. The real workflow reproduced the stuck-running state before the fix and passes after it.
+
+## Multi-host renderer qualification (29 September 2026)
+
+The built Chromium workflow now keeps both projects visible, asserts that Connect preserves the
+outer renderer, and gives both servers identical project and thread IDs. It alternates local and
+remote composers and verifies that each retains its own text. Provider streaming, approval,
+connector/controller restart, attachment routing and offline local navigation continue to use the
+existing isolated fixture. This is not authenticated provider or signed-desktop qualification.
+
+The implementation deliberately preserves the existing single-environment runtime inside each
+application frame instead of making hundreds of ambient API/store reads depend on a mutable
+selected-host variable. Only controller WebSocket connection configuration is passed in memory;
+it is never placed in the frame URL or persisted with navigation metadata. Remote native-only
+capabilities remain denied. Frames stay mounted while another host's chat is visible. Sign-out
+removes remote summaries and frames even if recovery storage is unavailable.
+
+The combined sidebar supports opening existing chats and creating chats in a selected remote
+project. Cross-host split panes and moving an existing chat between computers are not implemented.
+A frame retains one environment's UI and caches, so memory use grows with connected workspaces;
+large host counts and file-backed Electron behavior need separate qualification.

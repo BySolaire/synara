@@ -1,3 +1,4 @@
+import { WorkspaceProjects } from "./hosts/WorkspaceProjects";
 import { CATALOG_OPEN_EVENT, takePendingCatalogCheckout } from "~/lib/projectCatalog/navigation";
 import { readExecutionContext } from "~/lib/hosts/executionContext";
 import type { CheckoutRef } from "~/lib/projectCatalog/model";
@@ -6940,6 +6941,7 @@ export default function Sidebar() {
             </div>
           </SidebarGroup>
         ) : null}
+        {!isOnSettings && <WorkspaceProjects />}
       </SidebarContent>
 
       <SidebarFooter

@@ -1,5 +1,6 @@
-import { executionKey } from "./executionContext";
-import { flushBeforeExecutionSwitch, recoverBeforeLocalEscape } from "./executionSwitch";
+import { readWorkspaceFrame, workspaceRoute } from "./workspaceFrame";
+import { addWorkspaceSession } from "./workspaceSessions";
+import { recoverBeforeLocalEscape } from "./executionSwitch";
 // Window selection contains only controller-verified identity metadata.
 import type { RemoteExecutionScope } from "@synara/contracts";
 
@@ -22,6 +23,11 @@ function storage(): Storage | null {
 }
 
 export function readActiveHost(): ActiveHost | null {
+  return readWorkspaceFrame()?.host ?? null;
+}
+
+/** Read only during the one-way migration from window-wide selection. */
+export function readLegacyActiveHost(): ActiveHost | null {
   const raw = storage()?.getItem(ACTIVE_HOST_STORAGE_KEY);
   if (!raw) return null;
   try {
@@ -46,42 +52,27 @@ export function readActiveHost(): ActiveHost | null {
   return null;
 }
 
-/** Persists the choice for this window and reloads onto the bridged socket. */
+/** Add an independently owned workspace without replacing the local runtime. */
 export async function activateHost(host: ActiveHost): Promise<void> {
-  await flushBeforeExecutionSwitch();
-  prepareReload();
-  storage()?.setItem(ACTIVE_HOST_STORAGE_KEY, JSON.stringify(host));
-  window.location.reload();
+  const session = addWorkspaceSession(host);
+  const { appHistory } = await import("../../appNavigation");
+  appHistory.push(workspaceRoute(session.host.executionScope.environmentId));
 }
 
-/** Back to the local shell. */
 export function deactivateHost(): void {
-  recoverBeforeLocalEscape();
-  prepareReload();
+  const frame = readWorkspaceFrame();
+  if (frame) {
+    recoverBeforeLocalEscape();
+    frame.close();
+    return;
+  }
+  void import("../../appNavigation").then(({ appHistory }) => appHistory.push("/"));
+}
+
+export function clearLegacyActiveHost(): void {
   storage()?.removeItem(ACTIVE_HOST_STORAGE_KEY);
-  window.location.reload();
 }
 
-/**
- * The path prefix the transport puts in front of `/ws`, `/ws/negotiate` and
- * `/ws/bootstrap` while a host is active. The shell mounts those paths under
- * the host's bridge path; its own auth (the desktop bridge `?token=`, or
- * loopback trust) is unchanged because the bridge applies the same admission
- * as the local `/ws`. Null when this window is on the local shell.
- */
 export function readActiveHostSocketPrefix(): string | null {
-  const active = readActiveHost();
-  return active ? active.wsPath.replace(/\/+$/, "") : null;
-}
-
-function prepareReload(): void {
-  const location = window.location;
-  const hashRouting = location.protocol !== "http:" && location.protocol !== "https:";
-  const route = hashRouting ? location.hash.slice(1) || "/" : location.pathname + location.search;
-  storage()?.setItem(executionKey("last-route:v1"), route);
-  window.history.replaceState(
-    {},
-    "",
-    hashRouting ? `${location.pathname}${location.search}#/` : "/",
-  );
+  return readActiveHost()?.wsPath.replace(/\/+$/, "") ?? null;
 }

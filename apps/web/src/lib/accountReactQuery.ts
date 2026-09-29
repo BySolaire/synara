@@ -1,3 +1,4 @@
+import { reconcileWorkspaceAccount } from "./hosts/workspaceSessions";
 import {
   controlAccountScope,
   accountStatusScope,
@@ -134,6 +135,7 @@ export function watchAccountIdentityChanges(queryClient: QueryClient): () => voi
     if (!status) return;
     const nextScope = accountStatusScope(status);
     adoptControlAccountScope(status);
+    reconcileWorkspaceAccount(status);
     if (nextScope === knownScope) return;
     knownScope = nextScope;
     removeAccountScopedQueries(queryClient);

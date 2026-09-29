@@ -1,6 +1,6 @@
-import { activateHost, deactivateHost } from "../hosts/activeHost";
+import { activateHost } from "../hosts/activeHost";
 import { readExecutionContext } from "../hosts/executionContext";
-import { flushBeforeExecutionSwitch } from "../hosts/executionSwitch";
+import { waitForWorkspaceNavigation } from "../hosts/workspaceSessions";
 import { ensureHostsApi } from "../hosts/api";
 import { projectCatalogKey } from "./storage";
 import type { CatalogCheckout, CheckoutRef } from "./model";
@@ -15,41 +15,20 @@ export async function openCatalogCheckout(checkout: CatalogCheckout): Promise<vo
     window.dispatchEvent(new CustomEvent(CATALOG_OPEN_EVENT, { detail: checkout }));
     return;
   }
-  await flushBeforeExecutionSwitch();
-  if (checkout.environmentId === context.controller.environmentId) {
-    sessionStorage.setItem(
-      pendingKey,
-      JSON.stringify({ catalogKey, ref: checkout, createdAt: Date.now() }),
-    );
-    try {
-      deactivateHost();
-    } catch (error) {
-      sessionStorage.removeItem(pendingKey);
-      throw error;
-    }
-    return;
-  }
   if (!checkout.hostId) throw new Error("Select and verify this host in Connections first.");
   const connection = await ensureHostsApi().connect({ hostId: checkout.hostId });
   if (connection.executionScope?.environmentId !== checkout.environmentId)
     throw new Error("This host's identity changed. Pair it again before opening the checkout.");
   if (catalogKey !== projectCatalogKey())
     throw new Error("The account changed. Reopen the catalog.");
-  sessionStorage.setItem(
-    pendingKey,
-    JSON.stringify({ catalogKey, ref: checkout, createdAt: Date.now() }),
-  );
-  try {
-    await activateHost({
-      hostId: connection.hostId,
-      hostName: connection.hostName,
-      wsPath: connection.wsPath,
-      executionScope: connection.executionScope,
-    });
-  } catch (error) {
-    sessionStorage.removeItem(pendingKey);
-    throw error;
-  }
+  await activateHost({
+    hostId: connection.hostId,
+    hostName: connection.hostName,
+    wsPath: connection.wsPath,
+    executionScope: connection.executionScope,
+  });
+  const navigation = await waitForWorkspaceNavigation(checkout.environmentId);
+  await navigation.openProject(checkout.projectId);
 }
 export function takePendingCatalogCheckout(): CheckoutRef | null {
   const raw = sessionStorage.getItem(pendingKey);

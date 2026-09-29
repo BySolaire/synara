@@ -1,3 +1,5 @@
+import { readWorkspaceFrame } from "../lib/hosts/workspaceFrame";
+import { WorkspacePanels, WorkspaceFrameNavigation } from "../components/hosts/WorkspacePanels";
 import type { ResolvedKeybindingsConfig } from "@synara/contracts";
 import { CHAT_SURFACE_HEADER_HEIGHT_PX } from "@synara/shared/desktopChrome";
 import { useQuery } from "@tanstack/react-query";
@@ -619,8 +621,21 @@ function ChatRouteLayout() {
         </SidebarInstanceProvider>
       )}
       <Outlet />
+      <WorkspacePanels />
     </div>
   );
+
+  if (readWorkspaceFrame()) {
+    return (
+      <SidebarProvider open={false} className="h-svh overflow-hidden bg-background">
+        <WorkspaceFrameNavigation />
+        <ChatRouteGlobalShortcuts />
+        <div className="relative flex h-svh min-h-0 min-w-0 flex-1">
+          <Outlet />
+        </div>
+      </SidebarProvider>
+    );
+  }
 
   // Rail layout (Codex-style): the left column holds the window-chrome strip over the fixed
   // rail and the off-canvas panel; the route column keeps its own header on the shell band.

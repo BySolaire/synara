@@ -13,7 +13,7 @@ import { requestLocalRemoteAccess } from "../../server/src/remotePairing/cli";
 
 // Explicit build-dependent qualification; the ordinary transport suite remains build-independent.
 it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
-  "switches a real browser between complete controller and execution servers",
+  "keeps local and remote chats in one browser with independent execution and recovery",
   async () => {
     if (!process.env.TEST_DATABASE_URL)
       throw new Error("An isolated TEST_DATABASE_URL is required");
@@ -126,6 +126,7 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       reducedMotion: "reduce",
       viewport: { width: 1440, height: 1000 },
     });
+    page.on("pageerror", (error) => console.error("Browser error:", error.message));
     await page.addLocatorHandler(
       page.getByRole("button", { name: "Skip setup", exact: true }),
       async (button) => {
@@ -146,13 +147,34 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         .getByRole("button", { name: /This computer.*Connected/ })
         .first()
         .waitFor();
+      await page.evaluate(() => {
+        (globalThis as unknown as { workspaceSentinel: string }).workspaceSentinel =
+          "same-renderer";
+      });
       await page.getByRole("button", { name: "Connect", exact: true }).first().click();
       await page
-        .getByRole("button", { name: new RegExp(`${preview.label}.*Connected`) })
+        .getByRole("button", { name: /E2E host .*Connected/ })
         .first()
         .waitFor();
       await page.getByText("REMOTE checkout", { exact: true }).first().waitFor();
-      expect(await page.getByText("LOCAL checkout", { exact: true }).count()).toBe(0);
+      await page.getByText("LOCAL checkout", { exact: true }).first().waitFor();
+      expect(
+        await page.evaluate(
+          () => (globalThis as unknown as { workspaceSentinel: string }).workspaceSentinel,
+        ),
+      ).toBe("same-renderer");
+      const remotePage = page.frameLocator('iframe[title^="Synara workspace on"]');
+      await page.getByText("REMOTE checkout", { exact: true }).first().hover();
+      await page.getByRole("button", { name: /^New chat in REMOTE checkout on / }).click();
+      const newRemoteComposer = remotePage.locator('[contenteditable="true"]').first();
+      await newRemoteComposer.fill("NEW REMOTE DRAFT");
+      await page.getByText("LOCAL checkout", { exact: true }).first().hover();
+      await page
+        .getByRole("button", { name: "Create new thread in LOCAL checkout", exact: true })
+        .click();
+      await page.locator('[contenteditable="true"]').first().fill("NEW LOCAL DRAFT");
+      await page.getByRole("button", { name: /E2E host .*Connected/ }).click();
+      expect(await newRemoteComposer.innerText()).toBe("NEW REMOTE DRAFT");
       await using localRpc = await workspaceRpc(controller.origin);
       const connection = await localRpc.request<HostConnection>("hosts.connect", {
         hostId: linked.row.id,
@@ -171,7 +193,7 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       expect(await fs.readFile(path.join(roots[1]!, "same.txt"), "utf8")).toBe("LOCAL original");
       await page.reload();
       await page
-        .getByRole("button", { name: new RegExp(`${preview.label}.*Connected`) })
+        .getByRole("button", { name: /E2E host .*Connected/ })
         .first()
         .waitFor();
       expect(await remoteRpc.request("git.status", { cwd: roots[0] })).toMatchObject({
@@ -185,6 +207,20 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         threadId,
         projectId,
         title: "Remote continuity fixture",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        envMode: "local",
+        branch: null,
+        worktreePath: null,
+        createdAt: new Date().toISOString(),
+      });
+      await localRpc.request("orchestration.dispatchCommand", {
+        type: "thread.create",
+        commandId: randomUUID(),
+        threadId,
+        projectId,
+        title: "Local continuity fixture",
         modelSelection,
         runtimeMode: "full-access",
         interactionMode: "default",
@@ -256,7 +292,17 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         )
         .toBe(true);
       await page.getByText("Remote continuity fixture", { exact: true }).first().click();
-      await page.getByText("REMOTE STREAM STARTED", { exact: true }).waitFor();
+      await remotePage.getByText("REMOTE STREAM STARTED", { exact: true }).waitFor();
+      const remoteComposer = remotePage.locator('[contenteditable="true"]').first();
+      await remoteComposer.fill("REMOTE DRAFT stays here");
+      await page.getByText("Local continuity fixture", { exact: true }).first().click();
+      const localComposer = page.locator('[contenteditable="true"]').first();
+      await localComposer.fill("LOCAL DRAFT stays here");
+      await page.getByText("Remote continuity fixture", { exact: true }).first().click();
+      expect(await remoteComposer.innerText()).toBe("REMOTE DRAFT stays here");
+      await page.getByText("Local continuity fixture", { exact: true }).first().click();
+      expect(await localComposer.innerText()).toBe("LOCAL DRAFT stays here");
+      await page.getByText("Remote continuity fixture", { exact: true }).first().click();
       await fixture.stopConnector();
       await expect
         .poll(async () => {
@@ -268,6 +314,8 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
           }
         })
         .toBe(true);
+      await page.getByText("Local continuity fixture", { exact: true }).first().click();
+      expect(await localComposer.innerText()).toBe("LOCAL DRAFT stays here");
       // The provider advances with the network down; automatic resubscription
       // must recover this delta in the existing browser without replaying a turn.
       await fs.writeFile(path.join(host.baseDir, "connector-gap-fixture"), "emit");
@@ -279,9 +327,10 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         )
         .toBe(true);
       await fixture.restartConnector();
-      await page
+      await remotePage
         .getByText("REMOTE STREAM STARTED — RECOVERED AFTER CONNECTOR RESTART", { exact: true })
-        .waitFor({ timeout: 40_000 });
+        .waitFor({ timeout: 40_000, state: "attached" });
+      await page.getByText("Remote continuity fixture", { exact: true }).first().click();
       await controller.stop();
       await fs.writeFile(path.join(host.baseDir, "finish-fixture-turn"), "finish");
       await expect
@@ -310,7 +359,7 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
           { timeout: 40_000 },
         )
         .toBe(true);
-      await page
+      await remotePage
         .getByText(
           "REMOTE STREAM STARTED — RECOVERED AFTER CONNECTOR RESTART — COMPLETED WHILE CONTROLLER WAS STOPPED",
           {
@@ -365,7 +414,7 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         },
         createdAt: new Date().toISOString(),
       });
-      await page.getByRole("button", { name: /Approve once/ }).click();
+      await remotePage.getByRole("button", { name: /Approve once/ }).click();
       await expect
         .poll(
           async () =>
@@ -398,14 +447,14 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         })
         .toBe("interrupted");
       // Separate provider turns must not reuse an item id and merge text rows.
-      await page
+      await remotePage
         .getByText(
           "REMOTE STREAM STARTED — RECOVERED AFTER CONNECTOR RESTART — COMPLETED WHILE CONTROLLER WAS STOPPED",
           { exact: true },
         )
         .waitFor();
       await page
-        .getByRole("button", { name: new RegExp(`${preview.label}.*Connected`) })
+        .getByRole("button", { name: /E2E host .*Connected/ })
         .first()
         .waitFor();
       const evidenceDir = process.env.SYNARA_E2E_EVIDENCE;
@@ -447,7 +496,7 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         .toBe(true);
       await page.reload();
       await page
-        .getByRole("button", { name: /Back to this computer|Return to this computer/ })
+        .getByRole("button", { name: "Local chats", exact: true })
         .first()
         .click({ timeout: 40_000 });
       await page
@@ -455,16 +504,43 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         .first()
         .waitFor();
       await page.getByText("LOCAL checkout", { exact: true }).first().waitFor();
-      expect(await page.getByText("REMOTE checkout", { exact: true }).count()).toBe(0);
+      // Local navigation still works when a remote runtime cannot bootstrap.
+      await page.getByText("Local continuity fixture", { exact: true }).first().click();
+      expect(await page.locator('[contenteditable="true"]').first().innerText()).toBe(
+        "LOCAL DRAFT stays here",
+      );
       if (evidenceDir)
         await page.screenshot({ path: path.join(evidenceDir, "workspace-local-recovery.png") });
     } catch (error) {
+      console.error("Original browser failure", error);
       if (process.env.SYNARA_E2E_EVIDENCE)
-        await fs.copyFile(
-          path.join(host.baseDir, "fixture-provider.jsonl"),
-          path.join(process.env.SYNARA_E2E_EVIDENCE, "fixture-provider.jsonl"),
+        await fs
+          .copyFile(
+            path.join(host.baseDir, "fixture-provider.jsonl"),
+            path.join(process.env.SYNARA_E2E_EVIDENCE, "fixture-provider.jsonl"),
+          )
+          .catch(() => undefined);
+      console.error(
+        await page
+          .locator("body")
+          .innerText({ timeout: 3000 })
+          .catch(() => "Body unavailable"),
+      );
+      for (const frame of page.frames().slice(1))
+        console.error(
+          "Frame:",
+          await frame
+            .locator("body")
+            .innerText({ timeout: 3000 })
+            .catch(() => "Frame unavailable"),
         );
-      console.error(await page.locator("body").innerText());
+      if (process.env.SYNARA_E2E_EVIDENCE)
+        await page
+          .screenshot({
+            path: path.join(process.env.SYNARA_E2E_EVIDENCE, "workspace-failure.png"),
+            timeout: 3000,
+          })
+          .catch(() => undefined);
       throw error;
     } finally {
       await browser.close();

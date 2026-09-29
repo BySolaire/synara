@@ -1,3 +1,4 @@
+import { readWorkspaceFrame } from "../lib/hosts/workspaceFrame";
 import { onControllerStateChange } from "../lib/hosts/connectionClients";
 import { EditorDirtyRouteGuard } from "../components/EditorDirtyRouteGuard";
 import {
@@ -342,16 +343,18 @@ function RootRouteView() {
           <GlobalAccountDialogs />
           {/* Mounted globally because the host it asks about registers itself
               at sign-in, wherever the user happens to be in the app. */}
-          <HostDiscoverabilityPrompt />
-          <GlobalWhatsNewSurface />
+          {!readWorkspaceFrame() && <HostDiscoverabilityPrompt />}
+          {!readWorkspaceFrame() && <GlobalWhatsNewSurface />}
           <TaskCompletionNotifications />
           <QueuedComposerDrainCoordinator />
-          <SafariAccessOnboarding>
-            <AppSnapWelcomeDialog />
-            <BetaWelcomeDialog />
-          </SafariAccessOnboarding>
-          <GlobalOnboardingDialog />
-          <ProjectImportAnnouncementDialog />
+          {!readWorkspaceFrame() && (
+            <SafariAccessOnboarding>
+              <AppSnapWelcomeDialog />
+              <BetaWelcomeDialog />
+            </SafariAccessOnboarding>
+          )}
+          {!readWorkspaceFrame() && <GlobalOnboardingDialog />}
+          {!readWorkspaceFrame() && <ProjectImportAnnouncementDialog />}
           <GlobalProjectImportDialog />
           <AppSnapCoordinator />
           <DesktopProjectBootstrap />

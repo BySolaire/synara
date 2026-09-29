@@ -173,11 +173,11 @@ Riutilizzare pannelli, input, pulsanti e stati esistenti. Sostituire il JSON nel
 
 Mostrare condizioni concrete: da abbinare, in attesa di approvazione, disponibile, connessione in corso, riconnessione, offline, accesso revocato, riparazione necessaria. Errori devono offrire il prossimo passo corretto senza mostrare token o dettagli infrastrutturali inutili.
 
-Conservare window ownership, reload al cambio host, flush/recovery editor, cancellazione di dial tardivi e fence su cambio account. Il Mini esegue i task; il MacBook recupera eventi dopo cadute di rete senza rilanciarli.
+Aggiornamento UX 29 settembre: mantenere i progetti locali e remoti nella stessa sidebar e selezionare il computer per chat. Conservare ownership separata per ambiente, recovery editor, cancellazione di dial tardivi e fence su cambio account. Il cambio chat non ricarica la finestra. Il Mini esegue i task; il MacBook recupera eventi dopo cadute di rete senza rilanciarli.
 
 Rispettare token text-ui, font scelto dall'utente, motion condiviso e accessibilità. Salvare evidenza visiva dei cambiamenti UI. Non introdurre nuovo scaffolding per iOS.
 
-Uscita: prova browser del percorso codice → approvazione → Connect → reload → reconnect → revoke, inclusa possibilità di tornare localmente con Mini offline.
+Uscita: prova browser del percorso codice → approvazione → Connect → chat locali/remoti insieme → reconnect → revoke, inclusa possibilità di tornare localmente con Mini offline.
 
 ## Fase 7 — Eliminare la dipendenza dal vecchio relay
 

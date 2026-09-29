@@ -1,3 +1,4 @@
+import { readWorkspaceFrame } from "./lib/hosts/workspaceFrame";
 import { executionNamespace } from "./lib/hosts/executionContext";
 import { executionSessionStorage } from "./lib/hosts/executionStorage";
 // FILE: appNavigation.ts
@@ -26,7 +27,11 @@ function createAppHistory(): RouterHistory {
     return createMemoryHistory({ initialEntries: ["/"] });
   }
   // Electron loads the app from a file-backed shell, so hash history avoids path resolution issues.
-  const history = isElectron ? createHashHistory() : createBrowserHistory();
+  const history = readWorkspaceFrame()
+    ? createMemoryHistory({ initialEntries: ["/"] })
+    : isElectron
+      ? createHashHistory()
+      : createBrowserHistory();
   const scope = executionNamespace();
   if (!scope) return history;
   const push = history.push.bind(history);
