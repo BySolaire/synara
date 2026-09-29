@@ -60,6 +60,7 @@ import { resetHomeChatProjectPrewarmStateForTests } from "../lib/chatProjects";
 import { resetStudioProjectPrewarmStateForTests } from "../lib/studioProjects";
 import { hasReconciledServerProviderStatuses } from "../lib/serverReactQuery";
 import { getRouter } from "../router";
+import { showContextMenuFallback } from "../contextMenuFallback";
 import { useRightDockStore } from "../rightDockStore";
 import { useSplitViewStore } from "../splitViewStore";
 import { useSpacesUiStore } from "../spacesUiStore";
@@ -2302,14 +2303,11 @@ describe("ChatView transcript geometry (full app)", () => {
       expect(commands.filter((c) => c.type === "thread.fork.create")).toHaveLength(1);
 
       // A menu closing on Escape gets the first key, even if it removes its DOM.
-      const menu = document.createElement("div");
-      menu.setAttribute("role", "menu");
-      menu.textContent = "Open menu";
-      menu.addEventListener("keydown", () => menu.remove());
-      document.body.append(menu);
-      menu.dispatchEvent(
+      const dismissedMenu = showContextMenuFallback([{ id: "keep", label: "Keep side chat" }]);
+      sideEditor.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
       );
+      await expect(dismissedMenu).resolves.toBeNull();
       expect(useRightDockStore.getState().dockStateByThreadId[THREAD_ID]!.open).toBe(true);
       sideEditor = document.querySelector<HTMLElement>(
         '[data-chat-pane-scope^="dock-sidechat:"] [contenteditable="true"]',
