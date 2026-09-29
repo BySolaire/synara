@@ -6,16 +6,22 @@ import type {
 import type { WorkspaceSession } from "./workspaceSessions";
 import type { ActiveHost } from "./activeHost";
 import type { ThreadStatusPill } from "../../components/Sidebar.logic";
-import type { Project, ThreadShell } from "../../types";
+import type { Project, SidebarThreadSummary } from "../../types";
+import type { SidebarContextProps } from "../../components/ui/sidebar";
 import type { WsTransportState } from "../../wsTransportEvents";
 
 /** Only navigation metadata crosses this boundary; RPC clients and stores stay with their host. */
 export interface WorkspaceSummary {
-  readonly projects: readonly Pick<Project, "id" | "name" | "cwd">[];
-  readonly threads: readonly (Pick<ThreadShell, "id" | "projectId" | "title" | "archivedAt"> & {
+  readonly projects: readonly (Pick<
+    Project,
+    "id" | "kind" | "name" | "cwd" | "appearance" | "createdAt" | "updatedAt" | "isPinned"
+  > & { readonly section: "projects" | "chats" | "studio" })[];
+  readonly threads: readonly (SidebarThreadSummary & {
     readonly status: ThreadStatusPill | null;
+    readonly terminalEntryPoint?: boolean;
   })[];
   readonly path: string;
+  readonly activeProjectId?: string;
   readonly state: WsTransportState;
 }
 
@@ -36,6 +42,10 @@ export interface WorkspaceFrameBinding {
   readonly host: ActiveHost;
   readonly controller: {
     readonly environment: ExecutionEnvironmentDescriptor;
+    readonly sidebar: {
+      read(): SidebarContextProps;
+      subscribe(listener: () => void): () => void;
+    };
     sessions(): readonly WorkspaceSession[];
     subscribe(listener: () => void): () => void;
     newChat(): Promise<string>;

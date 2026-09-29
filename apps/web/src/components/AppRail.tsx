@@ -1,4 +1,3 @@
-import { HostConnectionControl } from "./hosts/HostConnectionControl";
 // FILE: AppRail.tsx
 // Purpose: The rail layout's fixed icon tab strip (Home, Spaces, route destinations, Settings).
 // Layer: App shell component
@@ -185,7 +184,6 @@ export function AppRail({
       ) : null}
       {moreSlot}
       <div className="mt-auto flex flex-col items-center gap-1.5">
-        <HostConnectionControl compact />
         {bottomSlot}
         {bottomItems.map((item) => (
           <AppRailButton key={item.id} item={item} />

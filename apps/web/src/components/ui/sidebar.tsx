@@ -44,7 +44,7 @@ const SIDEBAR_OFFCANVAS_MOTION_CLASS =
  */
 const SIDEBAR_OFFCANVAS_MOTION_SUPPRESSED_CLASS = "transition-none! duration-0!";
 
-type SidebarContextProps = {
+export type SidebarContextProps = {
   state: "expanded" | "collapsed";
   open: boolean;
   setOpen: (open: boolean) => void;
@@ -105,6 +105,7 @@ function SidebarProvider({
   defaultOpen: defaultOpenProp,
   open: openProp,
   onOpenChange: setOpenProp,
+  controls,
   className,
   style,
   children,
@@ -113,6 +114,8 @@ function SidebarProvider({
   defaultOpen?: boolean;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  /** Embedded workspace panes share their controller's sidebar, including mobile controls. */
+  controls?: SidebarContextProps | null;
 }) {
   const defaultOpen = defaultOpenProp ?? true;
   const isMobile = useIsMobile();
@@ -165,7 +168,7 @@ function SidebarProvider({
   );
 
   return (
-    <SidebarContext.Provider value={contextValue}>
+    <SidebarContext.Provider value={controls ?? contextValue}>
       <div
         className={cn(
           "group/sidebar-wrapper flex min-h-svh w-full has-data-[variant=inset]:bg-sidebar",

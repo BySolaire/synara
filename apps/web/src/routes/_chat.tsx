@@ -1,5 +1,9 @@
 import { readWorkspaceFrame } from "../lib/hosts/workspaceFrame";
-import { WorkspacePanels, WorkspaceFrameNavigation } from "../components/hosts/WorkspacePanels";
+import {
+  WorkspacePanels,
+  WorkspaceFrameNavigation,
+  useWorkspaceSidebarControls,
+} from "../components/hosts/WorkspacePanels";
 import type { ResolvedKeybindingsConfig } from "@synara/contracts";
 import { CHAT_SURFACE_HEADER_HEIGHT_PX } from "@synara/shared/desktopChrome";
 import { useQuery } from "@tanstack/react-query";
@@ -556,6 +560,7 @@ const SIDEBAR_GAP_CLASS =
 const SIDEBAR_INNER_CLASS = "app-sidebar-surface";
 
 function ChatRouteLayout() {
+  const workspaceSidebarControls = useWorkspaceSidebarControls();
   const isEditorView = useLocation({
     select: (location) => (location.search as { view?: unknown }).view === "editor",
   });
@@ -627,7 +632,11 @@ function ChatRouteLayout() {
 
   if (readWorkspaceFrame()) {
     return (
-      <SidebarProvider open={false} className="h-svh overflow-hidden bg-background">
+      <SidebarProvider
+        open={false}
+        controls={workspaceSidebarControls}
+        className="h-svh overflow-hidden bg-background"
+      >
         <WorkspaceFrameNavigation />
         <ChatRouteGlobalShortcuts />
         <div className="relative flex h-svh min-h-0 min-w-0 flex-1">

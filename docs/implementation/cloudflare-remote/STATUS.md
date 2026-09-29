@@ -391,3 +391,30 @@ One live reconnect limitation remains: after the controlled reload the Mini pane
 `fetch failed` although Settings subsequently showed Connected over Cloudflare. The existing Retry
 action restored the project and its README without restarting or pairing again. Its cause was not
 diagnosed; the picker and draft results above do not establish seamless live reconnect on every reload.
+
+### Unified sidebar follow-up — 2026-09-29
+
+The earlier combined runtime still appended a separate section for each computer, including empty
+remote folders and technical Home/Studio containers. Projects now share one list across computers,
+with environment-qualified manual order and the existing date sorting. Chats, Studio, Pinned, and
+Activity merge their respective remote rows. Empty remote folders stay out unless pinned or active.
+Same IDs, paths, or names on different hosts do not merge ownership. Revealed subagent families stay
+together and respect the existing pinned-parent exception.
+
+The project row content is extracted from the existing local row and reused remotely. Thread rows,
+provider icons, status glyphs, disclosure motion, and paging reuse existing components. Redundant
+server icons, the footer/global host control, and the remote “Local chats” bar are removed. The
+computer name appears on a project or top-level chat and in the active chat header. Embedded panes
+share only the controller's sidebar controls, so the collapse/reopen button is unique and operates
+the real sidebar; execution clients and stores remain isolated.
+
+The reference review used the installed Codex bundle's sidebar/device-picker components and
+`t3code` upstream main `d2c9281b81`. Both retain host-qualified identities while allowing a combined
+project/task view. No external source code was copied into Synara. Synara retains its own classic
+and Activity views. Remote mutation menus and cross-host keyboard cycling remain follow-ups; the
+outer remote rows expose navigation and project chat creation, and never invoke local mutations.
+
+During validation, the built browser caught an empty-path branded-ID failure at remote Home; the
+publisher now guards the empty route. The compiler regression caught an incompatible manual memo;
+the paging derivation now allows React Compiler to manage its memoization. Neither issue was left
+as an accepted failure.

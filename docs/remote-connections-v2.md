@@ -111,3 +111,24 @@ Folder and project actions retain their selected runtime across awaits. A remove
 cannot redirect their completion to another host. The folder picker preserves edits made while a
 listing is loading, and cannot confirm an unvisited typed path. Deferred composer autofocus yields
 to an open menu or dialog, including when a remote pane first receives focus.
+
+## Unified sidebar
+
+Projects from connected computers participate in the existing Projects list, including its sorting,
+manual order, collapse controls, and paging. There is no separate computer block or global computer
+switch in the sidebar/footer. Home chats and Studio chats join their respective lists; Activity and
+Pinned include remote chats. A muted computer name identifies remote rows and the active chat header.
+The existing project, thread, disclosure, and status components provide the shared appearance.
+Connection setup remains in Settings and the new-chat computer picker.
+
+Remote folders without chats do not populate the sidebar merely because a computer was connected.
+Pinned folders and the active new project remain available. Home/Studio storage containers are not
+rendered as ordinary project folders, and unsent drafts are not listed as synthetic “New chat” rows.
+Subagent families preserve their owning host and the existing parent/reveal rules. Local Spaces remain
+local; an identically named or numbered remote Space does not implicitly acquire local membership.
+
+Every merged row uses an environment-qualified identity. Activity's synthetic IDs are presentation
+keys only; opening a remote row uses its original environment and thread ID. Local context actions,
+selection, dragging, and bulk mark-as-read are not applied to remote Activity rows. The outer remote sidebar rows currently expose navigation and project chat creation; rename,
+archive, and pin mutations are not exposed there yet. Same-named folders
+are not automatically grouped as one logical project.

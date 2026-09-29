@@ -1,25 +1,35 @@
-import { ThreadStatusPillChip } from "../ThreadStatusPillChip";
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { useLocation } from "@tanstack/react-router";
-import {
-  readWorkspaceSessions,
-  useWorkspaceSessions,
-  type WorkspaceSession,
-} from "../../lib/hosts/workspaceSessions";
-import { checkoutKey } from "../../lib/projectCatalog/model";
+import type { useSortable } from "@dnd-kit/sortable";
+import type { SidebarThreadSortOrder } from "../../appSettings";
+import { CentralIcon } from "../../lib/central-icons";
+import { NewThreadIcon } from "../../lib/icons";
+import { DEFAULT_PROJECT_ICON, projectColorValue } from "../../lib/projectAppearance";
+import type { WorkspaceProjectEntry, WorkspaceThreadEntry } from "../../lib/hosts/workspaceSidebar";
+import { readWorkspaceSessions } from "../../lib/hosts/workspaceSessions";
 import { openWorkspacePath } from "./WorkspacePanels";
 import {
-  SidebarGroup,
-  SidebarMenu,
+  buildProjectThreadTree,
+  getUnpinnedThreadsForSidebar,
+  getVisibleSidebarEntriesForPreview,
+  resolveProjectStatusIndicator,
+  resolveSidebarThreadListPaging,
+  sortThreadsForSidebar,
+} from "../Sidebar.logic";
+import { FolderClosed, FolderOpen } from "../FolderClosed";
+import { ProjectEmojiGlyph } from "../ProjectSidebarIcon";
+import { SidebarIconButton } from "../SidebarIconButton";
+import { SidebarProjectRowContent } from "../SidebarProjectRowContent";
+import { SidebarSectionToolbar } from "../SidebarSectionToolbar";
+import { SidebarStatusTrailingGlyph } from "../SidebarStatusTrailingGlyph";
+import { SidebarThreadRowContent } from "../SidebarThreadRowContent";
+import {
   SidebarMenuButton,
-  SidebarMenuItem,
   SidebarMenuSub,
   SidebarMenuSubButton,
+  SidebarMenuSubItem,
 } from "../ui/sidebar";
-import { SidebarIconButton } from "../SidebarIconButton";
-import { SidebarSectionToolbar } from "../SidebarSectionToolbar";
-import { DisclosureChevron } from "../ui/DisclosureChevron";
-import { AddPlusIcon, FolderIcon, ServerIcon } from "../../lib/icons";
+import { toastManager } from "../ui/toast";
 import {
   DISCLOSURE_INNER_CLASS,
   disclosureContentClassName,
@@ -27,145 +37,285 @@ import {
 } from "../../lib/disclosureMotion";
 import {
   SIDEBAR_HEADER_ROW_CLASS_NAME,
-  SIDEBAR_PROJECT_NAME_CLASS_NAME,
+  SIDEBAR_NESTED_LIST_OFFSET_CLASS_NAME,
+  SIDEBAR_ROW_ACTIVE_CLASS_NAME,
   SIDEBAR_ROW_HOVER_CLASS_NAME,
   SIDEBAR_THREAD_ROW_BASE_CLASS_NAME,
+  sidebarHoverRevealHideClassName,
 } from "../../sidebarRowStyles";
 import { cn } from "../../lib/utils";
-import { toastManager } from "../ui/toast";
 
-function WorkspaceProjectGroup({ session }: { session: WorkspaceSession }) {
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
-  const location = useLocation();
-  const environmentId = session.host.executionScope.environmentId;
-  const params = new URLSearchParams(location.searchStr);
-  const selectedPath =
-    location.pathname === "/remote" && params.get("environment") === environmentId
-      ? params.get("path")
-      : null;
-  const online = session.summary?.state === "open" && Boolean(session.navigation);
+type SortableProjectHandleProps = Pick<
+  ReturnType<typeof useSortable>,
+  "attributes" | "listeners" | "setActivatorNodeRef"
+>;
+
+function WorkspaceProjectIcon({
+  entry,
+  expanded,
+}: {
+  entry: WorkspaceProjectEntry;
+  expanded: boolean;
+}) {
+  const appearance = entry.project.appearance;
+  if (appearance?.kind === "emoji")
+    return <ProjectEmojiGlyph emoji={appearance.emoji} className="size-4" />;
+  const style: CSSProperties | undefined = appearance?.color
+    ? { color: projectColorValue(appearance.color) }
+    : undefined;
+  if (appearance?.kind === "icon" && appearance.icon !== DEFAULT_PROJECT_ICON)
+    return <CentralIcon name={appearance.icon} className="size-4" style={style} />;
+  const Folder = expanded ? FolderOpen : FolderClosed;
+  return <Folder className="size-4" style={style} />;
+}
+
+function selectedThreadPath(href: string, environmentId: string, threadId: string): boolean {
+  const [pathname, search = ""] = href.split("?");
+  if (pathname !== "/remote") return false;
+  const params = new URLSearchParams(search);
   return (
-    <SidebarGroup className="px-1.5 pt-2 pb-1" aria-label={`Projects on ${session.host.hostName}`}>
-      <SidebarMenuButton
-        aria-label={`${session.host.hostName}. ${online ? "Connected" : "Connecting"}`}
-        size="sm"
-        className="text-ui-sm text-muted-foreground"
-        onClick={() => openWorkspacePath(environmentId, session.summary?.path ?? "/")}
-      >
-        <ServerIcon className="size-3.5 shrink-0" />
-        <span className="min-w-0 flex-1 truncate">{session.host.hostName}</span>
-        <span
-          role="status"
-          title={session.error ?? (online ? "Connected" : "Connection unavailable")}
-          className={cn(
-            "size-2 shrink-0 rounded-full",
-            online ? "bg-emerald-500" : "bg-muted-foreground",
-          )}
-        />
-      </SidebarMenuButton>
-      {!session.summary ? (
-        <p className="px-2 py-1 text-ui-sm text-muted-foreground">
-          {session.error ?? "Loading projects…"}
-        </p>
-      ) : null}
-      <SidebarMenu className="gap-2">
-        {session.summary?.projects.map((project) => {
-          const key = checkoutKey({ environmentId, projectId: project.id });
-          const expanded = !collapsed.has(key);
-          const threads = session.summary!.threads.filter(
-            (thread) => thread.projectId === project.id && !thread.archivedAt,
-          );
-          return (
-            <SidebarMenuItem key={key}>
-              <div className="group/project-header relative">
-                <SidebarMenuButton
-                  size="sm"
-                  className={cn(SIDEBAR_HEADER_ROW_CLASS_NAME, SIDEBAR_ROW_HOVER_CLASS_NAME)}
-                  aria-expanded={expanded}
-                  title={`${project.cwd}\n${session.host.hostName}`}
-                  onClick={() =>
-                    setCollapsed((previous) => {
-                      const next = new Set(previous);
-                      if (expanded) next.add(key);
-                      else next.delete(key);
-                      return next;
-                    })
-                  }
-                >
-                  <FolderIcon className="size-4 shrink-0" />
-                  <span className={SIDEBAR_PROJECT_NAME_CLASS_NAME}>{project.name}</span>
-                  <DisclosureChevron open={expanded} />
-                </SidebarMenuButton>
-                <SidebarSectionToolbar placement="overlay" revealOnHover>
-                  <SidebarIconButton
-                    icon={AddPlusIcon}
-                    label={`New chat in ${project.name} on ${session.host.hostName}`}
-                    disabled={!online}
-                    onClick={() => {
-                      const navigation = session.navigation;
-                      // Create in the owning host first; activating its old route can cancel creation.
-                      void navigation
-                        ?.newChat(project.id)
-                        .then((path) => {
-                          if (
-                            readWorkspaceSessions().some(
-                              (entry) =>
-                                entry.host === session.host && entry.navigation === navigation,
-                            )
-                          )
-                            openWorkspacePath(environmentId, path);
-                        })
-                        .catch((error: unknown) =>
-                          toastManager.add({
-                            type: "error",
-                            title: "Could not create chat",
-                            description: error instanceof Error ? error.message : "Try again.",
-                          }),
-                        );
-                    }}
-                  />
-                </SidebarSectionToolbar>
-              </div>
-              <div className={disclosureShellClassName(expanded)}>
-                <div className={DISCLOSURE_INNER_CLASS}>
-                  <SidebarMenuSub
-                    className={cn("mx-0 border-0 px-0", disclosureContentClassName(expanded))}
-                  >
-                    {threads.map((thread) => (
-                      <SidebarMenuItem key={thread.id}>
-                        <SidebarMenuSubButton
-                          className={SIDEBAR_THREAD_ROW_BASE_CLASS_NAME}
-                          isActive={selectedPath?.split("?")[0] === `/${thread.id}`}
-                          onClick={() => openWorkspacePath(environmentId, `/${thread.id}`)}
-                        >
-                          <span className="min-w-0 flex-1 truncate">{thread.title}</span>
-                          {thread.status ? (
-                            <ThreadStatusPillChip
-                              pill={thread.status}
-                              className="max-w-24 shrink-0"
-                            />
-                          ) : null}
-                        </SidebarMenuSubButton>
-                      </SidebarMenuItem>
-                    ))}
-                    {!threads.length ? (
-                      <span className="px-8 py-1 text-ui-sm text-muted-foreground">
-                        No chats yet
-                      </span>
-                    ) : null}
-                  </SidebarMenuSub>
-                </div>
-              </div>
-            </SidebarMenuItem>
-          );
-        })}
-      </SidebarMenu>
-    </SidebarGroup>
+    params.get("environment") === environmentId &&
+    params.get("path")?.split("?")[0] === `/${threadId}`
   );
 }
 
-export function WorkspaceProjects() {
-  return useWorkspaceSessions().map((session) => (
-    <WorkspaceProjectGroup key={session.host.executionScope.environmentId} session={session} />
-  ));
+export function WorkspaceThreadRow({
+  entry,
+  topLevel = false,
+  depth = 0,
+}: {
+  entry: WorkspaceThreadEntry;
+  topLevel?: boolean;
+  depth?: number | undefined;
+}) {
+  const href = useLocation({ select: (location) => location.href });
+  const { session, thread } = entry;
+  if (!session) return null;
+  const environmentId = session.host.executionScope.environmentId;
+  const active = selectedThreadPath(href, environmentId, thread.id);
+  const hostName = session.host.hostName;
+  const status = thread.status;
+  const content = (
+    <SidebarThreadRowContent
+      thread={thread}
+      terminalEntryPoint={thread.terminalEntryPoint ?? false}
+      terminalStatus={null}
+      terminalCount={0}
+      isActive={active}
+      variant="standard"
+      subagentIndentPx={Math.max(0, Math.min(depth - 1, 3) * 10)}
+      relatedThreads={session.summary?.threads}
+      pendingStatusColorClass={status?.label === "Pending Approval" ? status.colorClass : null}
+      suffix={
+        <>
+          {topLevel ? (
+            <span className="max-w-[40%] shrink-0 truncate text-ui-xs text-muted-foreground">
+              {hostName}
+            </span>
+          ) : null}
+          {status ? <SidebarStatusTrailingGlyph status={status} /> : null}
+        </>
+      }
+    />
+  );
+  const label = `${thread.title}, ${hostName}${status ? `, ${status.label}` : ""}`;
+  const open = () => openWorkspacePath(environmentId, `/${thread.id}`);
+  return topLevel ? (
+    <SidebarMenuButton
+      size="sm"
+      isActive={active}
+      aria-label={label}
+      className={cn(
+        SIDEBAR_HEADER_ROW_CLASS_NAME,
+        "gap-1.5",
+        active ? SIDEBAR_ROW_ACTIVE_CLASS_NAME : SIDEBAR_ROW_HOVER_CLASS_NAME,
+      )}
+      onClick={open}
+    >
+      {content}
+    </SidebarMenuButton>
+  ) : (
+    <SidebarMenuSubButton
+      render={<button type="button" />}
+      size="sm"
+      isActive={active}
+      aria-label={label}
+      className={SIDEBAR_THREAD_ROW_BASE_CLASS_NAME}
+      onClick={open}
+    >
+      {content}
+    </SidebarMenuSubButton>
+  );
+}
+
+export function WorkspaceProjectItem({
+  entry,
+  expanded,
+  onToggle,
+  threadSortOrder,
+  dragHandleProps,
+  manualSorting = false,
+}: {
+  entry: WorkspaceProjectEntry;
+  expanded: boolean;
+  onToggle: () => void;
+  threadSortOrder: SidebarThreadSortOrder;
+  dragHandleProps?: SortableProjectHandleProps | null;
+  manualSorting?: boolean;
+}) {
+  const [extraPages, setExtraPages] = useState(0);
+  const href = useLocation({ select: (location) => location.href });
+  const { project, session } = entry;
+  if (!session) return null;
+  const hostName = session.host.hostName;
+  const environmentId = session.host.executionScope.environmentId;
+  const online = session.summary?.state === "open" && Boolean(session.navigation);
+  const status = expanded
+    ? null
+    : resolveProjectStatusIndicator(entry.threads.map((thread) => thread.status));
+  const projectThreads = getUnpinnedThreadsForSidebar(
+    entry.threads,
+    entry.threads.filter((thread) => thread.isPinned).map((thread) => thread.id),
+  );
+  const activeThreadId = projectThreads.find((thread) =>
+    selectedThreadPath(href, environmentId, thread.id),
+  )?.id;
+  const rows = buildProjectThreadTree({
+    threads: sortThreadsForSidebar(projectThreads, threadSortOrder),
+    forceVisibleThreadId: activeThreadId,
+  });
+  const paging = resolveSidebarThreadListPaging({
+    totalCount: rows.length,
+    baseLimit: 5,
+    pageSize: 5,
+    requestedExtraPages: extraPages,
+  });
+  const { visibleEntries } = getVisibleSidebarEntriesForPreview({
+    entries: rows.map((row) => ({ rowId: row.thread.id, rootRowId: row.rootThreadId, row })),
+    activeEntryId: activeThreadId,
+    previewLimit: paging.previewLimit,
+  });
+  const canShowMore = paging.canShowMore && visibleEntries.length < rows.length;
+  const startChat = () => {
+    const navigation = session.navigation;
+    if (!online || !navigation) return;
+    void navigation
+      .newChat(project.id)
+      .then((path) => {
+        // A disconnected or replaced host cannot route the result into another execution.
+        if (
+          readWorkspaceSessions().some(
+            (current) => current.host === session.host && current.navigation === navigation,
+          )
+        )
+          openWorkspacePath(environmentId, path);
+      })
+      .catch((error: unknown) =>
+        toastManager.add({
+          type: "error",
+          title: "Could not create chat",
+          description: error instanceof Error ? error.message : "Try again.",
+        }),
+      );
+  };
+
+  return (
+    <div className="group/collapsible">
+      <div className="group/project-header relative">
+        <SidebarMenuButton
+          ref={manualSorting ? dragHandleProps?.setActivatorNodeRef : undefined}
+          size="sm"
+          className={cn(
+            SIDEBAR_HEADER_ROW_CLASS_NAME,
+            SIDEBAR_ROW_HOVER_CLASS_NAME,
+            manualSorting ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
+          )}
+          {...(manualSorting && dragHandleProps ? dragHandleProps.attributes : {})}
+          {...(manualSorting && dragHandleProps ? dragHandleProps.listeners : {})}
+          aria-expanded={expanded}
+          aria-label={`${project.name}, ${hostName}${status ? `, ${status.label}` : ""}`}
+          title={`${project.cwd}\n${hostName}`}
+          onClick={onToggle}
+        >
+          <SidebarProjectRowContent
+            icon={<WorkspaceProjectIcon entry={entry} expanded={expanded} />}
+            label={project.name}
+            hostName={hostName}
+            reserveClassName="group-hover/project-header:pr-7 group-has-[:focus-visible]/project-header:pr-7"
+            trailing={
+              status ? (
+                <span
+                  aria-label={`Project status: ${status.label}`}
+                  title={status.label}
+                  className={cn(
+                    "ml-auto flex min-w-[1.625rem] shrink-0 items-center justify-end self-center",
+                    sidebarHoverRevealHideClassName("project-header"),
+                  )}
+                >
+                  <SidebarStatusTrailingGlyph status={status} />
+                </span>
+              ) : null
+            }
+          />
+        </SidebarMenuButton>
+        <SidebarSectionToolbar placement="overlay" revealOnHover>
+          <SidebarIconButton
+            icon={NewThreadIcon}
+            label={`New chat in ${project.name} on ${hostName}`}
+            disabled={!online}
+            onClick={startChat}
+          />
+        </SidebarSectionToolbar>
+      </div>
+      <div
+        className={cn(disclosureShellClassName(expanded), SIDEBAR_NESTED_LIST_OFFSET_CLASS_NAME)}
+      >
+        <div className={DISCLOSURE_INNER_CLASS}>
+          <SidebarMenuSub
+            className={cn("mx-0 border-0 px-0", disclosureContentClassName(expanded))}
+          >
+            {visibleEntries.map(({ row }) => (
+              <SidebarMenuSubItem key={row.thread.id}>
+                <WorkspaceThreadRow
+                  entry={{ key: `${entry.key}:${row.thread.id}`, thread: row.thread, session }}
+                  depth={row.depth}
+                />
+              </SidebarMenuSubItem>
+            ))}
+            {canShowMore || paging.canShowLess ? (
+              <SidebarMenuSubItem className="w-full">
+                <div className="flex w-full items-center gap-1">
+                  {canShowMore ? (
+                    <SidebarMenuSubButton
+                      render={<button type="button" />}
+                      size="sm"
+                      className="h-7 flex-1 translate-x-0 justify-start rounded-lg pr-2 pl-8 text-left text-ui text-muted-foreground/79 hover:bg-transparent hover:text-foreground active:bg-transparent active:text-foreground"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => setExtraPages(paging.effectiveExtraPages + 1)}
+                    >
+                      <span>Show more</span>
+                    </SidebarMenuSubButton>
+                  ) : null}
+                  {paging.canShowLess ? (
+                    <SidebarMenuSubButton
+                      render={<button type="button" />}
+                      size="sm"
+                      className={cn(
+                        "h-7 translate-x-0 justify-start rounded-lg text-left text-ui text-muted-foreground/79 hover:bg-transparent hover:text-foreground active:bg-transparent active:text-foreground",
+                        canShowMore ? "w-auto flex-none px-2" : "flex-1 pr-2 pl-8",
+                      )}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => setExtraPages(Math.max(0, paging.effectiveExtraPages - 1))}
+                    >
+                      <span>Show less</span>
+                    </SidebarMenuSubButton>
+                  ) : null}
+                </div>
+              </SidebarMenuSubItem>
+            ) : null}
+          </SidebarMenuSub>
+        </div>
+      </div>
+    </div>
+  );
 }

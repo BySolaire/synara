@@ -1,4 +1,5 @@
-import { useState, useSyncExternalStore } from "react";
+import { addWsTransportStateListener, type WsTransportState } from "../../wsTransportEvents";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { appHistory } from "../../appNavigation";
 import { useHandleNewChat } from "../../hooks/useHandleNewChat";
 import { readExecutionContext } from "../../lib/hosts/executionContext";
@@ -7,7 +8,7 @@ import {
   readWorkspaceSessions,
   subscribeWorkspaceSessions,
 } from "../../lib/hosts/workspaceSessions";
-import { ServerIcon, CheckIcon } from "../../lib/icons";
+import { CheckIcon } from "../../lib/icons";
 import { PickerTriggerButton } from "../chat/PickerTriggerButton";
 import { ComposerPickerMenuPopup } from "../chat/ComposerPickerMenuPopup";
 import { Menu, MenuItem, MenuSeparator, MenuTrigger } from "../ui/menu";
@@ -80,7 +81,7 @@ export function ComputerPicker({
       <MenuTrigger
         render={
           <PickerTriggerButton
-            icon={<ServerIcon className="size-3.5" />}
+            icon={null}
             label={selected?.label ?? "Computer unavailable"}
             aria-label={`${purpose}: ${selected?.label ?? "unavailable"}`}
             title={selected?.detail}
@@ -97,7 +98,6 @@ export function ComputerPicker({
             disabled={!computer.available}
             onClick={() => onChange(computer.id)}
           >
-            <ServerIcon className="size-4 shrink-0" />
             <span className="min-w-0 flex-1">
               <span className="block truncate">{computer.label}</span>
               <span className="block truncate text-ui-xs text-muted-foreground">
@@ -167,5 +167,29 @@ export function NewChatComputerPicker() {
       onChange={(id) => void select(id)}
       onManage={() => navigate("/settings?section=connections")}
     />
+  );
+}
+
+/** Task ownership belongs beside its title, independently of the selected sidebar section. */
+export function ChatComputerLabel() {
+  const context = readExecutionContext();
+  const [state, setState] = useState<WsTransportState>("connecting");
+  useEffect(
+    () =>
+      context?.remote ? addWsTransportStateListener(setState, { replayCurrent: true }) : undefined,
+    [context],
+  );
+  if (!context?.remote) return null;
+  const status =
+    state === "open" ? "Connected" : state === "incompatible" ? "Update required" : "Reconnecting…";
+  return (
+    <span
+      className="min-w-0 max-w-40 truncate text-ui-xs text-muted-foreground"
+      title={`${context.execution.label} · ${status}`}
+      aria-label={`Computer: ${context.execution.label}. ${status}`}
+    >
+      {context.execution.label}
+      {state === "open" ? null : ` · ${status}`}
+    </span>
   );
 }

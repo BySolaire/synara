@@ -1,5 +1,5 @@
 import { resolveThreadStatusPill, runExclusiveProjectAddition } from "../Sidebar.logic";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo, useSyncExternalStore } from "react";
 import { useLocation } from "@tanstack/react-router";
 import { ProjectId, ThreadId } from "@synara/contracts";
 import { appHistory } from "../../appNavigation";
@@ -29,8 +29,11 @@ import {
   type WorkspaceSession,
 } from "../../lib/hosts/workspaceSessions";
 import { recoverBeforeLocalEscape } from "../../lib/hosts/executionSwitch";
-import { Button } from "../ui/button";
-import { ServerIcon } from "../../lib/icons";
+import { isHomeChatContainerProject } from "../../lib/chatProjects";
+import { isStudioContainerProject } from "../../lib/studioProjects";
+import { useWorkspacePathsStore } from "../../workspacePathsStore";
+import { useTerminalStateStore } from "../../terminalStateStore";
+import { useSidebar } from "../ui/sidebar";
 
 function selection(
   href = appHistory.location.href,
@@ -60,6 +63,25 @@ function WorkspacePanel({
 }) {
   const environmentId = session.host.executionScope.environmentId;
   const host = session.host;
+  const sidebar = useSidebar();
+  const sidebarRef = useRef(sidebar);
+  sidebarRef.current = sidebar;
+  const sidebarListeners = useRef(new Set<() => void>());
+  const sidebarBridge = useMemo(
+    () => ({
+      read: () => sidebarRef.current,
+      subscribe: (listener: () => void) => {
+        sidebarListeners.current.add(listener);
+        return () => {
+          sidebarListeners.current.delete(listener);
+        };
+      },
+    }),
+    [],
+  );
+  useEffect(() => {
+    for (const listener of sidebarListeners.current) listener();
+  }, [sidebar]);
   const frameRef = useRef<WorkspaceFrameElement | null>(null);
   const bind = useCallback(
     (frame: WorkspaceFrameElement | null) => {
@@ -72,6 +94,7 @@ function WorkspacePanel({
         host,
         controller: {
           environment: readExecutionContext()!.controller,
+          sidebar: sidebarBridge,
           sessions: readWorkspaceSessions,
           subscribe: subscribeWorkspaceSessions,
           newChat: newLocalChat,
@@ -120,7 +143,7 @@ function WorkspacePanel({
       if (url.protocol === "http:" || url.protocol === "https:") url.pathname = "/";
       frame.src = url.toString();
     },
-    [environmentId, host, newLocalChat],
+    [environmentId, host, newLocalChat, sidebarBridge],
   );
 
   const navigate = session.navigation?.navigate;
@@ -134,20 +157,6 @@ function WorkspacePanel({
       className={active ? "absolute inset-0 z-10 flex min-h-0 flex-col bg-background" : "hidden"}
       aria-label={`Workspace on ${host.hostName}`}
     >
-      <div className="flex shrink-0 items-center gap-2 border-b px-3 py-1 text-ui-sm">
-        <ServerIcon className="size-3.5" />
-        <span className="min-w-0 flex-1 truncate">{host.hostName}</span>
-        <span className="text-muted-foreground">
-          {session.error
-            ? "Unavailable"
-            : session.summary?.state === "open"
-              ? "Connected"
-              : "Reconnecting…"}
-        </span>
-        <Button variant="ghost" size="sm" onClick={() => appHistory.push("/")}>
-          Local chats
-        </Button>
-      </div>
       <iframe
         ref={bind}
         title={`Synara workspace on ${host.hostName}`}
@@ -158,6 +167,19 @@ function WorkspacePanel({
         sandbox="allow-same-origin allow-scripts allow-forms allow-modals allow-downloads allow-popups allow-popups-to-escape-sandbox"
       />
     </section>
+  );
+}
+
+const subscribeWithoutFrame = () => () => {};
+const readWithoutFrame = () => null;
+
+/** Only shell controls cross this bridge; execution state remains owned by the frame. */
+export function useWorkspaceSidebarControls() {
+  const sidebar = readWorkspaceFrame()?.controller.sidebar;
+  return useSyncExternalStore(
+    sidebar?.subscribe ?? subscribeWithoutFrame,
+    sidebar?.read ?? readWithoutFrame,
+    readWithoutFrame,
   );
 }
 
@@ -197,6 +219,8 @@ export function WorkspaceFrameNavigation() {
   const shell = useStore((state) => state.sidebarThreadSummaryById);
   const hydrated = useStore((state) => state.threadsHydrated);
   const drafts = useComposerDraftStore((state) => state.draftThreadsByThreadId);
+  const paths = useWorkspacePathsStore();
+  const terminalStates = useTerminalStateStore((state) => state.terminalStateByThreadId);
   const path = useLocation({ select: (location) => location.href });
   const { handleNewThread: newChat } = useHandleNewThread();
   const { handleNewChat } = useHandleNewChat();
@@ -273,32 +297,40 @@ export function WorkspaceFrameNavigation() {
     const threads = Object.values(shell ?? {})
       .filter((thread) => !thread.archivedAt)
       .map((thread) => ({
-        id: thread.id,
-        projectId: thread.projectId,
-        title: thread.title,
-        archivedAt: thread.archivedAt ?? null,
+        ...thread,
+        terminalEntryPoint: terminalStates[thread.id]?.entryPoint === "terminal",
         status: resolveThreadStatusPill({
           thread,
           hasPendingApprovals: thread.hasPendingApprovals,
           hasPendingUserInput: thread.hasPendingUserInput,
         }),
       }));
-    for (const [id, draft] of Object.entries(drafts)) {
-      if (draft.promotedTo === undefined && !threads.some((thread) => thread.id === id))
-        threads.push({
-          id: ThreadId.makeUnsafe(id),
-          projectId: draft.projectId,
-          title: "New chat",
-          archivedAt: null,
-          status: null,
-        });
-    }
+    const threadPath = path.split("?")[0]?.slice(1);
+    const threadId = threadPath ? ThreadId.makeUnsafe(threadPath) : undefined;
+    const activeProjectId = threadId
+      ? (shell[threadId]?.projectId ?? drafts[threadId]?.projectId)
+      : undefined;
     frame.publish({
-      projects: projects.map(({ id, name, cwd }) => ({ id, name, cwd })),
+      projects: projects.map((project) => ({
+        id: project.id,
+        kind: project.kind,
+        name: project.name,
+        cwd: project.cwd,
+        ...(project.appearance !== undefined ? { appearance: project.appearance } : {}),
+        createdAt: project.createdAt,
+        updatedAt: project.updatedAt,
+        ...(project.isPinned !== undefined ? { isPinned: project.isPinned } : {}),
+        section: isHomeChatContainerProject(project, paths)
+          ? "chats"
+          : isStudioContainerProject(project, paths)
+            ? "studio"
+            : "projects",
+      })),
+      ...(activeProjectId ? { activeProjectId } : {}),
       threads,
       path,
       state,
     });
-  }, [drafts, frame, hydrated, path, projects, shell, state]);
+  }, [drafts, frame, hydrated, path, paths, projects, shell, state, terminalStates]);
   return null;
 }

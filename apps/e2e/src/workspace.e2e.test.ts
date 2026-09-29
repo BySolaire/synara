@@ -76,6 +76,31 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         createdAt: new Date().toISOString(),
       });
     }
+    await using initialRemote = await workspaceRpc(host.origin);
+    await initialRemote.request("orchestration.dispatchCommand", {
+      type: "thread.create",
+      commandId: randomUUID(),
+      threadId: randomUUID(),
+      projectId,
+      title: "Remote navigation fixture",
+      modelSelection: { provider: "codex", model: "gpt-6-astra" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      envMode: "local",
+      branch: null,
+      worktreePath: null,
+      createdAt: new Date().toISOString(),
+    });
+    const unusedRemoteRoot = path.join(host.baseDir, "unused-remote-project");
+    await fs.mkdir(unusedRemoteRoot);
+    await initialRemote.request("orchestration.dispatchCommand", {
+      type: "project.create",
+      commandId: randomUUID(),
+      projectId: randomUUID(),
+      title: "Unused remote project",
+      workspaceRoot: unusedRemoteRoot,
+      createdAt: new Date().toISOString(),
+    });
     const invitation = await requestLocalRemoteAccess(host.baseDir, {
       operation: "create-code",
     });
@@ -153,12 +178,19 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       });
       await page.getByRole("button", { name: "Connect", exact: true }).first().click();
       await page
-        .getByRole("button", { name: /E2E host .*Connected/ })
+        .getByRole("button", { name: /^REMOTE checkout, E2E host/ })
         .first()
         .waitFor();
       await page.getByText("REMOTE checkout", { exact: true }).first().waitFor();
       await page.getByText(/^Opening E2E host/).waitFor({ state: "hidden" });
       await page.getByText("LOCAL checkout", { exact: true }).first().waitFor();
+      const projectsList = page.getByTestId("workspace-project-list");
+      await projectsList.getByText("REMOTE checkout", { exact: true }).waitFor();
+      await projectsList.getByText("LOCAL checkout", { exact: true }).waitFor();
+      expect(await page.getByLabel(/^Projects on /).count()).toBe(0);
+      expect(await page.getByText("Unused remote project", { exact: true }).count()).toBe(0);
+      expect(await page.getByRole("button", { name: "Local chats", exact: true }).count()).toBe(0);
+
       expect(
         await page.evaluate(
           () => (globalThis as unknown as { workspaceSentinel: string }).workspaceSentinel,
@@ -185,7 +217,6 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       await remotePage.getByRole("button", { name: "Toggle right sidebar", exact: true }).click();
       await remotePage.getByRole("button", { name: "Open Files", exact: true }).click();
       await remotePage.getByText("same.txt", { exact: true }).first().waitFor();
-      await page.getByRole("button", { name: "Local chats", exact: true }).click();
       await page.getByText("LOCAL checkout", { exact: true }).first().hover();
       await page
         .getByRole("button", { name: "Create new thread in LOCAL checkout", exact: true })
@@ -193,7 +224,8 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       expect(await page.locator('[contenteditable="true"]').first().innerText()).toBe(
         "NEW LOCAL DRAFT",
       );
-      await page.getByRole("button", { name: /E2E host .*Connected/ }).click();
+      await page.getByText("REMOTE checkout", { exact: true }).first().hover();
+      await page.getByRole("button", { name: /^New chat in REMOTE checkout on / }).click();
       expect(await newRemoteComposer.innerText()).toBe("NEW REMOTE DRAFT");
       await using localRpc = await workspaceRpc(controller.origin);
       const connection = await localRpc.request<HostConnection>("hosts.connect", {
@@ -265,7 +297,7 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       ).toBe(false);
       await page.reload();
       await page
-        .getByRole("button", { name: /E2E host .*Connected/ })
+        .getByRole("button", { name: /^REMOTE checkout, E2E host/ })
         .first()
         .waitFor();
       expect(await remoteRpc.request("git.status", { cwd: roots[0] })).toMatchObject({
@@ -363,8 +395,34 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
           { timeout: 20_000 },
         )
         .toBe(true);
+      await page.getByRole("button", { name: "Switch to activity view", exact: true }).click();
+      await page.getByRole("button", { name: /^Remote continuity fixture, E2E host/ }).click();
+      await remotePage.getByText("Remote continuity fixture", { exact: true }).first().waitFor();
+      if (process.env.SYNARA_E2E_EVIDENCE)
+        await page.screenshot({
+          path: path.join(process.env.SYNARA_E2E_EVIDENCE, "workspace-unified-activity.png"),
+        });
+      await page.getByRole("button", { name: "Switch to classic view", exact: true }).click();
       await page.getByText("Remote continuity fixture", { exact: true }).first().click();
       await remotePage.getByText("REMOTE STREAM STARTED", { exact: true }).waitFor();
+      // One sidebar control owns both the controller and its visible remote pane.
+      await expect
+        .poll(() =>
+          remotePage.getByRole("button", { name: "Toggle thread sidebar", exact: true }).count(),
+        )
+        .toBe(0);
+      await page
+        .getByRole("button", { name: "Toggle thread sidebar", exact: true })
+        .first()
+        .click();
+      await remotePage.getByRole("button", { name: "Toggle thread sidebar", exact: true }).click();
+      await page.getByText("LOCAL checkout", { exact: true }).first().waitFor();
+      await expect
+        .poll(() =>
+          remotePage.getByRole("button", { name: "Toggle thread sidebar", exact: true }).count(),
+        )
+        .toBe(0);
+
       const remoteComposer = remotePage.locator('[contenteditable="true"]').first();
       await remoteComposer.fill("REMOTE DRAFT stays here");
       await page.getByText("Local continuity fixture", { exact: true }).first().click();
@@ -526,7 +584,7 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         )
         .waitFor();
       await page
-        .getByRole("button", { name: /E2E host .*Connected/ })
+        .getByRole("button", { name: /^REMOTE checkout, E2E host/ })
         .first()
         .waitFor();
       const evidenceDir = process.env.SYNARA_E2E_EVIDENCE;
@@ -567,14 +625,6 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         })
         .toBe(true);
       await page.reload();
-      await page
-        .getByRole("button", { name: "Local chats", exact: true })
-        .first()
-        .click({ timeout: 40_000 });
-      await page
-        .getByRole("button", { name: /This computer.*Connected/ })
-        .first()
-        .waitFor();
       await page.getByText("LOCAL checkout", { exact: true }).first().waitFor();
       // Local navigation still works when a remote runtime cannot bootstrap.
       await page.getByText("Local continuity fixture", { exact: true }).first().click();

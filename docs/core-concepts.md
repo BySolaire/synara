@@ -42,6 +42,11 @@ lets you name it, choose a computer, and browse a source folder on that computer
 **Run on** picker chooses its computer; the project picker then shows that computer's folders.
 Existing chats and drafts keep their original computer when you open work elsewhere.
 
+Connected computers share the same Projects, Chats, Pinned, and Activity lists. A remote row names
+its computer; opening it changes the selected chat without switching the whole app. Empty remote
+folders stay in the project picker until they have a chat, are pinned, or are the active new project.
+Projects with the same name or path on different computers remain separate physical folders.
+
 Git repositories unlock the complete delivery workflow:
 
 - Branches
