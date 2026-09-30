@@ -6,22 +6,48 @@ on:
     paths:
       - .github/workflows/windows-defender-investigation.yml
       - scripts/investigate-windows-defender.ps1
+      - scripts/prepare-defender-components.py
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  extract:
+    name: Statically extract official installer components
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: python3 scripts/prepare-defender-components.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: defender-component-manifest
+          path: defender-components/manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: defender-components-0.9.1
+          path: defender-components/0.9.1/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: defender-components-0.9.2
+          path: defender-components/0.9.2/
   compare:
     name: Scan official Windows installers without execution
     runs-on: windows-2022
     timeout-minutes: 25
+    needs: extract
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - name: Compare Defender results
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: ./scripts/investigate-windows-defender.ps1
       - name: Preserve scan evidence even on detection or failure
         if: always()

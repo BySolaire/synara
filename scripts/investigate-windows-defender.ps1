@@ -6,6 +6,7 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hoste
 }
 $evidence = New-Item -ItemType Directory -Path 'defender-evidence'
 $started = Get-Date
+$unqualified = $false
 function Save-State($name) {
     Get-MpComputerStatus | ConvertTo-Json -Depth 6 | Set-Content "$evidence/$name-status.json"
     Get-MpPreference | ConvertTo-Json -Depth 6 | Set-Content "$evidence/$name-preferences.json"
@@ -71,13 +72,47 @@ try {
             $result.error = $_.ToString()
             Write-Warning "$version scan/download: $_"
         } finally {
+            if ($result.error -or $result.scanExit -ne 0 -or $result.hashAfter -ne $sample.Hash) { $unqualified = $true }
             $result | ConvertTo-Json -Depth 6 | Set-Content "$evidence/$version-result.json"
             Save-State $version
         }
     }
+    $components = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'defender-components')
+    & gh run download $env:GITHUB_RUN_ID --repo $env:GITHUB_REPOSITORY --name defender-component-manifest --dir $components
+    if ($LASTEXITCODE -ne 0) { throw 'Could not retrieve component manifest.' }
+    $manifest = Get-Content (Join-Path $components 'manifest.json') -Raw | ConvertFrom-Json
+    Copy-Item (Join-Path $components 'manifest.json') "$evidence/component-manifest.json"
+    foreach ($sample in $samples) {
+        $version = $sample.Version
+        $componentDirectory = Join-Path $components $version
+        & gh run download $env:GITHUB_RUN_ID --repo $env:GITHUB_REPOSITORY --name "defender-components-$version" --dir $componentDirectory 2>&1 | Tee-Object "$evidence/$version-component-download.txt"
+        $componentResults = @()
+        foreach ($entry in @($manifest | Where-Object { $_.version -eq $version })) {
+            $file = Join-Path $componentDirectory $entry.path
+            $result = [ordered]@{ path = $entry.path; expectedHash = $entry.sha256 }
+            try {
+                $result.hashBefore = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($result.hashBefore -ne $entry.sha256) { throw 'Component hash mismatch.' }
+                $logName = "$version-component-$($componentResults.Count)"
+                & $scanner -Scan -ScanType 3 -File $file 2>&1 | Tee-Object "$evidence/$logName-scan.txt"
+                $result.scanExit = $LASTEXITCODE
+                if (Test-Path -LiteralPath $file) {
+                    $result.hashAfter = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+                }
+            } catch {
+                $result.error = $_.ToString()
+            }
+            $componentResults += $result
+            if ($result.error -or $result.scanExit -ne 0 -or $result.hashAfter -ne $entry.sha256) { $unqualified = $true }
+        }
+        $componentResults | ConvertTo-Json -Depth 6 | Set-Content "$evidence/$version-component-results.json"
+    }
 } finally {
+    # Detection/remediation records can appear after the blocking filesystem call.
+    Start-Sleep -Seconds 20
     Save-State 'final'
     @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-Windows Defender/Operational'; StartTime = $started } -ErrorAction SilentlyContinue) |
         Select-Object TimeCreated, Id, Message | ConvertTo-Json -Depth 6 | Set-Content "$evidence/events.json"
-    Write-Output 'Review preserved scan output, threat records, status and surviving hashes; a successful job is not a clean verdict.'
+    Write-Output 'Review preserved scan output, threat records, status and surviving hashes; server scans do not qualify Windows 11 browser behavior.'
 }
+if ($unqualified) { throw 'At least one baseline/component was blocked, detected, missing, or failed its scan. Review preserved evidence.' }
