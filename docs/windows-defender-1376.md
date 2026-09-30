@@ -43,6 +43,10 @@ The [decisive paired comparison](https://github.com/Emanuele-web04/synara/action
 
 This establishes that rebuilding the installer container resolves this reproducible detection for the tested bytes and Defender versions. It does not identify Microsoft's underlying heuristic or establish a general false-positive verdict. The earlier standalone rebuild used newer definitions than the first reproduction; only this matched pair supports the packaging remedy. Compression alternatives and dependency downgrades are unnecessary based on this evidence.
 
+The [installed-runtime qualification](https://github.com/Emanuele-web04/synara/actions/runs/36744320200) passed silent installation of official 0.9.1 followed by upgrade to the rebuilt 0.9.2, then ran the existing isolated dependency and app/backend startup smoke against the **actually installed x64 tree**. Defender remained active with engine `1.1.26080.3`, definitions `1.459.486.0`, and no detections after startup.
+
+The installed tree contains **334 matching application files**, not 340. Six ARM64 node-pty helpers are absent in both the official 0.9.1 installation and the rebuilt 0.9.2 installation. All six use the ARM64 filter in the inner 7z archives, which suggests a pre-existing NSIS decompressor compatibility issue; that cause is not proven. The x64 dependency/startup checks passed, and no other payload difference was accepted. This investigation does not qualify Windows on ARM or repair those existing omissions.
+
 The rebuilt file is retained as [qualified-experimental-installer-normal](https://github.com/Emanuele-web04/synara/actions/runs/36740232673/artifacts/11109114425), expiring 2026-10-14. It is an experimental repair candidate, not a published replacement or a new official release. Any distributed release must pass the new guard on its own final bytes, signing/provenance policy, startup checks, and authorized release process. No release asset or update feed was changed.
 
 ## Static comparison

@@ -58,5 +58,30 @@
       "definitionAfter": "1.459.486.0"
     }
   },
-  "distribution": "No release asset, update feed, signing policy, cloud participation or automatic sample-submission setting was changed."
+  "distribution": "No release asset, update feed, signing policy, cloud participation or automatic sample-submission setting was changed.",
+  "installedRuntime": {
+    "run": "https://github.com/Emanuele-web04/synara/actions/runs/36744320200",
+    "baselineVersion": "0.9.1.0",
+    "upgradedVersion": "0.9.2.0",
+    "matchingInstalledFiles": 334,
+    "existingArm64OmissionsAlsoAbsentInBaseline": [
+      "resources\\app.asar.unpacked\\node_modules\\node-pty\\third_party\\conpty\\1.23.251008001\\win10-arm64\\conpty.dll",
+      "resources\\app.asar.unpacked\\node_modules\\node-pty\\third_party\\conpty\\1.23.251008001\\win10-arm64\\OpenConsole.exe",
+      "resources\\app.asar.unpacked\\node_modules\\node-pty\\prebuilds\\win32-arm64\\winpty-agent.exe",
+      "resources\\app.asar.unpacked\\node_modules\\node-pty\\prebuilds\\win32-arm64\\winpty.dll",
+      "resources\\app.asar.unpacked\\node_modules\\node-pty\\prebuilds\\win32-arm64\\conpty\\conpty.dll",
+      "resources\\app.asar.unpacked\\node_modules\\node-pty\\prebuilds\\win32-arm64\\conpty\\OpenConsole.exe"
+    ],
+    "actualInstalledX64RuntimeDependencies": "passed",
+    "actualInstalledAppAndBackendStartup": "passed",
+    "engine": "1.1.26080.3",
+    "definitions": "1.459.486.0",
+    "antivirusAndRealtimeActiveAfterStartup": true,
+    "detectionsAfterStartup": [],
+    "limitations": [
+      "Windows on ARM not qualified",
+      "Six pre-existing ARM64 helper omissions remain",
+      "Windows 11 browser download not qualified"
+    ]
+  }
 }
