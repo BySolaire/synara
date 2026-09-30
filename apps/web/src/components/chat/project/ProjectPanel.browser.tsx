@@ -454,8 +454,7 @@ describe("ProjectPanel polished sections", () => {
     setSidebarSummaries([idleOne, idleTwo, waiting]);
     await renderPanel();
 
-    await page.getByRole("button", { name: /^Threads/ }).click();
-
+    // Threads is the default section: the list shows without touching the bar.
     await expect.element(page.getByText("Idle", { exact: true })).toBeInTheDocument();
     await vi.waitFor(() => {
       expect(document.body.textContent).toContain("Idle one");
@@ -485,7 +484,6 @@ describe("ProjectPanel polished sections", () => {
     });
     const surface = overlay.firstElementChild as HTMLElement;
 
-    await page.getByRole("button", { name: /^Threads/ }).click();
     await vi.waitFor(() => expect(document.body.textContent).toContain("Idle 59"));
     // Let the disclosure's open animation settle before measuring.
     await new Promise<void>((resolve) => window.setTimeout(resolve, 350));
@@ -542,72 +540,40 @@ describe("ProjectPanel polished sections", () => {
       return found!;
     });
     const text = modelButton.textContent ?? "";
+    expect(text).toContain("Coordinator · ");
     expect(text).toContain("Claude Opus 5.5");
     expect(text).toContain("Medium");
     expect(text).not.toContain("Claude ·");
   });
 
-  it("shows the activity sparkline once a thread works and hides it while none ever did", async () => {
-    // Only idle threads exist → nothing has ever worked → no sparkline.
-    const idle = makeThreadSummary(ThreadId.makeUnsafe("thread-idle-1"), { title: "Idle" });
-    const idleTwo = makeThreadSummary(ThreadId.makeUnsafe("thread-idle-2"), { title: "Idle two" });
+  it("opens on Threads by state, with live threads under Working and no activity chart", async () => {
+    const idle = makeThreadSummary(ThreadId.makeUnsafe("thread-idle-1"), { title: "Idle one" });
     const coordinator = makeThreadSummary(COORDINATOR_THREAD_ID, { title: "alpha Coordinator" });
     harness.api.projectAgent.listThreadIndex.mockResolvedValue(
-      threadIndexEntries([idle.id, idleTwo.id]),
+      threadIndexEntries([idle.id, ThreadId.makeUnsafe("thread-working")]),
     );
-    setSidebarSummaries([idle, idleTwo, coordinator]);
+    setSidebarSummaries([
+      idle,
+      makeThreadSummary(ThreadId.makeUnsafe("thread-working"), {
+        title: "Working one",
+        session: runningSession(),
+        latestTurn: runningTurn(),
+      }),
+      coordinator,
+    ]);
     await renderPanel();
 
-    // Wait for the configured layout before asserting absence — the model line
-    // is what the sparkline would sit above.
+    await expect.element(page.getByText("Working", { exact: true })).toBeInTheDocument();
     await vi.waitFor(() => {
-      expect(
-        Array.from(document.querySelectorAll("button")).some((button) =>
-          button.getAttribute("aria-label")?.startsWith("Open "),
-        ),
-      ).toBe(true);
+      expect(document.body.textContent).toContain("Working one");
+      expect(document.body.textContent).toContain("Idle one");
     });
+    expect(
+      page
+        .getByRole("button", { name: /^Threads/ })
+        .element()
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
     expect(document.querySelector('[role="img"][aria-label*="working now"]')).toBeNull();
-
-    // A thread starts working → the sparkline appears with the live count.
-    setSidebarSummaries([
-      makeThreadSummary(idle.id, {
-        title: "Idle",
-        session: runningSession(),
-        latestTurn: runningTurn(),
-      }),
-      idleTwo,
-      coordinator,
-    ]);
-    await vi.waitFor(() => {
-      const sparkline = document.querySelector<HTMLElement>(
-        '[role="img"][aria-label*="working now"]',
-      );
-      expect(sparkline).not.toBeNull();
-      expect(sparkline!.getAttribute("aria-label")).toContain("1 thread working now");
-      expect(sparkline!.getAttribute("aria-label")).toContain("peak 1 in the last hour");
-    });
-
-    // A second member thread starts → the count updates without extra polling.
-    setSidebarSummaries([
-      makeThreadSummary(idle.id, {
-        title: "Idle",
-        session: runningSession(),
-        latestTurn: runningTurn(),
-      }),
-      makeThreadSummary(idleTwo.id, {
-        title: "Idle two",
-        session: runningSession(),
-        latestTurn: { ...runningTurn(), turnId: TurnId.makeUnsafe("turn-2") },
-      }),
-      coordinator,
-    ]);
-    await vi.waitFor(() => {
-      const sparkline = document.querySelector<HTMLElement>(
-        '[role="img"][aria-label*="working now"]',
-      );
-      expect(sparkline!.getAttribute("aria-label")).toContain("2 threads working now");
-      expect(sparkline!.getAttribute("aria-label")).toContain("peak 2 in the last hour");
-    });
   });
 });

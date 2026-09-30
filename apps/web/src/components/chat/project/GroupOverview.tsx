@@ -9,7 +9,7 @@
 //      Synara's version, derived from the same helpers the sidebar uses.
 
 import type { AutomationDefinition, ThreadId } from "@synara/contracts";
-import { type MouseEvent as ReactMouseEvent, useEffect, useId, useState } from "react";
+import { type MouseEvent as ReactMouseEvent, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { DisclosureChevron } from "~/components/ui/DisclosureChevron";
@@ -30,7 +30,6 @@ import { archiveThreadFromClient, unarchiveThreadFromClient } from "~/lib/thread
 import { cn } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
 import type { useAutomations } from "~/routes/-automations.shared";
-import type { SidebarThreadSummary } from "~/types";
 
 import {
   GROUP_THREAD_SECTIONS,
@@ -38,7 +37,6 @@ import {
   type GroupThreadRow as GroupThreadRowData,
   type GroupThreadSectionId,
 } from "./groupOverview.logic";
-import { buildGroupThreadActivitySeries } from "./groupThreadActivity.logic";
 import type { useProjectAgent } from "./useProjectAgent";
 
 type ProjectAgent = ReturnType<typeof useProjectAgent>;
@@ -143,149 +141,6 @@ export function GroupPanelSectionBar({
           </Tooltip>
         );
       })}
-    </div>
-  );
-}
-
-// — Activity sparkline —
-
-const SPARKLINE_VIEW_WIDTH = 100;
-const SPARKLINE_VIEW_HEIGHT = 40;
-const SPARKLINE_PAD_Y = 4;
-const SPARKLINE_TICK_MS = 15_000;
-const SPARKLINE_GRID_ROWS = [10, 20, 30] as const;
-const SPARKLINE_GRID_COLUMNS = [25, 50, 75] as const;
-
-/**
- * "Threads working" sparkline for the top of the Group panel: a thin accent
- * line over a faint dotted grid, a highlighted dot on the latest point, no
- * axes. The series is rebuilt from the store's thread summaries each render and
- * the window advances on a slow tick, so it updates as threads start and
- * finish. Hidden until the group has produced any work — a brand-new group has
- * nothing to chart.
- */
-export function GroupThreadActivitySparkline({
-  threads,
-}: {
-  readonly threads: readonly SidebarThreadSummary[];
-}) {
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  const gradientId = `group-activity-fill-${useId().replace(/:/g, "")}`;
-  useEffect(() => {
-    const interval = window.setInterval(() => setNowMs(Date.now()), SPARKLINE_TICK_MS);
-    return () => window.clearInterval(interval);
-  }, []);
-  const series = buildGroupThreadActivitySeries({ threads, nowMs });
-  if (series.points.length === 0) {
-    return null;
-  }
-  const peak = Math.max(1, series.peakCount);
-  const pointCount = series.points.length;
-  const stepX = pointCount > 1 ? SPARKLINE_VIEW_WIDTH / (pointCount - 1) : 0;
-  const coordinates = series.points.map((count, index) => ({
-    x: pointCount > 1 ? index * stepX : SPARKLINE_VIEW_WIDTH / 2,
-    y:
-      SPARKLINE_VIEW_HEIGHT -
-      SPARKLINE_PAD_Y -
-      (count / peak) * (SPARKLINE_VIEW_HEIGHT - SPARKLINE_PAD_Y * 2),
-  }));
-  const lastPoint = coordinates[coordinates.length - 1];
-  const pathData =
-    coordinates.length > 1
-      ? `M${coordinates.map((point) => `${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" L")}`
-      : null;
-  const areaData =
-    pathData !== null
-      ? `${pathData} L${SPARKLINE_VIEW_WIDTH} ${SPARKLINE_VIEW_HEIGHT} L0 ${SPARKLINE_VIEW_HEIGHT} Z`
-      : null;
-  const workingLabel = series.currentCount === 1 ? "1 thread" : `${series.currentCount} threads`;
-  const accessibleLabel = `${workingLabel} working now, peak ${series.peakCount} in the last hour`;
-  return (
-    <div
-      role="img"
-      aria-label={accessibleLabel}
-      title={accessibleLabel}
-      tabIndex={0}
-      className="relative mx-3 mb-1.5 mt-2 h-12"
-    >
-      <svg
-        viewBox={`0 0 ${SPARKLINE_VIEW_WIDTH} ${SPARKLINE_VIEW_HEIGHT}`}
-        preserveAspectRatio="none"
-        className="block size-full"
-        aria-hidden
-      >
-        <defs>
-          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--color-text-accent)" stopOpacity={0.18} />
-            <stop offset="100%" stopColor="var(--color-text-accent)" stopOpacity={0} />
-          </linearGradient>
-        </defs>
-        {SPARKLINE_GRID_ROWS.map((y) => (
-          <line
-            key={`row-${y}`}
-            x1={0}
-            y1={y}
-            x2={SPARKLINE_VIEW_WIDTH}
-            y2={y}
-            stroke="var(--color-border-light)"
-            strokeWidth={1}
-            strokeDasharray="1 4"
-            strokeLinecap="round"
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-        {SPARKLINE_GRID_COLUMNS.map((x) => (
-          <line
-            key={`col-${x}`}
-            x1={x}
-            y1={0}
-            x2={x}
-            y2={SPARKLINE_VIEW_HEIGHT}
-            stroke="var(--color-border-light)"
-            strokeWidth={1}
-            strokeDasharray="1 4"
-            strokeLinecap="round"
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-        {pathData !== null && areaData !== null ? (
-          <path d={areaData} fill={`url(#${gradientId})`} stroke="none" />
-        ) : null}
-        {pathData !== null ? (
-          <path
-            d={pathData}
-            fill="none"
-            stroke="var(--color-text-accent)"
-            strokeWidth={1.5}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-          />
-        ) : null}
-      </svg>
-      {lastPoint !== undefined ? (
-        <>
-          <span
-            className="pointer-events-none absolute size-4 rounded-full"
-            style={{
-              left: `calc(${(lastPoint.x / SPARKLINE_VIEW_WIDTH) * 100}% - 8px)`,
-              top: `calc(${(lastPoint.y / SPARKLINE_VIEW_HEIGHT) * 100}% - 8px)`,
-              backgroundColor: "var(--color-text-accent)",
-              opacity: 0.2,
-            }}
-            aria-hidden
-          />
-          <span
-            className="pointer-events-none absolute size-2 rounded-full"
-            style={{
-              left: `calc(${(lastPoint.x / SPARKLINE_VIEW_WIDTH) * 100}% - 4px)`,
-              top: `calc(${(lastPoint.y / SPARKLINE_VIEW_HEIGHT) * 100}% - 4px)`,
-              backgroundColor: "var(--color-text-accent)",
-            }}
-            aria-hidden
-          />
-        </>
-      ) : null}
     </div>
   );
 }

@@ -41,7 +41,6 @@ import {
   GroupAutomationsSection,
   GroupPanelSectionBar,
   GroupPullRequestsSection,
-  GroupThreadActivitySparkline,
   GroupThreadsSection,
 } from "./GroupOverview";
 import { GROUP_PANEL_SECTIONS, type GroupPanelSectionId } from "./groupPanelSections";
@@ -232,7 +231,9 @@ export function ProjectPanel({
       : null,
   });
 
-  const [openSection, setOpenSection] = useState<GroupPanelSectionId | null>(null);
+  // Threads opens by default: "what is running, what finished, what needs me"
+  // is the first question the panel answers. The bar still toggles it closed.
+  const [openSection, setOpenSection] = useState<GroupPanelSectionId | null>("threads");
   const sectionsRegionId = useId();
 
   const pullRequestsByThreadId = useThreadPullRequests({
@@ -374,7 +375,6 @@ export function ProjectPanel({
 
       {configured ? (
         <>
-          <GroupThreadActivitySparkline threads={groupThreads} />
           <button
             type="button"
             className="mx-1.5 flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-ui text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
@@ -389,9 +389,10 @@ export function ProjectPanel({
               />
             ) : null}
             <span className="min-w-0 flex-1 truncate">
+              <span className="text-foreground">Coordinator</span>
               {coordinatorModelSummary
-                ? formatThreadModelSummaryLabel(coordinatorModelSummary)
-                : coordinatorDisplayName}
+                ? ` · ${formatThreadModelSummaryLabel(coordinatorModelSummary)}`
+                : null}
             </span>
             {coordinatorModelSummary?.fastMode ? (
               <FastModeIcon
@@ -429,7 +430,7 @@ export function ProjectPanel({
         {configured && projectId !== null ? (
           <div className="flex min-h-full flex-col">
             <ProjectFocusCard
-              className="flex-1"
+              className={openSection === null ? "flex-1" : undefined}
               summary={sanitizeProjectDigestSummary(agent.overview?.digest?.summary ?? null)}
               updating={
                 agent.overview?.digest?.generationState === "pending" ||

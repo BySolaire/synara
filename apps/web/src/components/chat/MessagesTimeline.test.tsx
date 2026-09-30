@@ -480,6 +480,56 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Sent by agent");
   });
 
+  it("names the group when a group coordinator started the thread", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        hasMessages
+        isWorking={false}
+        activeTurnInProgress={false}
+        activeTurnStartedAt={null}
+        crossTaskOrigin={{
+          sourceThreadId: ThreadId.makeUnsafe("source-thread"),
+          sourceProvider: "codex",
+          coordinatorGroupName: "Release Synara",
+        }}
+        timelineEntries={[
+          {
+            id: "entry-first-user",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            message: {
+              id: MessageId.makeUnsafe("first-user-message"),
+              role: "user",
+              text: "Inspect the repository",
+              dispatchOrigin: "agent",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+        turnDiffSummaryByAssistantMessageId={new Map()}
+        nowIso="2026-03-17T19:14:30.000Z"
+        expandedWorkGroups={{}}
+        onToggleWorkGroup={() => {}}
+        onOpenTurnDiff={() => {}}
+        onOpenThread={() => {}}
+        revertTurnCountByUserMessageId={new Map()}
+        onRevertUserMessage={() => {}}
+        isRevertingCheckpoint={false}
+        onImageExpand={() => {}}
+        markdownCwd={undefined}
+        resolvedTheme="light"
+        timestampFormat="locale"
+        workspaceRoot={undefined}
+      />,
+    );
+
+    expect(markup).toContain("Sent by the Release Synara coordinator");
+    expect(markup).toContain('aria-label="Open coordinator"');
+    expect(markup).not.toContain("Sent by Synara from another thread");
+  });
+
   it("keeps user-bubble file and folder mention icons from being overridden by plugin names", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const baseProps = { ...makeTimelineBaseProps(), resolvedTheme: "light" as const };

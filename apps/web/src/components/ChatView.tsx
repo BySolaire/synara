@@ -1696,6 +1696,20 @@ export default function ChatView({
     activeThread && coordinatorThreadIds.has(activeThread.id),
   );
   const activeGroupSummary = isCoordinatorConversation ? summaryFor(activeThread?.projectId) : null;
+  // A thread the group coordinator started names the group in its origin label,
+  // so the worker reads as part of that group rather than "another thread".
+  const crossTaskOriginGroupName =
+    crossTaskSourceThreadId && coordinatorThreadIds.has(crossTaskSourceThreadId)
+      ? (composerThreadProjects.find((project) => project.id === crossTaskSourceThread?.projectId)
+          ?.name ?? null)
+      : null;
+  const resolvedCrossTaskOrigin = useMemo(
+    () =>
+      crossTaskOrigin && crossTaskOriginGroupName
+        ? { ...crossTaskOrigin, coordinatorGroupName: crossTaskOriginGroupName }
+        : crossTaskOrigin,
+    [crossTaskOrigin, crossTaskOriginGroupName],
+  );
   const [coordinatorSettingsOpen, setCoordinatorSettingsOpen] = useState(false);
   const [coordinatorSettingsSection, setCoordinatorSettingsSection] = useState<
     GroupSettingsSection | undefined
@@ -6148,7 +6162,7 @@ export default function ChatView({
                         : null
                     }
                     tailAnchorScrollInFlightRef={tailAnchorScrollInFlightRef}
-                    crossTaskOrigin={crossTaskOrigin}
+                    crossTaskOrigin={resolvedCrossTaskOrigin}
                     forkSource={forkSource}
                     isTemporaryThread={isThreadTemporary}
                     timelineEntries={timelineEntries}

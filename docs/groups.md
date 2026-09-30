@@ -84,6 +84,10 @@ After it starts threads, Synara watches them for you (see
 [How monitoring works](#how-monitoring-works)). Status updates appear in the coordinator
 conversation as part of its reply, each with a link to the thread.
 
+Inside a thread the coordinator started, the task is labelled with the group, for example **Sent by
+the Release Synara coordinator**.
+Click it to go back to the coordinator conversation.
+
 Useful requests:
 
 ```text
@@ -152,13 +156,12 @@ From top to bottom:
 
 - **Header**: **Pause goal** / **Resume goal** (only when the group has a goal), **Group
   settings** (gear), and **Close**.
-- **Activity graph**: how many threads were working, minute by minute, over the last hour. Hover
-  it to see "N threads working now, peak N in the last hour". It is hidden until a thread has done
-  some work.
-- **Coordinator line**: the coordinator's model, with a status dot (**Needs you**, **Working**,
+- **Coordinator line**: **Coordinator** and its model, with a status dot (**Needs you**, **Working**,
   **Paused**, **Stopped**, or **Idle**). Click it to open the coordinator conversation.
 - **Focus**: a short summary of what matters now, refreshed after coordinator turns, with links to
   the threads involved.
+- **Threads**, open by default: every thread in the group, grouped by state, so you can see at a
+  glance what is working, what is done, and what is waiting on you.
 - **Icon bar** at the bottom: **Threads**, **Pull requests**, **Automations**, and **Context**,
   each with a count. An amber dot on **Threads** means a thread is waiting on you. Click an icon
   to open that section in place, above the bar; click it again to close it.
