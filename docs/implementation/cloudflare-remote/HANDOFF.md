@@ -2,6 +2,14 @@
 
 Aggiornato il 30 settembre 2026. Questo è il riepilogo corrente tra desktop e iOS; i documenti precedenti contengono anche stati storici ormai superati. Il ridisegno della UI e dei chip è in pausa. Successivamente l'utente ha richiesto soltanto nome “Connections” e globo Central Icons su desktop e iOS: applicati alle voci di accesso e ai titoli, senza cambiare il comportamento delle connessioni.
 
+## Aggiornamento account/profile — 30 settembre 2026
+
+Dopo il rename Connections (`fdfde17` desktop, `e9aa0b6` iOS), corretto il fallback dell'identità: finché manca un profilo Synara, la pagina Profile usa nome e foto del login, come il menu account. Un profilo salvato continua ad avere precedenza, anche quando la foto è stata esplicitamente rimossa. Gli edit prima dell'onboarding non vengono più salvati silenziosamente nell'identità locale. Il feature gate esistente rimane invariato.
+
+iOS legge `/me` con la sessione autenticata e mostra la stessa precedenza nella sezione Account di Connections; aggiorna all'apertura, al ritorno in foreground e con pull-to-refresh. La presentazione rimane separata dallo stato di autorizzazione. Nessuna modifica ai dati salvati o deploy dell'API; serve una build client aggiornata. Una foto può apparire soltanto se il provider la fornisce o l'utente l'ha caricata.
+
+Verifica desktop: regressione riprodotta prima del fix, poi 26 test pertinenti passati; `bun run fmt:check`, `bun run lint` e `bun run typecheck` riusciti. iOS: 180 test core, 8 test gateway isolati con Node 24 e build/avvio nel simulatore riusciti. Questo passaggio non ripete le prove live sui due Mac né certifica una release. I 119 percorsi desktop preesistenti restano fuori da questi commit. Le tabelle seguenti conservano i checkpoint storici del recap iniziale.
+
 ## Dove si trova il lavoro e cosa è pubblicato
 
 | Superficie               | Repository / branch                                        | Stato verificato prima di questo recap                                                                                                                    |

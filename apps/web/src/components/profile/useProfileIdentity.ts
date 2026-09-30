@@ -40,13 +40,11 @@ export function useProfileIdentity(defaults: { name: string; handle: string }) {
   const { color: localColor, setColor } = useProfileAvatarColor();
   const { image: localImage, setImage } = useProfileAvatarImage();
 
-  // A signed-in user without a profile hasn't onboarded yet — treat exactly
-  // like signed out (local identity) until onboarding writes the profile.
-  const accountProfile: AccountProfile | null = account.profileSyncEnabled
-    ? (account.me?.profile ?? null)
-    : null;
-
-  const name = accountProfile?.displayName ?? localName;
+  // Login identity is the fallback until onboarding creates a custom profile.
+  // Keep account-profile presentation behind the existing feature capability.
+  const me = account.profileSyncEnabled ? account.me : null;
+  const accountProfile: AccountProfile | null = me?.profile ?? null;
+  const name = accountProfile?.displayName ?? me?.name ?? localName;
   // Placeholder-avatar initials from the RESOLVED name — the account display
   // name may differ from the machine-local default, and initials derived from
   // the home-dir identity would not match it. deriveInitials is the canonical
@@ -58,9 +56,13 @@ export function useProfileIdentity(defaults: { name: string; handle: string }) {
   // Signed in, every avatar render uses the account's resolved URL (uploaded
   // object, cached sso picture, or null for the placeholder); the localStorage
   // photo is only ever the signed-out avatar.
-  const avatarImage = accountProfile ? (accountProfile.avatarUrl ?? null) : localImage;
+  const avatarImage = accountProfile
+    ? (accountProfile.avatarUrl ?? null)
+    : me
+      ? (me.image ?? null)
+      : localImage;
   /** The identity provider's picture, offered as an avatar choice when set. */
-  const ssoImage = account.me?.image ?? null;
+  const ssoImage = me?.image ?? null;
 
   /**
    * Commits an edit. Signed in: write through the account first (the handle is
@@ -70,6 +72,9 @@ export function useProfileIdentity(defaults: { name: string; handle: string }) {
    * when the account write fails, leaving the local cache untouched.
    */
   const save = async (next: ProfileIdentityDraft): Promise<void> => {
+    if (me && !accountProfile) {
+      throw new Error("Finish setting up your account profile before editing it.");
+    }
     if (accountProfile) {
       await account.updateProfile.mutateAsync({
         handle: accountProfile.handle,
