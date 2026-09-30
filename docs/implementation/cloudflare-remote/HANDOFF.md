@@ -1,13 +1,13 @@
 # Remote connections — punto di ripartenza
 
-Aggiornato il 30 settembre 2026. Questo è il riepilogo corrente tra desktop e iOS; i documenti precedenti contengono anche stati storici ormai superati. La UI è in pausa per decisione dell'utente: non continuare il ridisegno dei chip.
+Aggiornato il 30 settembre 2026. Questo è il riepilogo corrente tra desktop e iOS; i documenti precedenti contengono anche stati storici ormai superati. Il ridisegno della UI e dei chip è in pausa. Successivamente l'utente ha richiesto soltanto nome “Connections” e globo Central Icons su desktop e iOS: applicati alle voci di accesso e ai titoli, senza cambiare il comportamento delle connessioni.
 
 ## Dove si trova il lavoro e cosa è pubblicato
 
-| Superficie | Repository / branch | Stato verificato prima di questo recap |
-| --- | --- | --- |
-| Desktop, API e trasporto | `Emanuele-web04/synara`, `codex/cloudflare-remote-mvp` | HEAD locale e branch remota entrambi a `b5f8837adb3a8c938d3f16e2d4882aa1b8a1c7ce`; nessuna PR trovata per questa head |
-| iPhone | `Emanuele-web04/SynaraIOS`, `codex/ios-remote-connections` | [PR #1](https://github.com/Emanuele-web04/SynaraIOS/pull/1), aperta, codice pubblicato fino a `4b855e68faadb99396452899d53af1f9d0ced3b3`; worktree pulita |
+| Superficie               | Repository / branch                                        | Stato verificato prima di questo recap                                                                                                                    |
+| ------------------------ | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Desktop, API e trasporto | `Emanuele-web04/synara`, `codex/cloudflare-remote-mvp`     | HEAD locale e branch remota entrambi a `b5f8837adb3a8c938d3f16e2d4882aa1b8a1c7ce`; nessuna PR trovata per questa head                                     |
+| iPhone                   | `Emanuele-web04/SynaraIOS`, `codex/ios-remote-connections` | [PR #1](https://github.com/Emanuele-web04/SynaraIOS/pull/1), aperta, codice pubblicato fino a `4b855e68faadb99396452899d53af1f9d0ced3b3`; worktree pulita |
 
 Questo recap viene pubblicato con un commit di sola documentazione dopo quei checkpoint. La sua pubblicazione **non include né certifica** le modifiche desktop non committate descritte sotto. La branch desktop pubblicata è consultabile [qui](https://github.com/Emanuele-web04/synara/tree/codex/cloudflare-remote-mvp).
 
@@ -41,15 +41,15 @@ Gli strumenti interni Synara MCP hanno instradamento remoto tramite un `environm
 
 ## Cosa è stato effettivamente verificato
 
-| Evidenza | Risultato e limite |
-| --- | --- |
-| Desktop MacBook ↔ Mini | Collegamento in entrambe le direzioni sulle istanze isolate di test, con navigazione e letture remote. Non equivale a verificare le app distribuite su ogni sistema operativo. |
-| Recovery desktop | Nella cronologia di [STATUS.md](STATUS.md) sono registrate correzioni e prove di ripresa dopo restart/crash del connector. I primi test usavano un override DNS limitato al processo; non generalizzare quelle prove alla risoluzione di rete ordinaria. |
-| MCP remoto | Il checkpoint `ac27fd7` implementa il routing; `b5f8837` registra la validazione. Listing/lettura reali sul bridge MacBook → Mini; mutazioni coperte anche da fixture con provider deterministico. Una negoziazione 503 poi riuscita è registrata, non mascherata come reconnect perfetto. |
-| iOS → entrambi i Mac | Simulatore iPhone 18 Pro/iOS 27, pairing separato e approvato, entrambi i computer collegati attraverso le route Cloudflare gestite. |
-| Chat reali da iOS | Creazione e risposte di provider reali su entrambi: `REMOTE IOS OK` e `MACBOOK IOS OK`. Snapshot dei server hanno confermato che ogni chat era sul proprio host. |
-| Isolamento e riavvio iOS | Disconnettendo un host, l'altro ha continuato a rispondere. Dopo terminazione/rilancio dell'app entrambi hanno recuperato trust, connessioni e cronologia senza nuovo OTP. |
-| Sidebar iOS | All e filtri per computer, ricerca, apertura del transcript corretto e destinazione dei nuovi task separata dai filtri. Screenshot e test sono nella PR iOS. |
+| Evidenza                 | Risultato e limite                                                                                                                                                                                                                                                                         |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Desktop MacBook ↔ Mini   | Collegamento in entrambe le direzioni sulle istanze isolate di test, con navigazione e letture remote. Non equivale a verificare le app distribuite su ogni sistema operativo.                                                                                                             |
+| Recovery desktop         | Nella cronologia di [STATUS.md](STATUS.md) sono registrate correzioni e prove di ripresa dopo restart/crash del connector. I primi test usavano un override DNS limitato al processo; non generalizzare quelle prove alla risoluzione di rete ordinaria.                                   |
+| MCP remoto               | Il checkpoint `ac27fd7` implementa il routing; `b5f8837` registra la validazione. Listing/lettura reali sul bridge MacBook → Mini; mutazioni coperte anche da fixture con provider deterministico. Una negoziazione 503 poi riuscita è registrata, non mascherata come reconnect perfetto. |
+| iOS → entrambi i Mac     | Simulatore iPhone 18 Pro/iOS 27, pairing separato e approvato, entrambi i computer collegati attraverso le route Cloudflare gestite.                                                                                                                                                       |
+| Chat reali da iOS        | Creazione e risposte di provider reali su entrambi: `REMOTE IOS OK` e `MACBOOK IOS OK`. Snapshot dei server hanno confermato che ogni chat era sul proprio host.                                                                                                                           |
+| Isolamento e riavvio iOS | Disconnettendo un host, l'altro ha continuato a rispondere. Dopo terminazione/rilancio dell'app entrambi hanno recuperato trust, connessioni e cronologia senza nuovo OTP.                                                                                                                 |
+| Sidebar iOS              | All e filtri per computer, ricerca, apertura del transcript corretto e destinazione dei nuovi task separata dai filtri. Screenshot e test sono nella PR iOS.                                                                                                                               |
 
 Le risposte delle prove sono messaggi sintetici senza uso di tool o modifica dei file dell'utente. Non presentare le prove del simulatore come prove su un iPhone fisico. I record dettagliati e i limiti delle suite storiche sono in [STATUS.md](STATUS.md), [QUALIFICATION.md](QUALIFICATION.md) e nel recap iOS; nessuna suite desktop è stata rieseguita per questo commit di sola documentazione.
 

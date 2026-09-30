@@ -23,7 +23,7 @@ describe("the hosts settings pane", () => {
     const item = SETTINGS_NAV_ITEMS.find((entry) => entry.id === "connections");
 
     expect(item).toBeDefined();
-    expect(item?.label).toBe("Hosts & devices");
+    expect(item?.label).toBe("Connections");
     expect(item?.description.length).toBeGreaterThan(0);
     expect(item?.icon.length).toBeGreaterThan(0);
   });

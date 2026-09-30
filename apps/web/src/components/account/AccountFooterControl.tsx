@@ -22,7 +22,7 @@ import {
 } from "~/components/sidebarContextMenuStyles";
 import { SidebarMenuButton } from "~/components/ui/sidebar";
 import { ProfileAvatar } from "@synara/profile-ui/avatar";
-import { ChevronUpIcon, ExternalLinkIcon, GlobeIcon, ServerIcon, SettingsIcon } from "~/lib/icons";
+import { ChevronUpIcon, ExternalLinkIcon, GlobeIcon, SettingsIcon } from "~/lib/icons";
 import { openExternalLink } from "~/lib/linkChips";
 import { cn, isMacPlatform } from "~/lib/utils";
 import { useAccount } from "~/hooks/useAccount";
@@ -153,8 +153,8 @@ function SignedInFooter() {
             className={SIDEBAR_CONTEXT_MENU_ITEM_CLASS_NAME}
             onClick={() => void navigate({ to: "/settings", search: { section: "connections" } })}
           >
-            <SidebarContextMenuIcon icon={ServerIcon} />
-            <span>Hosts &amp; devices</span>
+            <SidebarContextMenuIcon icon={GlobeIcon} />
+            <span>Connections</span>
           </MenuItem>
           <MenuItem
             className={SIDEBAR_CONTEXT_MENU_ITEM_CLASS_NAME}

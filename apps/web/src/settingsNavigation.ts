@@ -148,9 +148,9 @@ export const SETTINGS_NAV_ITEMS: readonly SettingsNavItem[] = [
   {
     id: "connections",
     group: "integrations",
-    label: "Hosts & devices",
+    label: "Connections",
     description: "Machines you can reach from this account, and the devices signed in to it.",
-    icon: "server",
+    icon: "globe",
     eyebrow: "Remote access",
   },
   {

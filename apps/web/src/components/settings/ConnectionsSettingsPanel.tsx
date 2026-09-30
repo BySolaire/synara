@@ -271,7 +271,7 @@ export function ConnectionsSettingsPanel({ active }: { active: boolean }) {
     return (
       <div className="space-y-6">
         <HostConnectionControl />
-        <SettingsSection title="Remote connections">
+        <SettingsSection title="Connections">
           <SettingsListRow
             title="Unavailable in this build"
             description={
