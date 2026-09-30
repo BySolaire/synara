@@ -178,6 +178,35 @@ function verifyReleaseWorkflowSafety(): void {
       }
     }
   }
+  const defenderId = defenderStep.match(/\n        id: (.+)/)?.[1];
+  const evidenceStep = buildSteps.find((step) =>
+    step.includes("name: windows-defender-${{ matrix.arch }}"),
+  );
+  const evidencePredicate = evidenceStep?.match(/\n        if: \$\{\{ (.+) \}\}/)?.[1];
+  if (!defenderId || !evidencePredicate) throw new Error("Missing Defender evidence routing.");
+  const preservesEvidence = new Function(
+    "matrix",
+    "needs",
+    "steps",
+    "always",
+    `return ${evidencePredicate};`,
+  ) as (
+    matrix: { platform: string },
+    needs: { preflight: { outputs: { package_artifacts: string } } },
+    steps: Record<string, { outcome: string }>,
+    always: () => boolean,
+  ) => boolean;
+  for (const outcome of ["success", "failure", "cancelled", "skipped"]) {
+    const upload = preservesEvidence(
+      { platform: "win" },
+      { preflight: { outputs: { package_artifacts: "true" } } },
+      { [defenderId]: { outcome } },
+      () => true,
+    );
+    if (upload !== (outcome !== "skipped")) {
+      throw new Error(`Incorrect Defender evidence upload after ${outcome} scan.`);
+    }
+  }
   // Execute the actual job predicate against failed/skipped prerequisites. A
   // matching source string would not detect a permissive OR elsewhere in it.
   const predicate = buildJob.match(/    if: \$\{\{ (.+) \}\}/)?.[1];
