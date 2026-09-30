@@ -56,11 +56,11 @@ jobs:
           $baseline = Start-Process -FilePath (Resolve-Path baseline/Synara-0.9.1-x64.exe).Path -ArgumentList '/S', "/D=$install" -Wait -PassThru
           if ($baseline.ExitCode -ne 0) { throw "Baseline install failed: $($baseline.ExitCode)" }
           $before = (Get-Item (Join-Path $install 'Synara.exe')).VersionInfo.ProductVersion
-          if ($before -ne '0.9.1') { throw "Unexpected installed baseline: $before" }
+          if ([version]$before -ne [version]'0.9.1.0') { throw "Unexpected installed baseline: $before" }
           $candidate = Start-Process -FilePath (Resolve-Path candidate/Synara-0.9.2-x64.exe).Path -ArgumentList '/S', "/D=$install" -Wait -PassThru
           if ($candidate.ExitCode -ne 0) { throw "Candidate upgrade failed: $($candidate.ExitCode)" }
           $after = (Get-Item (Join-Path $install 'Synara.exe')).VersionInfo.ProductVersion
-          if ($after -ne '0.9.2') { throw "Unexpected upgraded version: $after" }
+          if ([version]$after -ne [version]'0.9.2.0') { throw "Unexpected upgraded version: $after" }
           $manifest = @(Get-ChildItem repack-proof -Recurse -Filter payload-before.json)
           if ($manifest.Count -ne 1) { throw 'Expected exactly one original payload manifest.' }
           $expected = Get-Content $manifest[0].FullName -Raw | ConvertFrom-Json -AsHashtable
