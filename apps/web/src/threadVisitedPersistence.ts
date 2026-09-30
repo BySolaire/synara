@@ -52,21 +52,23 @@ function readPersisted(): PersistedThreadVisitedState {
 
 /**
  * lastVisitedAt for a thread the store sees for the first time: its saved visit,
- * otherwise, for a thread in a full snapshot, updates up to the last save count as
- * seen, so turns that finished while the app was closed show as unread. A thread that
- * first appears through a live event (a new thread, a fork) is new as it happens, and
- * without any saved state every thread keeps the old behavior of counting as read.
+ * otherwise, while the app restores its session (a full snapshot, or anything that
+ * lands before the first one, like the last open thread's detail), updates up to the
+ * last save count as seen, so turns that finished while the app was closed show as
+ * unread. A thread that first appears through a live event after that (a new thread,
+ * a fork) is new as it happens, and without any saved state every thread keeps the
+ * old behavior of counting as read.
  */
 export function resolveInitialLastVisitedAt(
   threadId: string,
   updatedAt: string | undefined,
-  options: { readonly fromSnapshot?: boolean } = {},
+  options: { readonly restoringSession?: boolean } = {},
 ): string | undefined {
   const { watermarkAt, byThreadId } = readPersisted();
   const visitedAt = byThreadId[threadId];
   if (visitedAt !== undefined) return visitedAt;
   if (
-    options.fromSnapshot === true &&
+    options.restoringSession === true &&
     watermarkAt !== null &&
     updatedAt !== undefined &&
     Date.parse(updatedAt) > Date.parse(watermarkAt)
@@ -121,7 +123,10 @@ export function persistThreadVisitedState(
     byThreadId[thread.id] = thread.lastVisitedAt as string;
   }
   const previous = readPersisted();
-  const watermarkAt = watermarkMs > 0 ? new Date(watermarkMs).toISOString() : previous.watermarkAt;
+  // The app has seen everything up to the saved watermark even when the thread that set
+  // it is gone now, so the watermark never moves back.
+  watermarkMs = Math.max(watermarkMs, Date.parse(previous.watermarkAt ?? "") || 0);
+  const watermarkAt = watermarkMs > 0 ? new Date(watermarkMs).toISOString() : null;
   if (
     !options.force &&
     previous.watermarkAt === watermarkAt &&

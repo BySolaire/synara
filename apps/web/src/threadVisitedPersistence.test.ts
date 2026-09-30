@@ -5,7 +5,7 @@ import { ThreadId } from "@synara/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { initialState, type AppState } from "./storeState";
-import { makeFakeWindow } from "./storeTestFixtures";
+import { makeFakeWindow, makeReadModelThread } from "./storeTestFixtures";
 import { THREAD_VISITED_STORAGE_KEY } from "./threadVisitedPersistence";
 import type { SidebarThreadSummary } from "./types";
 
@@ -66,7 +66,7 @@ describe("threadVisitedPersistence", () => {
     // Finished while the app was closed: unread from the last save onward.
     expect(
       resolveInitialLastVisitedAt("thread-new", "2026-09-30T09:00:00.000Z", {
-        fromSnapshot: true,
+        restoringSession: true,
       }),
     ).toBe("2026-09-30T08:00:00.000Z");
     // A thread that first appears through a live event is new as it happens.
@@ -129,5 +129,50 @@ describe("threadVisitedPersistence", () => {
     const saved = JSON.parse(storage.get(THREAD_VISITED_STORAGE_KEY) ?? "{}");
     expect(Object.keys(saved.byThreadId)).toHaveLength(MAX_PERSISTED_VISITED_THREADS);
     expect(saved.byThreadId["thread-0"]).toBeUndefined();
+  });
+
+  it("never moves the watermark back when the newest thread goes away", async () => {
+    const storage = new Map<string, string>();
+    storage.set(
+      THREAD_VISITED_STORAGE_KEY,
+      JSON.stringify({ watermarkAt: "2026-09-30T12:00:00.000Z", byThreadId: {} }),
+    );
+    const { persistThreadVisitedState } = await importThreadVisitedPersistence(storage);
+
+    persistThreadVisitedState(
+      stateWithVisits([
+        {
+          id: "thread-old",
+          updatedAt: "2026-09-30T09:00:00.000Z",
+          lastVisitedAt: "2026-09-30T09:00:00.000Z",
+        },
+      ]),
+      { force: true },
+    );
+
+    expect(JSON.parse(storage.get(THREAD_VISITED_STORAGE_KEY) ?? "{}").watermarkAt).toBe(
+      "2026-09-30T12:00:00.000Z",
+    );
+  });
+
+  it("applies the watermark to a thread that lands before the first snapshot", async () => {
+    const storage = new Map<string, string>();
+    storage.set(
+      THREAD_VISITED_STORAGE_KEY,
+      JSON.stringify({ watermarkAt: "2026-09-30T08:00:00.000Z", byThreadId: {} }),
+    );
+    await importThreadVisitedPersistence(storage);
+    const { syncServerThreadDetail } = await import("./storeProjection");
+    const { getThreadFromState } = await import("./threadDerivation");
+    const thread = makeReadModelThread({ updatedAt: "2026-09-30T09:00:00.000Z" });
+
+    // The last open thread's detail can restore before the full snapshot lands.
+    const restoring = syncServerThreadDetail(initialState, thread);
+    const live = syncServerThreadDetail({ ...initialState, threadsHydrated: true }, thread);
+
+    expect(getThreadFromState(restoring, thread.id)?.lastVisitedAt).toBe(
+      "2026-09-30T08:00:00.000Z",
+    );
+    expect(getThreadFromState(live, thread.id)?.lastVisitedAt).toBe("2026-09-30T09:00:00.000Z");
   });
 });

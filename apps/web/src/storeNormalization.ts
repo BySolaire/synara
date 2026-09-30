@@ -1594,8 +1594,8 @@ export function normalizeThreadFromReadModel(
   incoming: ReadModelThread,
   previous: Thread | undefined,
   snapshotSequence?: number,
-  /** `fromSnapshot`: the thread came in a full snapshot (see resolveInitialLastVisitedAt). */
-  options: { readonly fromSnapshot?: boolean } = {},
+  /** `restoringSession`: see resolveInitialLastVisitedAt. */
+  options: { readonly restoringSession?: boolean } = {},
 ): Thread {
   const modelSelection = normalizeModelSelection(incoming.modelSelection, previous?.modelSelection);
   const session = normalizeThreadSession(incoming.session, previous?.session);
@@ -1830,8 +1830,8 @@ export function normalizeThreadShellSnapshot(
   incoming: ShellSnapshotThread,
   previous: Thread | undefined,
   snapshotSequence?: number,
-  /** `fromSnapshot`: the thread came in a full snapshot (see resolveInitialLastVisitedAt). */
-  options: { readonly fromSnapshot?: boolean } = {},
+  /** `restoringSession`: see resolveInitialLastVisitedAt. */
+  options: { readonly restoringSession?: boolean } = {},
 ): {
   shell: ThreadShell;
   session: ThreadSession | null;
