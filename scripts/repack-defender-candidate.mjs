@@ -1,5 +1,6 @@
 // Controlled packaging experiment: preserve every byte of the released app.
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -20,22 +21,23 @@ const metadata = JSON.parse(asar.extractFile(archive, "package.json").toString()
 await writeFile(path.join(project, "package.json"), JSON.stringify(metadata));
 await writeFile(
   path.join(project, "icon.ico"),
-  asar.extractFile(archive, "apps/desktop/prod-resources/icon.ico"),
+  asar.extractFile(archive, path.join("apps", "desktop", "prod-resources", "icon.ico")),
 );
 
-async function inventory() {
+async function inventory(root = payload) {
   const result = {};
-  for (const entry of await readdir(payload, { recursive: true, withFileTypes: true })) {
+  for (const entry of await readdir(root, { recursive: true, withFileTypes: true })) {
     if (!entry.isFile()) continue;
     const file = path.join(entry.parentPath, entry.name);
     const hash = createHash("sha256");
     for await (const chunk of createReadStream(file)) hash.update(chunk);
-    result[path.relative(payload, file)] = hash.digest("hex");
+    result[path.relative(root, file)] = hash.digest("hex");
   }
   return result;
 }
 
 const before = await inventory();
+await writeFile(path.join(project, "payload-before.json"), JSON.stringify(before, null, 2));
 await build({
   projectDir: project,
   prepackaged: payload,
@@ -64,4 +66,26 @@ if (
   Object.entries(before).some(([file, hash]) => after[file] !== hash)
 ) {
   throw new Error("Repackaging changed the released application payload.");
+}
+const outputDirectory = path.resolve(`defender-candidates/${variant}`);
+const installerName = (await readdir(outputDirectory)).find((name) => name.endsWith(".exe"));
+if (!installerName) throw new Error("Candidate installer missing after packaging");
+const extracted = path.join(project, "extracted");
+execFileSync("7z", ["x", path.join(outputDirectory, installerName), `-o${extracted}`, "-y"], {
+  stdio: "inherit",
+});
+const applicationArchive = path.join(
+  extracted,
+  "$PLUGINSDIR",
+  variant === "zip" ? "app-64.zip" : "app-64.7z",
+);
+const extractedPayload = path.join(project, "embedded-payload");
+execFileSync("7z", ["x", applicationArchive, `-o${extractedPayload}`, "-y"], { stdio: "inherit" });
+const embedded = await inventory(extractedPayload);
+await writeFile(path.join(project, "payload-embedded.json"), JSON.stringify(embedded, null, 2));
+if (
+  Object.keys(before).length !== Object.keys(embedded).length ||
+  Object.entries(before).some(([file, hash]) => embedded[file] !== hash)
+) {
+  throw new Error("Candidate installer does not contain the exact released application payload.");
 }
