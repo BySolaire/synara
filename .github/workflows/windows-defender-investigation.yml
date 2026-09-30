@@ -1,0 +1,33 @@
+name: Windows Defender investigation
+
+on:
+  push:
+    branches: [codex/1376-windows-defender]
+    paths:
+      - .github/workflows/windows-defender-investigation.yml
+      - scripts/investigate-windows-defender.ps1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: Scan official Windows installers without execution
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Compare Defender results
+        shell: pwsh
+        run: ./scripts/investigate-windows-defender.ps1
+      - name: Preserve scan evidence even on detection or failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-defender-evidence
+          path: defender-evidence/
+          if-no-files-found: error
+          retention-days: 14
