@@ -1,0 +1,86 @@
+name: Windows Defender qualified installer runtime
+on:
+  push:
+    branches: [codex/1376-windows-defender]
+    paths: [.github/workflows/windows-defender-runtime.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  runtime:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: qualified-experimental-installer-normal
+          run-id: 36740232673
+          github-token: ${{ github.token }}
+          path: candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: repack-evidence-normal
+          run-id: 36740232673
+          github-token: ${{ github.token }}
+          path: repack-proof
+      - name: Stage verified baseline and candidate
+        shell: pwsh
+        run: |
+          Rename-Item candidate/Synara-0.9.2-x64-normal.exe Synara-0.9.2-x64.exe
+          if ((Get-FileHash candidate/Synara-0.9.2-x64.exe).Hash -ne 'f48ef644748694f9538ec313e998bfa0def5b3776858d41537cae07261a18387') { throw 'Candidate hash mismatch.' }
+          New-Item -ItemType Directory baseline
+          Invoke-WebRequest 'https://github.com/Emanuele-web04/synara/releases/download/v0.9.1/Synara-0.9.1-x64.exe' -OutFile baseline/Synara-0.9.1-x64.exe
+          if ((Get-FileHash baseline/Synara-0.9.1-x64.exe).Hash -ne '893438647667a4f6aeb2929897a0131dd95e5c0686ec2958e5968cdb75f3496b') { throw 'Baseline hash mismatch.' }
+      - name: Qualify candidate and baseline before execution
+        shell: pwsh
+        run: |
+          ./scripts/verify-windows-defender.ps1 -AssetsDirectory candidate -EvidenceDirectory candidate-evidence
+          ./scripts/verify-windows-defender.ps1 -AssetsDirectory baseline -EvidenceDirectory baseline-evidence
+      - name: Verify isolated packaged startup and runtime dependencies
+        run: node scripts/verify-packaged-desktop-startup.ts --assets-dir candidate --platform win --arch x64 --version 0.9.2
+      - name: Verify silent installation and upgrade preserve exact payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory runtime-evidence
+          $install = Join-Path $env:RUNNER_TEMP 'SynaraQualification'
+          $env:SYNARA_HOME = Join-Path $env:RUNNER_TEMP 'synara-qualification-home'
+          $env:SYNARA_BETA_HOME = Join-Path $env:RUNNER_TEMP 'synara-qualification-beta-home'
+          $env:SYNARA_DISABLE_AUTO_UPDATE = '1'
+          $baseline = Start-Process -FilePath (Resolve-Path baseline/Synara-0.9.1-x64.exe).Path -ArgumentList '/S', "/D=$install" -Wait -PassThru
+          if ($baseline.ExitCode -ne 0) { throw "Baseline install failed: $($baseline.ExitCode)" }
+          $before = (Get-Item (Join-Path $install 'Synara.exe')).VersionInfo.ProductVersion
+          if ($before -ne '0.9.1') { throw "Unexpected installed baseline: $before" }
+          $candidate = Start-Process -FilePath (Resolve-Path candidate/Synara-0.9.2-x64.exe).Path -ArgumentList '/S', "/D=$install" -Wait -PassThru
+          if ($candidate.ExitCode -ne 0) { throw "Candidate upgrade failed: $($candidate.ExitCode)" }
+          $after = (Get-Item (Join-Path $install 'Synara.exe')).VersionInfo.ProductVersion
+          if ($after -ne '0.9.2') { throw "Unexpected upgraded version: $after" }
+          $manifest = @(Get-ChildItem repack-proof -Recurse -Filter payload-before.json)
+          if ($manifest.Count -ne 1) { throw 'Expected exactly one original payload manifest.' }
+          $expected = Get-Content $manifest[0].FullName -Raw | ConvertFrom-Json -AsHashtable
+          $verified = @()
+          foreach ($entry in $expected.GetEnumerator()) {
+            $actual = (Get-FileHash (Join-Path $install $entry.Key) -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $entry.Value) { throw "Installed payload mismatch: $($entry.Key)" }
+            $verified += @{ path = $entry.Key; sha256 = $actual }
+          }
+          @{ beforeVersion = $before; afterVersion = $after; verifiedFiles = $verified } | ConvertTo-Json -Depth 6 | Set-Content runtime-evidence/installed-payload.json
+          Get-MpComputerStatus | ConvertTo-Json -Depth 5 | Set-Content runtime-evidence/defender-status.json
+          $detections = @(Get-MpThreatDetection)
+          ConvertTo-Json -InputObject $detections -Depth 8 | Set-Content runtime-evidence/detections.json
+          if ($detections.Count -ne 0) { throw 'Defender detected a threat during installer runtime qualification.' }
+          if (-not (Get-MpComputerStatus).RealTimeProtectionEnabled) { throw 'Real-time protection became inactive.' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qualified-installer-runtime-evidence
+          path: |
+            candidate-evidence/
+            baseline-evidence/
+            runtime-evidence/
