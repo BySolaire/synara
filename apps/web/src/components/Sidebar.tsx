@@ -274,7 +274,7 @@ import { EditProjectDialog, type EditProjectValue } from "./EditProjectDialog";
 import { RelocateProjectDialog } from "./RelocateProjectDialog";
 import { RenameThreadDialog } from "./RenameThreadDialog";
 import ReleaseHistoryDialog from "./ReleaseHistoryDialog";
-import { isBetaFeatureOn } from "../betaFeatures";
+import { GROUPS_ON, isBetaFeatureOn } from "../betaFeatures";
 import { WHATS_NEW_ENTRIES } from "../whatsNew/entries";
 import { sortEntriesByVersionDesc } from "../whatsNew/logic";
 import {
@@ -1420,7 +1420,7 @@ export default function Sidebar() {
   // Projects is always available; Groups and the standalone Chats footer can be hidden
   // independently from Settings.
   const chatsSectionVisible = appSettings.showChatsSection;
-  const groupsSectionVisible = appSettings.showGroupsSection;
+  const groupsSectionVisible = GROUPS_ON && appSettings.showGroupsSection;
   const { handleNewThread } = useHandleNewThread();
   const { handleNewChat } = useHandleNewChat();
   const { handleNewGroupChat } = useHandleNewGroupChat();
@@ -3166,7 +3166,7 @@ export default function Sidebar() {
           ...(options?.extraItems ?? []),
           // Group actions only make sense for threads in ordinary (non-group)
           // projects; group threads already belong to a group.
-          ...(groupProjectIdSet.has(thread.projectId) || thread.parentThreadId
+          ...(!GROUPS_ON || groupProjectIdSet.has(thread.projectId) || thread.parentThreadId
             ? []
             : [
                 {

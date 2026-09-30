@@ -122,6 +122,7 @@ import {
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
 import { LibraryError, ProjectAgentServiceError } from "../Errors.ts";
 import { isAllowedGroupCoordinatorCreateTarget } from "../groupCreateAllowlist.ts";
+import { gateProjectAgentServiceForStable, isServerGroupsEnabled } from "../groupsBetaGate.ts";
 import { cleanupGroupWorkspaceRoot } from "../../groupWorkspaceScaffold.ts";
 import {
   hashDocumentContent,
@@ -6358,4 +6359,12 @@ export const makeProjectAgentService = Effect.gen(function* () {
   return impl satisfies ProjectAgentServiceShape;
 });
 
-export const ProjectAgentServiceLive = Layer.effect(ProjectAgentService, makeProjectAgentService);
+// Stable (Groups off) gets the inert face; Beta and every other host get the service.
+export const ProjectAgentServiceLive = Layer.effect(
+  ProjectAgentService,
+  makeProjectAgentService.pipe(
+    Effect.map((service) =>
+      isServerGroupsEnabled() ? service : gateProjectAgentServiceForStable(service),
+    ),
+  ),
+);

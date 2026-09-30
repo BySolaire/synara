@@ -101,6 +101,7 @@ import { makeComputerForegroundConsent } from "../computerForegroundConsent.ts";
 import { BrowserAutomationHost } from "../../browserAutomation/Services/BrowserAutomationHost.ts";
 import { makeBrowserAutomationHost } from "../../browserAutomation/Layers/BrowserAutomationHost.ts";
 import { makeProjectAgentTools } from "../projectAgentTools.ts";
+import { isServerGroupsEnabled } from "../../projectAgent/groupsBetaGate.ts";
 import { makeThreadReadTools } from "../threadReadTools.ts";
 import { makeThreadDiagnosticTools } from "../threadDiagnosticTools.ts";
 import { pruneProjectedArchivedManagedWorktrees } from "../../managedWorktrees.ts";
@@ -1263,7 +1264,8 @@ export const makeAgentGateway = Effect.gen(function* () {
         })
       : []),
     ...computerBrowserTools,
-    ...projectAgentTools,
+    // Group tools are Beta-only: Stable does not offer them to agents at all.
+    ...(isServerGroupsEnabled() ? projectAgentTools : []),
   ];
 
   // The computer family by name, read off the unfiltered catalog above: a

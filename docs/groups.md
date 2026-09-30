@@ -7,6 +7,9 @@ same instructions and memory, and files the threads deliver land in one shared L
 A group does not need a repository. It works just as well for research, writing, planning, or any
 other non-code work.
 
+> **Synara Beta only.** Groups ships in Synara Beta. Stable does not show it, and any group folder
+> there appears as an ordinary project.
+
 > **Before you begin:** Groups appear under the **Groups** tab of the sidebar switcher. If you do
 > not see the tab, open Settings → **Sidebar sections** and turn on **Groups** ("Show the Groups
 > tab in the sidebar switcher.").

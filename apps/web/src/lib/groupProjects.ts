@@ -8,6 +8,7 @@ import { type ProjectId, type ThreadId } from "@synara/contracts";
 import { isWorkspaceRootWithin, workspaceRootsEqual } from "@synara/shared/threadWorkspace";
 import { isGroupContainerKind } from "@synara/shared/projectContainers";
 
+import { GROUPS_ON } from "../betaFeatures";
 import type { DraftThreadState } from "../composerDraftStore";
 import { readNativeApi } from "../nativeApi";
 import { useStore } from "../store";
@@ -42,7 +43,8 @@ export function isGroupContainerProject(
   project: Pick<Project, "cwd" | "kind"> | null | undefined,
   paths: ServerWorkspacePaths,
 ): boolean {
-  if (!project) {
+  // Without Groups (Stable) a group folder is an ordinary project.
+  if (!project || !GROUPS_ON) {
     return false;
   }
   if (project.kind === "group") {

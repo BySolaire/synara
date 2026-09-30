@@ -39,6 +39,7 @@ import { writeFileStringAtomically } from "./atomicWrite";
 import { GitCore } from "./git/Services/GitCore";
 import { LibraryError } from "./projectAgent/Errors";
 import { isGroupCoordinatorHostProject } from "./projectAgent/groupCoordinatorHost";
+import { GROUPS_BETA_ONLY_MESSAGE, isServerGroupsEnabled } from "./projectAgent/groupsBetaGate";
 import {
   commitLibraryChange,
   pushLibraryIfConfigured,
@@ -1069,6 +1070,9 @@ const binaryUploadEffectHandler = Effect.gen(function* () {
           message: "Owner authorization is required for this operation.",
           code: "forbidden",
         });
+      }
+      if (!isServerGroupsEnabled()) {
+        return yield* new LibraryError({ message: GROUPS_BETA_ONLY_MESSAGE, code: "forbidden" });
       }
       const projectId = ProjectId.makeUnsafe(projectIdParam);
       const projectionReadModelQuery = yield* ProjectionSnapshotQuery;

@@ -48,6 +48,11 @@ import { AutomationService } from "./automation/Services/AutomationService";
 import { ProjectAgentService } from "./projectAgent/Services/ProjectAgentService";
 import { isGroupCoordinatorHostProject } from "./projectAgent/groupCoordinatorHost";
 import {
+  GROUPS_BETA_ONLY_MESSAGE,
+  isGroupProjectCommand,
+  isServerGroupsEnabled,
+} from "./projectAgent/groupsBetaGate";
+import {
   assertLibraryRootLocation,
   createLibraryDirectory,
   deleteLibraryEntry,
@@ -1073,6 +1078,9 @@ const makeWsRpcHandlersLayer = () =>
       // overrides when configured.
       const resolveGroupLibrary = (projectId: ProjectId) =>
         Effect.gen(function* () {
+          if (!isServerGroupsEnabled()) {
+            return yield* new WsRpcError({ message: GROUPS_BETA_ONLY_MESSAGE });
+          }
           const shell = yield* projectionReadModelQuery
             .getProjectShellById(projectId)
             .pipe(Effect.mapError(() => new WsRpcError({ message: "Failed to load project." })));
@@ -1153,6 +1161,10 @@ const makeWsRpcHandlersLayer = () =>
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           rpcEffect(
             Effect.gen(function* () {
+              // Groups is Beta-only: Stable refuses to create or re-kind a group.
+              if (!isServerGroupsEnabled() && isGroupProjectCommand(command)) {
+                return yield* Effect.fail(new WsRpcError({ message: GROUPS_BETA_ONLY_MESSAGE }));
+              }
               const { command: normalizedCommand, prepareWorkspaceRoot } =
                 yield* normalizeDispatchCommand({ command });
               // A paused/archived group's coordinator must not run turns —

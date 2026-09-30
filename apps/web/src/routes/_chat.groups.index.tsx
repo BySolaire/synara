@@ -9,10 +9,11 @@
 // Depends on: group project lookup, the shared restore/create route surface, and the group
 //             new-chat hook.
 
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import { useAppSettings } from "../appSettings";
+import { GROUPS_ON } from "../betaFeatures";
 import {
   RestoreOrCreateChatRoute,
   type RestoreRouteResolver,
@@ -182,5 +183,12 @@ function GroupsIndexRouteView() {
 }
 
 export const Route = createFileRoute("/_chat/groups/")({
+  // Groups is Beta-only: on Stable a /groups link (or the old /studio redirect)
+  // lands on the home route instead.
+  beforeLoad: () => {
+    if (!GROUPS_ON) {
+      throw redirect({ to: "/", replace: true });
+    }
+  },
   component: GroupsIndexRouteView,
 });
