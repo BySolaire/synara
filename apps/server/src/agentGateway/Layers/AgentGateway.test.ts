@@ -372,6 +372,9 @@ function makeHarnessLayer(
     readonly failRemoveWorktree?: boolean;
     readonly failDeleteBranch?: boolean;
     readonly failOperationComplete?: boolean;
+    readonly recordManagedWorkerThreads?: (
+      input: Parameters<(typeof ProjectAgentService)["Service"]["recordManagedWorkerThreads"]>[0],
+    ) => Effect.Effect<void, Error>;
     readonly pauseAfterReservation?: {
       readonly entered: Deferred.Deferred<void>;
       readonly release: Deferred.Deferred<void>;
@@ -822,7 +825,7 @@ function makeHarnessLayer(
     formatContextPacketForTurn: () => Effect.succeed(""),
     authorizeManagedGoalCreation: () => Effect.void,
     assertCallerMayCreateThreadInProject: () => Effect.void,
-    recordManagedWorkerThreads: () => Effect.void,
+    recordManagedWorkerThreads: options.recordManagedWorkerThreads ?? (() => Effect.void),
     scheduleDigest: () => Effect.void,
     reconcilePendingWakes: () => Effect.void,
     inspectWorkerHealth: () => Effect.void,
@@ -1129,19 +1132,23 @@ function makeHarnessLayer(
           }
         }
       }),
-    complete: ({
-      operationId,
-      resultJson,
-      now,
-    }: {
-      operationId: string;
-      resultJson: string;
-      now: string;
-    }) => {
-      if (options.failOperationComplete) {
-        return Effect.fail(new Error("injected operation completion failure"));
-      }
+    complete: (
+      {
+        operationId,
+        resultJson,
+        now,
+      }: {
+        operationId: string;
+        resultJson: string;
+        now: string;
+      },
+      beforeCommit: Effect.Effect<void, Error> = Effect.void,
+    ) => {
       return Effect.gen(function* () {
+        yield* beforeCommit;
+        if (options.failOperationComplete) {
+          return yield* Effect.fail(new Error("injected operation completion failure"));
+        }
         yield* Effect.sync(() => {
           for (const [key, operation] of operationsByScope) {
             if (operation.operationId === operationId) {
@@ -4214,6 +4221,45 @@ describe("AgentGateway", () => {
       assert.deepEqual(
         harness.branchDeletes.map(({ branch }) => branch).toSorted(),
         harness.worktreeCreates.map(({ newBranch }) => newBranch).toSorted(),
+      );
+    }).pipe(Effect.provide(gatewayLayer));
+  });
+
+  it.effect("compensates a registration failure before committing created threads", () => {
+    const registrationStatuses: Array<string | null> = [];
+    let readStatus: (() => string | null) | undefined;
+    const { gatewayLayer, makeHarness } = makeHarnessLayer(baseThreads, [], {
+      recordManagedWorkerThreads: () =>
+        Effect.sync(() => registrationStatuses.push(readStatus?.() ?? null)).pipe(
+          Effect.andThen(Effect.fail(new Error("worker registration failed"))),
+        ),
+    });
+    return Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      readStatus = () => harness.getOperationStatus("turn-parent-active");
+      const request = {
+        token: "token-parent",
+        name: "synara_create_threads",
+        args: {
+          requestId: "registration-failure",
+          threads: [
+            { prompt: "track before committing", target: { provider: "codex", model: "gpt-5.5" } },
+          ],
+        },
+      } as const;
+      const response = yield* harness.callTool(request);
+      assert.isTrue(isToolError(response.result));
+      assert.deepEqual(registrationStatuses, ["dispatching"]);
+      assert.equal(harness.getOperationStatus("turn-parent-active"), "failed");
+      assert.equal(
+        harness.dispatched.filter((command) => command.type === "thread.delete").length,
+        1,
+      );
+      const replay = yield* harness.callTool(request);
+      assert.isTrue(isToolError(replay.result));
+      assert.equal(
+        harness.dispatched.filter((command) => command.type === "thread.create").length,
+        1,
       );
     }).pipe(Effect.provide(gatewayLayer));
   });

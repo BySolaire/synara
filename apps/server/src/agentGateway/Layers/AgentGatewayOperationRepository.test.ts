@@ -1,4 +1,7 @@
 import { assert, it } from "@effect/vitest";
+import { ProjectId, ThreadId } from "@synara/contracts";
+import { ProjectAgentRepositoryLive } from "../../persistence/Layers/ProjectAgentRepository.ts";
+import { ProjectAgentRepository } from "../../persistence/Services/ProjectAgentRepository.ts";
 import { Effect, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { expect } from "vitest";
@@ -8,7 +11,9 @@ import { AgentGatewayOperationRepository } from "../Services/AgentGatewayOperati
 import { AgentGatewayOperationRepositoryLive } from "./AgentGatewayOperationRepository.ts";
 
 const layer = it.layer(
-  AgentGatewayOperationRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
+  Layer.merge(AgentGatewayOperationRepositoryLive, ProjectAgentRepositoryLive).pipe(
+    Layer.provideMerge(SqlitePersistenceMemory),
+  ),
 );
 
 const base = {
@@ -24,6 +29,64 @@ const base = {
 };
 
 layer("AgentGatewayOperationRepository", (it) => {
+  it.effect("commits worker tracking and operation results atomically", () =>
+    Effect.gen(function* () {
+      const repository = yield* AgentGatewayOperationRepository;
+      const groups = yield* ProjectAgentRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const scoped = {
+        ...base,
+        callerTurnId: "turn-group-commit",
+        operationId: "group-commit",
+        planJson: JSON.stringify([
+          {
+            notifyCreatorOnComplete: true,
+            ids: { threadId: "group-commit-child", messageId: "group-commit-message" },
+          },
+        ]),
+      };
+      yield* repository.reserve(scoped);
+      yield* repository.markDispatching({ operationId: scoped.operationId, now: scoped.now });
+      const projectId = ProjectId.makeUnsafe("group-commit-project");
+      const track = groups.upsertThreadIndex({
+        projectId,
+        threadId: ThreadId.makeUnsafe("group-commit-child"),
+        excluded: false,
+        archived: false,
+        summaryStatus: "pending",
+        lastUpdatedAt: scoped.now,
+        lastSummarizedAt: null,
+      });
+      const complete = {
+        operationId: scoped.operationId,
+        resultJson: '{"threadIds":["group-commit-child"]}',
+        now: scoped.now,
+      };
+      const failedTracking = yield* repository
+        .complete(
+          complete,
+          track.pipe(Effect.andThen(Effect.fail(new Error("partial tracking failure")))),
+        )
+        .pipe(Effect.result);
+      assert.equal(failedTracking._tag, "Failure");
+      assert.equal((yield* repository.getById(scoped.operationId))?.status, "dispatching");
+      assert.deepEqual(yield* groups.listThreadIndex(projectId), []);
+      yield* sql`CREATE TRIGGER reject_group_commit BEFORE UPDATE OF status ON agent_gateway_operations WHEN NEW.operation_id = 'group-commit' AND NEW.status = 'completed' BEGIN SELECT RAISE(ABORT, 'commit failure'); END`;
+      const failedCommit = yield* repository.complete(complete, track).pipe(Effect.result);
+      assert.equal(failedCommit._tag, "Failure");
+      assert.equal((yield* repository.getById(scoped.operationId))?.status, "dispatching");
+      assert.deepEqual(yield* groups.listThreadIndex(projectId), []);
+      assert.deepEqual(
+        yield* sql`SELECT * FROM agent_gateway_completions WHERE child_thread_id = 'group-commit-child'`,
+        [],
+      );
+      yield* sql`DROP TRIGGER reject_group_commit`;
+      yield* repository.complete(complete, track);
+      assert.equal((yield* repository.getById(scoped.operationId))?.status, "completed");
+      assert.equal((yield* groups.listThreadIndex(projectId)).length, 1);
+    }),
+  );
+
   it.effect("distinguishes request conflicts from a second plan in the same turn", () =>
     Effect.gen(function* () {
       const repository = yield* AgentGatewayOperationRepository;

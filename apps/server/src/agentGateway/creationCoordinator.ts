@@ -1225,27 +1225,28 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
             threadIds: results.map((entry) => entry.threadId),
             threads: results,
           } satisfies SynaraCreateThreadsResult;
-          // Once every deterministic dispatch succeeded, durable completion is
-          // the commit point. A late client cancellation must not roll back a
-          // fully-created operation or strand it between dispatching/completed.
-          yield* operationStore.complete({
-            operationId,
-            resultJson: JSON.stringify(result),
-            now: gatewayIsoNow(),
-          });
-          if (recordManagedWorkerThreads && caller) {
-            const promptByThreadId = new Map(
-              createdThreads.map((entry) => [entry.ids.threadId, entry.spec.prompt]),
-            );
-            yield* recordManagedWorkerThreads({
-              callerThreadId: caller.id,
-              requestId: input.requestId,
-              batchId: operationId,
-              threadIds: result.threadIds,
-              titles: result.threads.map((thread) => thread.title),
-              prompts: result.threadIds.map((threadId) => promptByThreadId.get(threadId) ?? null),
-            });
-          }
+          const promptByThreadId = new Map(
+            createdThreads.map((entry) => [entry.ids.threadId, entry.spec.prompt]),
+          );
+          // Required Group tracking belongs to the same transaction as the
+          // replay result. Registration or commit failure rolls metadata back
+          // before the existing compensation path removes created resources.
+          // Once this completes, late cancellation cannot undo the operation.
+          yield* operationStore.complete(
+            { operationId, resultJson: JSON.stringify(result), now: gatewayIsoNow() },
+            recordManagedWorkerThreads && caller
+              ? recordManagedWorkerThreads({
+                  callerThreadId: caller.id,
+                  requestId: input.requestId,
+                  batchId: operationId,
+                  threadIds: result.threadIds,
+                  titles: result.threads.map((thread) => thread.title),
+                  prompts: result.threadIds.map(
+                    (threadId) => promptByThreadId.get(threadId) ?? null,
+                  ),
+                })
+              : Effect.void,
+          );
           return { kind: "created" as const, result };
         }).pipe(
           Effect.catchCause((cause) =>

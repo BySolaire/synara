@@ -15,12 +15,16 @@ import {
   ThreadId,
   type OrchestrationCommand,
   type ProviderKind,
+  type ProjectAgentStreamEvent,
   type ServerProviderStatus,
   type ServerSettings,
 } from "@synara/contracts";
 import { MEMORY_AUTO_DOCUMENT_PATH, memoryThreadDocumentPath } from "@synara/shared/projectAgent";
 import { Cause, Deferred, Effect, Fiber, Layer, Option, Stream } from "effect";
 import { TestClock } from "effect/testing";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { AgentGatewayOperationRepository } from "../../agentGateway/Services/AgentGatewayOperationRepository.ts";
+import { AgentGatewayOperationRepositoryLive } from "../../agentGateway/Layers/AgentGatewayOperationRepository.ts";
 
 import { ServerConfig } from "../../config.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
@@ -104,6 +108,8 @@ function makeTestLayer(options?: {
       worktreePath?: string | null;
       workingDirectory?: string | null;
       envMode?: string;
+      creationSource?: "synara_mcp";
+      sourceThreadId?: ThreadId;
     }
   > = {
     [groupMemberThreadId]: {
@@ -146,6 +152,8 @@ function makeTestLayer(options?: {
         settledAt: null,
         handoff: null,
         session: row.session,
+        creationSource: row.creationSource ?? null,
+        sourceThreadId: row.sourceThreadId ?? null,
         lastKnownPr: row.lastKnownPr ?? null,
         createdAt: now,
         updatedAt: row.updatedAt ?? now,
@@ -3617,35 +3625,83 @@ it.effect("skips the digest model call when the digest inputs did not change", (
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("publishes thread-index-upserted when the coordinator records worker threads", () => {
+it.effect("publishes worker updates and schedules digests only after the operation commits", () => {
   const harness = makeTestLayer();
   return Effect.gen(function* () {
     const service = yield* ProjectAgentService;
     const repository = yield* ProjectAgentRepository;
+    const operations = yield* AgentGatewayOperationRepository;
+    const sql = yield* SqlClient.SqlClient;
     const overview = yield* configureTestGroup(service, "req-idx-setup");
     const coordinatorThreadId = overview.config!.coordinatorThreadId!;
     const workerThreadId = ThreadId.makeUnsafe("thread-idx-worker");
-    // The stream emits its snapshot only after the live-event subscription is
-    // attached — awaiting it removes the publish-vs-subscribe race.
+    yield* TestClock.adjust("61 seconds");
+    harness.digestGenerationInputs.length = 0;
     const snapshotSeen = yield* Deferred.make<void>();
-    const collect = yield* service.streamEvents({ projectId: groupId }).pipe(
-      Stream.tap((event) =>
-        event.type === "snapshot" ? Deferred.succeed(snapshotSeen, void 0) : Effect.void,
+    const committedEvent = yield* Deferred.make<void>();
+    const events: ProjectAgentStreamEvent[] = [];
+    yield* service.streamEvents({ projectId: groupId }).pipe(
+      Stream.runForEach((event) =>
+        Effect.gen(function* () {
+          events.push(event);
+          if (event.type === "snapshot") yield* Deferred.succeed(snapshotSeen, void 0);
+          if (event.type === "activity-appended") yield* Deferred.succeed(committedEvent, void 0);
+        }),
       ),
-      Stream.take(2),
-      Stream.runCollect,
       Effect.forkChild,
     );
     yield* Deferred.await(snapshotSeen);
-
-    yield* service.recordManagedWorkerThreads({
+    const operationId = "idx-operation";
+    yield* operations.reserve({
+      operationId,
+      callerThreadId: coordinatorThreadId,
+      callerTurnId: "idx-turn",
+      operationKind: "create_threads",
+      requestId: "req-idx-record",
+      fingerprint: "idx-fingerprint",
+      requestedCount: 1,
+      planJson: "[]",
+      now,
+    });
+    yield* operations.markDispatching({ operationId, now });
+    const registration = service.recordManagedWorkerThreads({
       requestId: "req-idx-record",
       callerThreadId: coordinatorThreadId,
       threadIds: [workerThreadId],
       titles: ["Patch the linked repo"],
     });
-
-    const events = yield* Fiber.join(collect);
+    const completion = { operationId, resultJson: "{}", now };
+    // The tracking service already emitted its index update before this write
+    // fails. Neither subscribers nor durable rows may retain that partial work.
+    yield* sql`CREATE TRIGGER reject_index_worker BEFORE INSERT ON project_agent_managed_workers BEGIN SELECT RAISE(ABORT, 'registration failure'); END`;
+    assert.equal(
+      (yield* operations.complete(completion, registration).pipe(Effect.result))._tag,
+      "Failure",
+    );
+    yield* TestClock.adjust("61 seconds");
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ["snapshot"],
+    );
+    assert.deepEqual(yield* repository.listThreadIndex(groupId), []);
+    yield* sql`DROP TRIGGER reject_index_worker`;
+    // A failure after registration must also discard its notifications and
+    // timer, rather than exposing rows that SQLite rolled back.
+    yield* sql`CREATE TRIGGER reject_index_commit BEFORE UPDATE OF status ON agent_gateway_operations WHEN NEW.status = 'completed' BEGIN SELECT RAISE(ABORT, 'commit failure'); END`;
+    assert.equal(
+      (yield* operations.complete(completion, registration).pipe(Effect.result))._tag,
+      "Failure",
+    );
+    yield* TestClock.adjust("61 seconds");
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ["snapshot"],
+    );
+    assert.equal(harness.digestGenerationInputs.length, 0);
+    yield* sql`DROP TRIGGER reject_index_commit`;
+    yield* operations.complete(completion, registration);
+    yield* Deferred.await(committedEvent);
+    assert.equal((yield* operations.getById(operationId))?.status, "completed");
     const upserted = events.filter((event) => event.type === "thread-index-upserted");
     assert.equal(upserted.length, 1);
     assert.equal(upserted[0]!.projectId, groupId);
@@ -3653,12 +3709,17 @@ it.effect("publishes thread-index-upserted when the coordinator records worker t
       upserted[0]!.threads.map((entry) => entry.threadId),
       [workerThreadId],
     );
-    const index = yield* repository.listThreadIndex(groupId);
     assert.equal(
-      index.some((entry) => entry.threadId === workerThreadId),
+      (yield* repository.listThreadIndex(groupId)).some(
+        (entry) => entry.threadId === workerThreadId,
+      ),
       true,
     );
-  }).pipe(Effect.provide(harness.layer));
+    yield* TestClock.adjust("61 seconds");
+    assert.equal(harness.digestGenerationInputs.length, 1);
+  }).pipe(
+    Effect.provide(AgentGatewayOperationRepositoryLive.pipe(Layer.provideMerge(harness.layer))),
+  );
 });
 
 it.effect("configure preserves pause state and pause-disabled automations", () => {
@@ -6005,5 +6066,71 @@ it.effect("permits only owned workers in currently linked repositories", () => {
       })
       .pipe(Effect.result);
     assert.equal(unlinkedDenied._tag, "Failure");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("keeps taskless and settled managed workers from delegating further threads", () => {
+  const harness = makeTestLayer();
+  return Effect.gen(function* () {
+    const service = yield* ProjectAgentService;
+    const repository = yield* ProjectAgentRepository;
+    const overview = yield* service.configure(
+      {
+        requestId: "worker-role-setup",
+        projectId: groupId,
+        coordinatorModelSelection: modelSelection,
+      },
+      { kind: "user" },
+    );
+    harness.threadShells[groupMemberThreadId] = {
+      ...harness.threadShells[groupMemberThreadId]!,
+      creationSource: "synara_mcp",
+      sourceThreadId: overview.config!.coordinatorThreadId,
+    };
+    const beforeTracking = yield* service.resolvePrincipalForThread(groupMemberThreadId);
+    assert.equal(beforeTracking.kind, "worker");
+    const earlyCreation = yield* service
+      .authorizeManagedGoalCreation({ callerThreadId: groupMemberThreadId, requestedCount: 1 })
+      .pipe(Effect.result);
+    assert.equal(earlyCreation._tag, "Failure");
+    yield* service.recordManagedWorkerThreads({
+      callerThreadId: overview.config!.coordinatorThreadId,
+      requestId: "worker-role-register",
+      threadIds: [groupMemberThreadId],
+      titles: ["Taskless worker"],
+    });
+    const worker = Option.getOrThrow(
+      yield* repository.findManagedWorkerByThread(groupMemberThreadId),
+    );
+    assert.isNull(worker.taskId);
+    for (const settled of [false, true]) {
+      if (settled)
+        yield* repository.upsertManagedWorker({
+          ...worker,
+          settledAt: now,
+          settleOutcome: "completed",
+        });
+      const principal = yield* service.resolvePrincipalForThread(groupMemberThreadId);
+      assert.equal(principal.kind, "worker");
+      if (principal.kind === "worker") assert.isNull(principal.taskId);
+      for (const permission of [
+        service.authorizeManagedGoalCreation({
+          callerThreadId: groupMemberThreadId,
+          requestedCount: 1,
+        }),
+        service.assertCallerMayCreateThreadInProject({
+          callerThreadId: groupMemberThreadId,
+          targetProjectId: groupId,
+        }),
+        service.assertCallerMayDriveManagedThread({
+          callerThreadId: groupMemberThreadId,
+          targetThreadId: overview.config!.coordinatorThreadId,
+        }),
+      ]) {
+        const result = yield* permission.pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure") assert.equal(result.failure.code, "forbidden");
+      }
+    }
   }).pipe(Effect.provide(harness.layer));
 });

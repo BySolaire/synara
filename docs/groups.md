@@ -258,7 +258,8 @@ in settings → **Environment**, or ask the coordinator to link it. Only you can
 The coordinator can start threads only in the group folder or in a linked repository. It uses the
 group folder for non-code work such as notes, research, and planning. In a linked repository,
 it can send follow-up turns only to workers owned by this group, not to unrelated chats or another
-group's workers. Removing the repository link also removes that access.
+group's workers. Removing the repository link also removes that access. Workers cannot start or
+steer additional worker threads, including when their task has finished or no task was created.
 
 ## Lifecycle
 

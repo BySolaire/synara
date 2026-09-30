@@ -105,6 +105,7 @@ import {
 } from "effect";
 
 import { AutomationService } from "../../automation/Services/AutomationService.ts";
+import { notifyAfterCommit } from "../../persistence/commitNotifications.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { providerDisabledSettingsMessage } from "../../provider/enabledProviderAdapter.ts";
@@ -344,7 +345,7 @@ export const makeProjectAgentService = Effect.gen(function* () {
   const digestInputSignatures = yield* Ref.make(new Map<string, string>());
 
   const publish = (event: ProjectAgentStreamEvent) =>
-    PubSub.publish(events, event).pipe(Effect.asVoid);
+    notifyAfterCommit(PubSub.publish(events, event).pipe(Effect.asVoid));
   // Index rows are the Overview Threads tab's data — a subscriber must see a
   // coordinator-spawned worker appear the moment it is indexed, not after the
   // next full listing (which may never come while the panel stays open).
@@ -4536,7 +4537,7 @@ export const makeProjectAgentService = Effect.gen(function* () {
           ),
           Effect.forkChild,
         );
-      }).pipe(Effect.asVoid),
+      }).pipe(Effect.asVoid, notifyAfterCommit),
 
     listEvidence: (input, principal) =>
       Effect.gen(function* () {
@@ -4842,6 +4843,11 @@ export const makeProjectAgentService = Effect.gen(function* () {
     authorizeManagedGoalCreation: (input) =>
       Effect.gen(function* () {
         const principal = yield* impl.resolvePrincipalForThread(input.callerThreadId);
+        if (principal.kind === "worker") {
+          return yield* Effect.fail(
+            fail("Workers cannot create further workers by default.", "forbidden"),
+          );
+        }
         if (principal.kind !== "coordinator") return;
         const config = yield* requireConfig(principal.projectId);
         // The user's configured limits apply, clamped to the hard caps — the
@@ -6025,9 +6031,24 @@ export const makeProjectAgentService = Effect.gen(function* () {
             projectId: coordinator.value.projectId,
           };
         }
+        const managedWorker = yield* repository
+          .findManagedWorkerByThread(threadId)
+          .pipe(Effect.mapError(toServiceError("Failed to resolve managed worker principal.")));
         const task = yield* repository
           .findTaskByAssignedThread(threadId)
           .pipe(Effect.mapError(toServiceError("Failed to resolve worker principal.")));
+        if (Option.isSome(managedWorker)) {
+          yield* resolveGroupCoordinatorProject(managedWorker.value.projectId);
+          return {
+            kind: "worker" as const,
+            threadId,
+            projectId: managedWorker.value.projectId,
+            taskId:
+              Option.isSome(task) && task.value.projectId === managedWorker.value.projectId
+                ? task.value.id
+                : null,
+          };
+        }
         if (Option.isSome(task)) {
           yield* resolveGroupCoordinatorProject(task.value.projectId);
           return {
@@ -6042,6 +6063,23 @@ export const makeProjectAgentService = Effect.gen(function* () {
           .pipe(Effect.mapError(toServiceError("Failed to resolve thread project.")));
         if (Option.isNone(shell)) {
           return yield* Effect.fail(fail("Thread was not found.", "not-found"));
+        }
+        // thread.create persists provenance before the worker's first turn
+        // starts. Keep the same role while its final tracking transaction is
+        // still pending, so a fast worker cannot delegate in that window.
+        if (shell.value.creationSource === "synara_mcp" && shell.value.sourceThreadId) {
+          const creator = yield* repository
+            .getConfigByCoordinatorThread(shell.value.sourceThreadId)
+            .pipe(Effect.mapError(toServiceError("Failed to resolve worker creator.")));
+          if (Option.isSome(creator)) {
+            yield* resolveGroupCoordinatorProject(creator.value.projectId);
+            return {
+              kind: "worker" as const,
+              threadId,
+              projectId: creator.value.projectId,
+              taskId: null,
+            };
+          }
         }
         // Every thread living in a group is a group member: it gets the
         // group's instructions and memory, may write its own memory file, and
@@ -6089,6 +6127,11 @@ export const makeProjectAgentService = Effect.gen(function* () {
     assertCallerMayDriveManagedThread: (input) =>
       Effect.gen(function* () {
         const caller = yield* impl.resolvePrincipalForThread(input.callerThreadId);
+        if (caller.kind === "worker") {
+          return yield* Effect.fail(
+            fail("Workers cannot create further workers by default.", "forbidden"),
+          );
+        }
         const targetShell = yield* snapshotQuery.getThreadShellById(input.targetThreadId).pipe(
           Effect.mapError(toServiceError("Failed to load target thread.")),
           Effect.flatMap(
@@ -6098,11 +6141,6 @@ export const makeProjectAgentService = Effect.gen(function* () {
             }),
           ),
         );
-        if (caller.kind === "worker") {
-          return yield* Effect.fail(
-            fail("Workers cannot create further workers by default.", "forbidden"),
-          );
-        }
         if (caller.kind === "coordinator") {
           if (targetShell.projectId !== caller.projectId) {
             const config = yield* requireConfig(caller.projectId);
@@ -6128,6 +6166,11 @@ export const makeProjectAgentService = Effect.gen(function* () {
     assertCallerMayCreateThreadInProject: (input) =>
       Effect.gen(function* () {
         const caller = yield* impl.resolvePrincipalForThread(input.callerThreadId);
+        if (caller.kind === "worker") {
+          return yield* Effect.fail(
+            fail("Workers cannot create further workers by default.", "forbidden"),
+          );
+        }
         if (caller.kind !== "coordinator") return;
         const config = yield* requireConfig(caller.projectId);
         const linkedProjectIds = config.linkedProjectIds ?? [];
