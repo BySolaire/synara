@@ -55,6 +55,10 @@ import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionT
 import { runWorktreeSetupScript } from "../../worktreeSetup.ts";
 import type { ProjectionTurn } from "../../persistence/Services/ProjectionTurns.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import {
+  GROUPS_BETA_ONLY_MESSAGE,
+  isServerGroupsEnabled,
+} from "../../projectAgent/groupsBetaGate.ts";
 import { AutomationServiceError } from "../Errors.ts";
 import { AutomationService, type AutomationServiceShape } from "../Services/AutomationService.ts";
 import { buildAutomationProposalActivity } from "../proposalActivity.ts";
@@ -102,6 +106,19 @@ const TERMINAL_RUN_STATUSES: ReadonlySet<AutomationRunStatus> = new Set([
   "interrupted",
   "skipped",
 ]);
+
+function isAutomationAvailable(definition: AutomationDefinition): boolean {
+  return (
+    (!definition.managedByProject && definition.schedule.type !== "project-event") ||
+    isServerGroupsEnabled()
+  );
+}
+
+function assertAutomationAvailable(definition: AutomationDefinition) {
+  return isAutomationAvailable(definition)
+    ? Effect.void
+    : Effect.fail(new AutomationServiceError({ message: GROUPS_BETA_ONLY_MESSAGE }));
+}
 
 function isTerminalRunStatus(status: AutomationRunStatus): boolean {
   return TERMINAL_RUN_STATUSES.has(status);
@@ -1009,6 +1026,9 @@ export const AutomationServiceLive = Layer.effect(
       run: AutomationRun,
       now: string,
     ): Effect.Effect<AutomationRunNowResult, AutomationServiceError> => {
+      if (!isAutomationAvailable(definition)) {
+        return Effect.fail(new AutomationServiceError({ message: GROUPS_BETA_ONLY_MESSAGE }));
+      }
       return Effect.gen(function* () {
         const plannedIds = deriveAutomationRunIds(run.id);
         // Read the thread from the definition rather than the run: a dedicated automation can
@@ -1346,6 +1366,7 @@ export const AutomationServiceLive = Layer.effect(
       // it plans a thread creation exactly like a standalone run.
       const continuationThreadId = automationContinuationThreadId(definition);
       return {
+        excludeProjectManaged: !isServerGroupsEnabled(),
         id: runId,
         automationId: definition.id,
         projectId: definition.projectId,
@@ -1615,6 +1636,7 @@ export const AutomationServiceLive = Layer.effect(
       policy: Extract<AutomationCompletionPolicy, { type: "ai-evaluated" }>,
     ) =>
       Effect.gen(function* () {
+        if (!isAutomationAvailable(definition)) return false;
         if (yield* completionEvaluationProviderDisabledReason(definition)) {
           return false;
         }
@@ -1845,6 +1867,7 @@ export const AutomationServiceLive = Layer.effect(
           Option.match(definitionOption, {
             onNone: () => Effect.void,
             onSome: (definition) => {
+              if (!isAutomationAvailable(definition)) return Effect.void;
               const policy = completionPolicyForDefinition(definition);
               if (policy.type !== "ai-evaluated") {
                 return Effect.void;
@@ -1873,18 +1896,23 @@ export const AutomationServiceLive = Layer.effect(
     };
 
     const enqueuePendingCompletionEvaluations = () =>
-      automationRepository.listRunsNeedingCompletionEvaluation({ limit: 100 }).pipe(
-        Effect.mapError(toServiceError("Failed to list pending stop evaluations.")),
-        Effect.flatMap((runs) => {
-          const definitionCache = new Map<string, Option.Option<AutomationDefinition>>();
-          return Effect.forEach(
-            runs,
-            (run) => enqueueCompletionEvaluationForRun(run, definitionCache),
-            { concurrency: 1 },
-          );
-        }),
-        Effect.asVoid,
-      );
+      automationRepository
+        .listRunsNeedingCompletionEvaluation({
+          limit: 100,
+          excludeProjectManaged: !isServerGroupsEnabled(),
+        })
+        .pipe(
+          Effect.mapError(toServiceError("Failed to list pending stop evaluations.")),
+          Effect.flatMap((runs) => {
+            const definitionCache = new Map<string, Option.Option<AutomationDefinition>>();
+            return Effect.forEach(
+              runs,
+              (run) => enqueueCompletionEvaluationForRun(run, definitionCache),
+              { concurrency: 1 },
+            );
+          }),
+          Effect.asVoid,
+        );
 
     const processCompletionEvaluationJob = (job: AutomationCompletionEvaluationJob) =>
       evaluateCompletionPolicy(job.definition, job.run, job.policy).pipe(
@@ -2147,7 +2175,7 @@ export const AutomationServiceLive = Layer.effect(
     const reconcileThread: AutomationServiceShape["reconcileThread"] = ({ threadId }) =>
       Effect.gen(function* () {
         const runOption = yield* automationRepository
-          .getRunByThreadId({ threadId })
+          .getRunByThreadId({ threadId, excludeProjectManaged: !isServerGroupsEnabled() })
           .pipe(Effect.mapError(toServiceError("Failed to load automation run for thread.")));
         if (Option.isNone(runOption)) {
           return;
@@ -2339,27 +2367,29 @@ export const AutomationServiceLive = Layer.effect(
       );
 
     const reconcileActiveRuns: AutomationServiceShape["reconcileActiveRuns"] = () =>
-      automationRepository.listRecoverableRuns({ limit: 100 }).pipe(
-        Effect.mapError(toServiceError("Failed to list active automation runs.")),
-        Effect.flatMap((runs) =>
-          Effect.forEach(
-            runs,
-            (run) =>
-              reconcileActiveRun(run, isoNow()).pipe(
-                Effect.catch((error) =>
-                  Effect.logWarning("automation active-run reconcile failed", {
-                    automationId: run.automationId,
-                    runId: run.id,
-                    error: recoveryErrorMessage(error),
-                  }),
+      automationRepository
+        .listRecoverableRuns({ limit: 100, excludeProjectManaged: !isServerGroupsEnabled() })
+        .pipe(
+          Effect.mapError(toServiceError("Failed to list active automation runs.")),
+          Effect.flatMap((runs) =>
+            Effect.forEach(
+              runs,
+              (run) =>
+                reconcileActiveRun(run, isoNow()).pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("automation active-run reconcile failed", {
+                      automationId: run.automationId,
+                      runId: run.id,
+                      error: recoveryErrorMessage(error),
+                    }),
+                  ),
                 ),
-              ),
-            { concurrency: 1 },
+              { concurrency: 1 },
+            ),
           ),
-        ),
-        Effect.flatMap(() => enqueuePendingCompletionEvaluations()),
-        Effect.asVoid,
-      );
+          Effect.flatMap(() => enqueuePendingCompletionEvaluations()),
+          Effect.asVoid,
+        );
 
     const recoverRun = (run: AutomationRun) => {
       const now = isoNow();
@@ -2411,6 +2441,7 @@ export const AutomationServiceLive = Layer.effect(
       const recoverPage = (after?: AutomationRun): Effect.Effect<void, AutomationServiceError> =>
         automationRepository
           .listRecoverableRuns({
+            excludeProjectManaged: !isServerGroupsEnabled(),
             limit: 200,
             ...(after ? { afterCreatedAt: after.createdAt, afterRunId: after.id } : {}),
           })
@@ -2448,7 +2479,10 @@ export const AutomationServiceLive = Layer.effect(
           return { reason: "no-active-turn" } as const;
         }
         const runOption = yield* automationRepository
-          .getRunByThreadId({ threadId: input.callerThreadId })
+          .getRunByThreadId({
+            threadId: input.callerThreadId,
+            excludeProjectManaged: !isServerGroupsEnabled(),
+          })
           .pipe(Effect.mapError(toServiceError("Failed to resolve the automation run.")));
         if (Option.isNone(runOption)) {
           return { reason: "not-automation-dispatched" } as const;
@@ -2655,6 +2689,11 @@ export const AutomationServiceLive = Layer.effect(
 
     const createProjectManaged: AutomationServiceShape["createProjectManaged"] = (input) =>
       Effect.gen(function* () {
+        if (!isServerGroupsEnabled()) {
+          return yield* Effect.fail(
+            new AutomationServiceError({ message: GROUPS_BETA_ONLY_MESSAGE }),
+          );
+        }
         const now = isoNow();
         if (input.schedule.type !== "project-event" || input.mode !== "heartbeat") {
           return yield* Effect.fail(
@@ -2759,6 +2798,7 @@ export const AutomationServiceLive = Layer.effect(
     ): Effect.Effect<AutomationDefinition, AutomationServiceError> =>
       Effect.gen(function* () {
         const current = yield* requireDefinition(input.id);
+        yield* assertAutomationAvailable(current);
         if (current.proposalState === "pending") {
           return yield* Effect.fail(
             new AutomationServiceError({
@@ -2802,6 +2842,7 @@ export const AutomationServiceLive = Layer.effect(
     const resolveProposal: AutomationServiceShape["resolveProposal"] = (input) =>
       Effect.gen(function* () {
         const current = yield* requireDefinition(input.automationId);
+        yield* assertAutomationAvailable(current);
         if (current.proposalState !== "pending") {
           return yield* Effect.fail(
             new AutomationServiceError({
@@ -2919,10 +2960,13 @@ export const AutomationServiceLive = Layer.effect(
     const heartbeatThreadRunState = (threadId: ThreadId) =>
       Effect.gen(function* () {
         const activeRuns = yield* automationRepository
-          .countActiveRunsForThread({ threadId })
+          .countActiveRunsForThread({ threadId, excludeProjectManaged: !isServerGroupsEnabled() })
           .pipe(Effect.mapError(toServiceError("Failed to count active automation runs.")));
         const pendingCompletionEvaluations = yield* automationRepository
-          .countPendingCompletionEvaluationsForThread({ threadId })
+          .countPendingCompletionEvaluationsForThread({
+            threadId,
+            excludeProjectManaged: !isServerGroupsEnabled(),
+          })
           .pipe(
             Effect.mapError(toServiceError("Failed to count pending automation stop evaluations.")),
           );
@@ -3083,6 +3127,7 @@ export const AutomationServiceLive = Layer.effect(
     const runNow: AutomationServiceShape["runNow"] = (input) =>
       Effect.gen(function* () {
         const definition = yield* requireDefinition(input.automationId);
+        yield* assertAutomationAvailable(definition);
         if (definition.proposalState === "pending") {
           return yield* Effect.fail(
             new AutomationServiceError({
@@ -3238,6 +3283,7 @@ export const AutomationServiceLive = Layer.effect(
     // schedule advancement, so dispatch failures still leave auditable history.
     const runDueDefinition = (definition: AutomationDefinition, now: string) =>
       Effect.gen(function* () {
+        if (!isAutomationAvailable(definition)) return Option.none<AutomationRunNowResult>();
         if (definition.proposalState === "pending") {
           return Option.none<AutomationRunNowResult>();
         }
@@ -3445,6 +3491,7 @@ export const AutomationServiceLive = Layer.effect(
     const retryDeferredRun = (run: AutomationRun, now: string) =>
       Effect.gen(function* () {
         const definition = yield* requireDefinition(run.automationId);
+        if (!isAutomationAvailable(definition)) return Option.none<AutomationRunNowResult>();
         if (!definition.enabled) {
           return Option.none<AutomationRunNowResult>();
         }
@@ -3466,6 +3513,7 @@ export const AutomationServiceLive = Layer.effect(
           const plannedThreadId = run.threadId ?? deriveAutomationRunIds(run.id).threadId;
           const reserved = yield* automationRepository
             .reserveDeferredRun({
+              excludeProjectManaged: !isServerGroupsEnabled(),
               id: run.id,
               threadId: plannedThreadId,
               reservedAt: now,
@@ -3530,6 +3578,7 @@ export const AutomationServiceLive = Layer.effect(
         }
         const reserved = yield* automationRepository
           .reserveDeferredRun({
+            excludeProjectManaged: !isServerGroupsEnabled(),
             id: run.id,
             threadId: continuationThreadId,
             reservedAt: now,
@@ -3588,7 +3637,11 @@ export const AutomationServiceLive = Layer.effect(
 
         const passLimit = Math.max(0, input.limit ?? 3);
         const deferredRuns = yield* automationRepository
-          .listDueDeferredRuns({ now, limit: passLimit })
+          .listDueDeferredRuns({
+            now,
+            limit: passLimit,
+            excludeProjectManaged: !isServerGroupsEnabled(),
+          })
           .pipe(Effect.mapError(toServiceError("Failed to list deferred automation runs.")));
         const deferredResults = yield* Effect.forEach(
           deferredRuns,
@@ -3609,6 +3662,7 @@ export const AutomationServiceLive = Layer.effect(
         const remaining = Math.max(0, passLimit - dispatchedDeferredCount);
         const definitions = yield* automationRepository
           .listDueDefinitions({
+            excludeProjectManaged: !isServerGroupsEnabled(),
             now,
             limit: remaining,
           })

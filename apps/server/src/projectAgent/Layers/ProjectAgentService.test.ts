@@ -1408,7 +1408,7 @@ it.effect("resolves linked-repo workers through the task assignment", () => {
   return Effect.gen(function* () {
     const service = yield* ProjectAgentService;
     const repository = yield* ProjectAgentRepository;
-    yield* service.configure(
+    const overview = yield* service.configure(
       {
         requestId: "req-linked-setup",
         projectId: groupId,
@@ -1478,6 +1478,19 @@ it.effect("resolves linked-repo workers through the task assignment", () => {
       `inbox/${linkedWorkerThreadId}/report.md`,
     );
     assert.equal(Option.isSome(report), true);
+    yield* service.linkProject(
+      { requestId: "req-linked-control", projectId: groupId, linkedProjectId: ordinaryId },
+      { kind: "user" },
+    );
+    harness.threadShells[linkedWorkerThreadId] = {
+      projectId: ordinaryId,
+      title: "Assigned linked worker",
+      session: null,
+    };
+    yield* service.assertCallerMayDriveManagedThread({
+      callerThreadId: overview.config!.coordinatorThreadId,
+      targetThreadId: linkedWorkerThreadId,
+    });
   }).pipe(Effect.provide(harness.layer));
 });
 
@@ -5917,4 +5930,80 @@ it.effect("keeps user-turn ownership while a coordinator turn is only queued", (
     const promoted = yield* repository.findManagedWorkerByThread(workerThreadId);
     assert.equal(Option.isSome(promoted) ? promoted.value.activeTurnOrigin : null, "coordinator");
   }).pipe(Effect.provide(Layer.merge(harness.layer, TestClock.layer())));
+});
+
+it.effect("permits only owned workers in currently linked repositories", () => {
+  const harness = makeTestLayer();
+  return Effect.gen(function* () {
+    const service = yield* ProjectAgentService;
+    const repository = yield* ProjectAgentRepository;
+    const overview = yield* service.configure(
+      {
+        requestId: "linked-control-setup",
+        projectId: groupId,
+        coordinatorModelSelection: modelSelection,
+      },
+      { kind: "user" },
+    );
+    const coordinatorThreadId = overview.config!.coordinatorThreadId;
+    yield* service.linkProject(
+      { requestId: "linked-control-link", projectId: groupId, linkedProjectId: ordinaryId },
+      { kind: "user" },
+    );
+    const unrelatedThreadId = ThreadId.makeUnsafe("linked-unrelated-thread");
+    harness.threadShells[unrelatedThreadId] = {
+      projectId: ordinaryId,
+      title: "Unrelated chat",
+      session: null,
+    };
+    const denied = yield* service
+      .assertCallerMayDriveManagedThread({
+        callerThreadId: coordinatorThreadId,
+        targetThreadId: unrelatedThreadId,
+      })
+      .pipe(Effect.result);
+    assert.equal(denied._tag, "Failure");
+    yield* service.recordManagedWorkerThreads({
+      callerThreadId: coordinatorThreadId,
+      requestId: "linked-owned-worker",
+      threadIds: [foreignThreadId],
+      titles: ["Owned linked worker"],
+    });
+    yield* service.assertCallerMayDriveManagedThread({
+      callerThreadId: coordinatorThreadId,
+      targetThreadId: foreignThreadId,
+    });
+    const worker = yield* repository.findManagedWorkerByThread(foreignThreadId);
+    assert.equal(Option.getOrThrow(worker).projectId, groupId);
+    const otherOverview = yield* service.configure(
+      {
+        requestId: "linked-control-other-setup",
+        projectId: groupId2,
+        coordinatorModelSelection: modelSelection,
+      },
+      { kind: "user" },
+    );
+    yield* service.linkProject(
+      { requestId: "linked-control-other-link", projectId: groupId2, linkedProjectId: ordinaryId },
+      { kind: "user" },
+    );
+    const otherDenied = yield* service
+      .assertCallerMayDriveManagedThread({
+        callerThreadId: otherOverview.config!.coordinatorThreadId,
+        targetThreadId: foreignThreadId,
+      })
+      .pipe(Effect.result);
+    assert.equal(otherDenied._tag, "Failure");
+    yield* service.unlinkProject(
+      { requestId: "linked-control-unlink", projectId: groupId, linkedProjectId: ordinaryId },
+      { kind: "user" },
+    );
+    const unlinkedDenied = yield* service
+      .assertCallerMayDriveManagedThread({
+        callerThreadId: coordinatorThreadId,
+        targetThreadId: foreignThreadId,
+      })
+      .pipe(Effect.result);
+    assert.equal(unlinkedDenied._tag, "Failure");
+  }).pipe(Effect.provide(harness.layer));
 });

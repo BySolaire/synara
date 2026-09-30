@@ -6105,6 +6105,21 @@ export const makeProjectAgentService = Effect.gen(function* () {
         }
         if (caller.kind === "coordinator") {
           if (targetShell.projectId !== caller.projectId) {
+            const config = yield* requireConfig(caller.projectId);
+            if (!(config.linkedProjectIds ?? []).includes(targetShell.projectId)) {
+              return yield* Effect.fail(fail("Cross-project control is blocked.", "forbidden"));
+            }
+            const worker = yield* repository
+              .findManagedWorkerByThread(input.targetThreadId)
+              .pipe(Effect.mapError(toServiceError("Failed to load worker ownership.")));
+            if (Option.isSome(worker)) {
+              if (worker.value.projectId === caller.projectId) return;
+              return yield* Effect.fail(fail("Cross-project control is blocked.", "forbidden"));
+            }
+            const task = yield* repository
+              .findTaskByAssignedThread(input.targetThreadId)
+              .pipe(Effect.mapError(toServiceError("Failed to load worker task ownership.")));
+            if (Option.isSome(task) && task.value.projectId === caller.projectId) return;
             return yield* Effect.fail(fail("Cross-project control is blocked.", "forbidden"));
           }
         }

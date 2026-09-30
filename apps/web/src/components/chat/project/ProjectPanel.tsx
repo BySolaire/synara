@@ -28,6 +28,7 @@ import { formatThreadModelSummaryLabel, resolveThreadModelSummary } from "~/lib/
 import { cn } from "~/lib/utils";
 import { useAutomations } from "~/routes/-automations.shared";
 import { useStore } from "~/store";
+import { SOFT_SURFACE_FILL_CLASS_NAME } from "~/surfaceStyles";
 import { createSidebarThreadSummariesSelector } from "~/storeSelectors";
 import type { SidebarThreadSummary } from "~/types";
 
@@ -573,8 +574,10 @@ export function ProjectPanel({
 
 // A soft grouped tile (Apple inset-group style): rows sit on a faint fill with
 // no rules between them; hovering a row deepens the same fill.
-const GROUP_PANEL_TILE_CLASS_NAME =
-  "flex flex-col rounded-xl bg-[var(--color-background-elevated-secondary)] p-1";
+const GROUP_PANEL_TILE_CLASS_NAME = cn(
+  "flex flex-col rounded-xl p-1",
+  SOFT_SURFACE_FILL_CLASS_NAME,
+);
 
 const CONTEXT_TEXTAREA_CLASS_NAME =
   "relative inline-flex w-full rounded-lg border border-[color:var(--color-border-light)] bg-transparent text-ui text-foreground transition-colors has-focus-visible:border-foreground/25 [&_[data-slot=textarea]]:px-3 [&_[data-slot=textarea]]:py-2";

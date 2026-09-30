@@ -290,7 +290,9 @@ and Beta.
 
 On Stable, Groups is inert rather than hidden data: the server refuses the group
 APIs, Library routes and gateway tools, stops coordinator wakes and monitoring,
-and refuses creating a group; the web hides the Groups tab, route, setting, and
+leaves saved Group check-ins and completion evaluations unchanged and unscheduled,
+uses ordinary Synara tool approvals for former coordinator chats, and refuses
+creating a group; the web hides the Groups tab, route, setting, and
 thread actions, and shows any existing group folder as an ordinary project so its
 chats stay reachable. The gate lives in
 `apps/server/src/projectAgent/groupsBetaGate.ts` and `GROUPS_ON` in

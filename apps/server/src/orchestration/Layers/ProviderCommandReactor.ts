@@ -118,6 +118,7 @@ import { resolveTextGenerationInputForSelection } from "../../git/textGeneration
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderHealth } from "../../provider/Services/ProviderHealth.ts";
 import { providerDisabledSettingsMessage } from "../../provider/enabledProviderAdapter.ts";
+import { isServerGroupsEnabled } from "../../projectAgent/groupsBetaGate.ts";
 import { ProjectAgentService } from "../../projectAgent/Services/ProjectAgentService.ts";
 import { ProjectAgentRepository } from "../../persistence/Services/ProjectAgentRepository.ts";
 import { resolveProviderDispatchAttachments } from "../../provider/providerAttachmentPaths.ts";
@@ -1828,21 +1829,22 @@ const make = Effect.gen(function* () {
     // anyway. File edits, shell, and every non-Synara tool still ask.
     // The coordinator check reads the persisted config directly — the same
     // lookup the service's principal resolver performs first.
-    const autoApproveSynaraTools = Option.isNone(projectAgentRepository)
-      ? false
-      : yield* projectAgentRepository.value.getConfigByCoordinatorThread(threadId).pipe(
-          // Only an active group grants the flag — a paused or archived
-          // group's coordinator still resolves by thread id, but its turns
-          // must go through the normal approval flow again.
-          Effect.map(
-            (config) =>
-              Option.isSome(config) &&
-              config.value.enabled &&
-              config.value.pausedAt === null &&
-              config.value.archivedAt === null,
-          ),
-          Effect.catch(() => Effect.succeed(false)),
-        );
+    const autoApproveSynaraTools =
+      !isServerGroupsEnabled() || Option.isNone(projectAgentRepository)
+        ? false
+        : yield* projectAgentRepository.value.getConfigByCoordinatorThread(threadId).pipe(
+            // Only an active group grants the flag — a paused or archived
+            // group's coordinator still resolves by thread id, but its turns
+            // must go through the normal approval flow again.
+            Effect.map(
+              (config) =>
+                Option.isSome(config) &&
+                config.value.enabled &&
+                config.value.pausedAt === null &&
+                config.value.archivedAt === null,
+            ),
+            Effect.catch(() => Effect.succeed(false)),
+          );
     const providerSessionOptions = {
       threadId,
       ...(effectiveCwd ? { cwd: effectiveCwd } : {}),

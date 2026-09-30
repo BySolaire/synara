@@ -114,6 +114,7 @@ import {
   isSafeLegacyProviderBlocker,
   makeProviderCommandReactorLive,
 } from "./ProviderCommandReactor.ts";
+import * as groupsBetaGate from "../../projectAgent/groupsBetaGate.ts";
 import { ProjectAgentService } from "../../projectAgent/Services/ProjectAgentService.ts";
 import { ProjectAgentRepository } from "../../persistence/Services/ProjectAgentRepository.ts";
 import {
@@ -264,6 +265,7 @@ describe("ProviderCommandReactor", () => {
   const createdBaseDirs = new Set<string>();
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     if (scope) {
       await Effect.runPromise(Scope.close(scope, Exit.void));
     }
@@ -13482,6 +13484,13 @@ describe("ProviderCommandReactor", () => {
     },
     {
       coordinatorThreadIds: ["thread-1"] as readonly string[],
+      coordinatorConfigState: undefined,
+      label: "Stable saved coordinator",
+      groupsEnabled: false,
+      expected: false,
+    },
+    {
+      coordinatorThreadIds: ["thread-1"] as readonly string[],
       coordinatorConfigState: { pausedAt: new Date(0).toISOString() },
       label: "paused",
       expected: false,
@@ -13506,7 +13515,8 @@ describe("ProviderCommandReactor", () => {
     },
   ])(
     "pre-approves Synara group tools only for an active coordinator session ($label: $expected)",
-    async ({ coordinatorThreadIds, coordinatorConfigState, label, expected }) => {
+    async ({ coordinatorThreadIds, coordinatorConfigState, label, expected, groupsEnabled }) => {
+      vi.spyOn(groupsBetaGate, "isServerGroupsEnabled").mockReturnValue(groupsEnabled ?? true);
       const harness = await createHarness({ coordinatorThreadIds, coordinatorConfigState });
       const now = new Date().toISOString();
 

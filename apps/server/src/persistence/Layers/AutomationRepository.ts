@@ -189,6 +189,13 @@ function toRun(row: AutomationRunDbRow) {
 
 const makeAutomationRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  // Runtime callers opt out of Group-owned work on Stable. Filter before LIMIT
+  // so preserved Beta state cannot starve ordinary automation work.
+  const projectManagedAutomationIds = sql`
+    SELECT automation_id FROM automation_definitions
+    WHERE COALESCE(managed_by_project, 0) = 1
+      OR json_extract(schedule_json, '$.type') = 'project-event'
+  `;
 
   const insertDefinition = SqlSchema.void({
     Request: AutomationDefinitionDbRow,
@@ -455,7 +462,7 @@ const makeAutomationRepository = Effect.gen(function* () {
   const listDueDefinitionRows = SqlSchema.findAll({
     Request: ListDueAutomationDefinitionsInput,
     Result: AutomationDefinitionDbRow,
-    execute: ({ now, limit }) =>
+    execute: ({ now, limit, excludeProjectManaged }) =>
       sql`
         SELECT
           definitions.automation_id AS "id",
@@ -516,6 +523,7 @@ const makeAutomationRepository = Effect.gen(function* () {
                 AND deferred_runs.deferred_until IS NOT NULL
             )
           )
+          ${excludeProjectManaged ? sql`AND definitions.automation_id NOT IN (${projectManagedAutomationIds})` : sql``}
         ORDER BY definitions.next_run_at ASC, definitions.automation_id ASC
         LIMIT ${limit}
       `,
@@ -557,7 +565,10 @@ const makeAutomationRepository = Effect.gen(function* () {
   });
 
   const insertRun = SqlSchema.void({
-    Request: AutomationRunDbRow,
+    Request: Schema.Struct({
+      ...AutomationRunDbRow.fields,
+      excludeProjectManaged: Schema.optional(Schema.Boolean),
+    }),
     execute: (run) =>
       sql`
         INSERT OR IGNORE INTO automation_runs (
@@ -613,6 +624,7 @@ const makeAutomationRepository = Effect.gen(function* () {
              FROM automation_runs
              WHERE thread_id = ${run.threadId}
                AND status IN ('pending', 'claimed', 'running', 'waiting-for-approval')
+               ${run.excludeProjectManaged ? sql`AND automation_id NOT IN (${projectManagedAutomationIds})` : sql``}
            )
       `,
   });
@@ -726,7 +738,7 @@ const makeAutomationRepository = Effect.gen(function* () {
   const listDueDeferredRunRows = SqlSchema.findAll({
     Request: ListDueDeferredAutomationRunsInput,
     Result: AutomationRunDbRow,
-    execute: ({ now, limit }) =>
+    execute: ({ now, limit, excludeProjectManaged }) =>
       sql`
         SELECT
           runs.run_id AS "id",
@@ -759,6 +771,7 @@ const makeAutomationRepository = Effect.gen(function* () {
           AND runs.deferred_until <= ${now}
           AND definitions.enabled = 1
           AND definitions.archived_at IS NULL
+          ${excludeProjectManaged ? sql`AND runs.automation_id NOT IN (${projectManagedAutomationIds})` : sql``}
         ORDER BY runs.deferred_until ASC, runs.created_at ASC, runs.run_id ASC
         LIMIT ${limit}
       `,
@@ -969,7 +982,7 @@ const makeAutomationRepository = Effect.gen(function* () {
   const reserveDeferredRunRow = SqlSchema.findAll({
     Request: ReserveDeferredAutomationRunInput,
     Result: Schema.Struct({ id: AutomationRun.fields.id }),
-    execute: ({ id, threadId, reservedAt }) =>
+    execute: ({ id, threadId, reservedAt, excludeProjectManaged }) =>
       sql`
         UPDATE automation_runs
         SET thread_id = ${threadId},
@@ -991,6 +1004,7 @@ const makeAutomationRepository = Effect.gen(function* () {
             WHERE active_runs.thread_id = ${threadId}
               AND active_runs.run_id <> ${id}
               AND active_runs.status IN ('pending', 'claimed', 'running', 'waiting-for-approval')
+              ${excludeProjectManaged ? sql`AND active_runs.automation_id NOT IN (${projectManagedAutomationIds})` : sql``}
           )
         RETURNING run_id AS "id"
       `,
@@ -1151,7 +1165,7 @@ const makeAutomationRepository = Effect.gen(function* () {
   const getRunRowByThread = SqlSchema.findOneOption({
     Request: GetAutomationRunByThreadInput,
     Result: AutomationRunDbRow,
-    execute: ({ threadId }) =>
+    execute: ({ threadId, excludeProjectManaged }) =>
       sql`
         SELECT
           run_id AS "id",
@@ -1179,6 +1193,7 @@ const makeAutomationRepository = Effect.gen(function* () {
         FROM automation_runs
         WHERE thread_id = ${threadId}
           AND status IN ('pending', 'claimed', 'running', 'waiting-for-approval')
+          ${excludeProjectManaged ? sql`AND automation_id NOT IN (${projectManagedAutomationIds})` : sql``}
         ORDER BY created_at DESC, run_id DESC
         LIMIT 1
       `,
@@ -1187,7 +1202,7 @@ const makeAutomationRepository = Effect.gen(function* () {
   const listRecoverableRunRows = SqlSchema.findAll({
     Request: ListRecoverableAutomationRunsInput,
     Result: AutomationRunDbRow,
-    execute: ({ limit, afterCreatedAt, afterRunId }) =>
+    execute: ({ limit, afterCreatedAt, afterRunId, excludeProjectManaged }) =>
       sql`
         SELECT
           run_id AS "id",
@@ -1220,6 +1235,7 @@ const makeAutomationRepository = Effect.gen(function* () {
             OR created_at > ${afterCreatedAt ?? null}
             OR (created_at = ${afterCreatedAt ?? null} AND run_id > ${afterRunId ?? ""})
           )
+          ${excludeProjectManaged ? sql`AND automation_id NOT IN (${projectManagedAutomationIds})` : sql``}
         ORDER BY created_at ASC, run_id ASC
         LIMIT ${limit}
       `,
@@ -1228,7 +1244,7 @@ const makeAutomationRepository = Effect.gen(function* () {
   const listRunsNeedingCompletionEvaluationRows = SqlSchema.findAll({
     Request: ListAutomationRunsNeedingCompletionEvaluationInput,
     Result: AutomationRunDbRow,
-    execute: ({ limit }) =>
+    execute: ({ limit, excludeProjectManaged }) =>
       sql`
         SELECT
           runs.run_id AS "id",
@@ -1256,6 +1272,8 @@ const makeAutomationRepository = Effect.gen(function* () {
         FROM automation_runs runs
         INNER JOIN automation_pending_completion_evaluations pending
           ON pending.run_id = runs.run_id
+        WHERE 1 = 1
+          ${excludeProjectManaged ? sql`AND runs.automation_id NOT IN (${projectManagedAutomationIds})` : sql``}
         ORDER BY pending.finished_at ASC, pending.run_id ASC
         LIMIT ${limit}
       `,
@@ -1276,23 +1294,25 @@ const makeAutomationRepository = Effect.gen(function* () {
   const countActiveRunsByThreadRow = SqlSchema.findAll({
     Request: CountActiveAutomationRunsByThreadInput,
     Result: Schema.Struct({ count: Schema.Number }),
-    execute: ({ threadId }) =>
+    execute: ({ threadId, excludeProjectManaged }) =>
       sql`
         SELECT COUNT(*) AS "count"
         FROM automation_runs
         WHERE thread_id = ${threadId}
           AND status IN ('pending', 'claimed', 'running', 'waiting-for-approval')
+          ${excludeProjectManaged ? sql`AND automation_id NOT IN (${projectManagedAutomationIds})` : sql``}
       `,
   });
 
   const countPendingCompletionEvaluationsByThreadRow = SqlSchema.findAll({
     Request: CountPendingCompletionEvaluationsByThreadInput,
     Result: Schema.Struct({ count: Schema.Number }),
-    execute: ({ threadId }) =>
+    execute: ({ threadId, excludeProjectManaged }) =>
       sql`
         SELECT COUNT(*) AS "count"
         FROM automation_pending_completion_evaluations pending
         WHERE pending.thread_id = ${threadId}
+          ${excludeProjectManaged ? sql`AND pending.automation_id NOT IN (${projectManagedAutomationIds})` : sql``}
       `,
   });
 
@@ -1334,7 +1354,7 @@ const makeAutomationRepository = Effect.gen(function* () {
   const getEarliestNextRunAtRow = SqlSchema.findOneOption({
     Request: GetEarliestAutomationNextRunAtInput,
     Result: Schema.Struct({ nextRunAt: AutomationDefinition.fields.nextRunAt }),
-    execute: () =>
+    execute: ({ excludeProjectManaged }) =>
       sql`
         SELECT candidates.next_run_at AS "nextRunAt"
         FROM (
@@ -1342,6 +1362,7 @@ const makeAutomationRepository = Effect.gen(function* () {
           FROM automation_definitions definitions
           WHERE definitions.enabled = 1
             AND definitions.archived_at IS NULL
+            ${excludeProjectManaged ? sql`AND definitions.automation_id NOT IN (${projectManagedAutomationIds})` : sql``}
             AND definitions.next_run_at IS NOT NULL
             AND NOT (
               definitions.mode = 'heartbeat'
@@ -1362,6 +1383,7 @@ const makeAutomationRepository = Effect.gen(function* () {
             AND runs.deferred_until IS NOT NULL
             AND definitions.enabled = 1
             AND definitions.archived_at IS NULL
+            ${excludeProjectManaged ? sql`AND definitions.automation_id NOT IN (${projectManagedAutomationIds})` : sql``}
         ) candidates
         ORDER BY candidates.next_run_at ASC
         LIMIT 1
@@ -1720,7 +1742,10 @@ const makeAutomationRepository = Effect.gen(function* () {
         onSome: toRun,
         onNone: () =>
           input.threadId
-            ? getRunRowByThread({ threadId: input.threadId }).pipe(
+            ? getRunRowByThread({
+                threadId: input.threadId,
+                excludeProjectManaged: input.excludeProjectManaged,
+              }).pipe(
                 Effect.mapError(
                   toPersistenceSqlError("AutomationRepository.createRun:selectActiveThread"),
                 ),
@@ -1730,6 +1755,7 @@ const makeAutomationRepository = Effect.gen(function* () {
       });
     const inserted = insertRun({
       ...run,
+      excludeProjectManaged: input.excludeProjectManaged,
       turnId: null,
       triggerType: run.trigger.type,
     }).pipe(Effect.mapError(toPersistenceSqlError("AutomationRepository.createRun:insert")));
