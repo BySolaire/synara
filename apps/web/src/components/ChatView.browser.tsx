@@ -36,8 +36,18 @@ import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { HttpResponse, http, ws } from "msw";
 import { setupWorker } from "msw/browser";
 import { page, userEvent } from "vitest/browser";
-import { Profiler, type ProfilerOnRenderCallback } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import React, { Profiler, type ProfilerOnRenderCallback } from "react";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import { render } from "vitest-browser-react";
 
 import { type ComposerImageAttachment, useComposerDraftStore } from "../composerDraftStore";
@@ -1482,6 +1492,38 @@ const worker = setupWorker(
   http.get("*/api/project-favicon", () => new HttpResponse(null, { status: 204 })),
 );
 
+// React development builds capture an owner stack (an Error plus a console task)
+// for the first 10,000 elements created after each reset, and reset at most once
+// per wall-clock second. Whether a render lands inside that budget depends on
+// timing, not on the rendered tree, and costs the same ~20 ms per Issue #550
+// step at every thread size, so it decided that benchmark's ratio at random.
+// Production builds never capture these stacks; report the budget as spent.
+function skipReactDevOwnerStacks(): () => void {
+  const internals = (
+    React as unknown as {
+      __CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE?: Record<string, unknown>;
+    }
+  ).__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+  // Fail loudly if a React upgrade renames the counter, instead of silently
+  // bringing the timing-dependent capture back into the measurement.
+  if (typeof internals?.recentlyCreatedOwnerStacks !== "number") {
+    throw new Error("React no longer exposes recentlyCreatedOwnerStacks in development.");
+  }
+  Object.defineProperty(internals, "recentlyCreatedOwnerStacks", {
+    configurable: true,
+    get: () => Number.POSITIVE_INFINITY,
+    set: () => {},
+  });
+  return () => {
+    Object.defineProperty(internals, "recentlyCreatedOwnerStacks", {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: 0,
+    });
+  };
+}
+
 async function nextFrame(): Promise<void> {
   await new Promise<void>((resolve) => {
     window.requestAnimationFrame(() => resolve());
@@ -2764,6 +2806,7 @@ describe("ChatView transcript geometry (full app)", () => {
   );
 
   it("keeps near-cap composer work bounded while live activities arrive", async () => {
+    onTestFinished(skipReactDevOwnerStacks());
     const percentile = (samples: readonly number[], fraction: number): number => {
       const ordered = [...samples].sort((left, right) => left - right);
       return ordered[Math.min(ordered.length - 1, Math.floor(ordered.length * fraction))] ?? 0;
@@ -2789,7 +2832,7 @@ describe("ChatView transcript geometry (full app)", () => {
     }
 
     // Pair each short run with a near-cap run. One noisy profiler sample on a
-    // shared CI worker must not decide whether the same 1.6x limit is met.
+    // shared CI worker must not decide whether the limit is met.
     const ratios: number[] = [];
     for (let sample = 0; sample < 3; sample += 1) {
       const sampleReports: typeof reports = [];
@@ -2862,10 +2905,13 @@ describe("ChatView transcript geometry (full app)", () => {
     }
 
     const medianRatio = ratios.sort((left, right) => left - right)[1]!;
+    // Without owner stacks, main measures about 2.1x on idle and loaded machines.
+    // Deriving the work log twice per live activity (the #550 regression)
+    // measures about 2.9x.
     expect(
       medianRatio,
       `Issue #550 benchmark: ${JSON.stringify({ reports, ratios })}`,
-    ).toBeLessThan(1.6);
+    ).toBeLessThan(2.5);
   });
 
   it("cancels a multi-question prompt with choices through the orchestration command", async () => {
