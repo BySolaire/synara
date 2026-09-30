@@ -28,7 +28,7 @@ export const RAIL_PANEL_ITEM_LABELS: Record<RailPanelItemId, string> = {
 };
 /**
  * Rail items that navigate to a route. "New thread" stays in the panel, never the rail;
- * Inbox is Beta-only (see isBetaFeatureOn("inbox")).
+ * Inbox is Beta-only (see INBOX_ON).
  */
 export type RailRouteItemId = Exclude<SidebarNavItemId, "newThread"> | "studio" | "settings";
 export type RailItemId = RailPanelItemId | RailRouteItemId;
@@ -199,7 +199,8 @@ export function railItemForPathname(pathname: string): RailRouteItemId | null {
   if (matchesRoute(pathname, "/kanban")) return "kanban";
   if (matchesRoute(pathname, "/pull-requests")) return "pullRequests";
   if (matchesRoute(pathname, "/automations")) return "automations";
-  if (matchesRoute(pathname, "/studio")) return "studio";
+  // The rail item keeps its stored id "studio"; Groups lives at /groups (/studio redirects).
+  if (matchesRoute(pathname, "/groups") || matchesRoute(pathname, "/studio")) return "studio";
   if (matchesRoute(pathname, "/settings")) return "settings";
   return null;
 }

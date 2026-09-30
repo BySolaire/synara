@@ -6,8 +6,12 @@
 
 import { useMemo } from "react";
 
-import { partitionSidebarThreadsByProjectIds } from "../components/Sidebar.logic";
-import { collectStudioProjectIds } from "../lib/studioProjects";
+import { useCoordinatorThreadIds } from "../components/chat/project/useProjectAgentSummaries";
+import {
+  excludeHiddenProjectAgentCoordinatorThreads,
+  partitionSidebarThreadsByProjectIds,
+} from "../components/Sidebar.logic";
+import { collectGroupProjectIds } from "../lib/groupProjects";
 import { useStore, type AppState } from "../store";
 import { createSidebarThreadSummariesSelector, isSidebarThreadVisible } from "../storeSelectors";
 import type { SidebarThreadSummary } from "../types";
@@ -15,20 +19,23 @@ import { useWorkspacePathsStore } from "../workspacePathsStore";
 
 interface ActivityThreads {
   readonly sidebarThreads: readonly SidebarThreadSummary[];
-  readonly studioProjectIdSet: ReturnType<typeof collectStudioProjectIds>;
-  readonly nonStudioThreads: readonly SidebarThreadSummary[];
-  readonly studioThreads: readonly SidebarThreadSummary[];
+  /** Every thread except hidden Group coordinators. */
+  readonly displaySidebarThreads: readonly SidebarThreadSummary[];
+  readonly groupProjectIdSet: ReturnType<typeof collectGroupProjectIds>;
+  readonly groupThreads: readonly SidebarThreadSummary[];
   /** Activity, its unread bell, and the Inbox read this list, so a badge can never point
    *  at a row the lists are hiding. */
-  readonly visibleNonStudioThreads: readonly SidebarThreadSummary[];
+  readonly visibleNonGroupThreads: readonly SidebarThreadSummary[];
 }
 
 type ActivityThreadInputs = readonly [
   sidebarThreads: readonly SidebarThreadSummary[],
+  coordinatorThreadIds: ReadonlySet<string>,
   projects: AppState["projects"],
   homeDir: string | null,
   chatWorkspaceRoot: string | null,
   studioWorkspaceRoot: string | null,
+  groupsWorkspaceRoot: string | null,
   hideAutomationRunThreads: boolean,
 ];
 
@@ -47,27 +54,34 @@ function deriveActivityThreads(inputs: ActivityThreadInputs): ActivityThreads {
   }
   const [
     sidebarThreads,
+    coordinatorThreadIds,
     projects,
     homeDir,
     chatWorkspaceRoot,
     studioWorkspaceRoot,
+    groupsWorkspaceRoot,
     hideAutomationRunThreads,
   ] = inputs;
-  const studioProjectIdSet = collectStudioProjectIds(projects, {
+  const displaySidebarThreads = excludeHiddenProjectAgentCoordinatorThreads(
+    sidebarThreads,
+    coordinatorThreadIds,
+  );
+  const groupProjectIdSet = collectGroupProjectIds(projects, {
     homeDir,
     chatWorkspaceRoot,
     studioWorkspaceRoot,
+    groupsWorkspaceRoot,
   });
-  const { nonStudioThreads, studioThreads } = partitionSidebarThreadsByProjectIds(
-    sidebarThreads,
-    studioProjectIdSet,
+  const { nonGroupThreads, groupThreads } = partitionSidebarThreadsByProjectIds(
+    displaySidebarThreads,
+    groupProjectIdSet,
   );
   const result: ActivityThreads = {
     sidebarThreads,
-    studioProjectIdSet,
-    nonStudioThreads,
-    studioThreads,
-    visibleNonStudioThreads: nonStudioThreads.filter((thread) =>
+    displaySidebarThreads,
+    groupProjectIdSet,
+    groupThreads,
+    visibleNonGroupThreads: nonGroupThreads.filter((thread) =>
       isSidebarThreadVisible(thread, { hideAutomationRunThreads }),
     ),
   };
@@ -85,19 +99,25 @@ export function useActivityThreads({
   const homeDir = useWorkspacePathsStore((store) => store.homeDir);
   const chatWorkspaceRoot = useWorkspacePathsStore((store) => store.chatWorkspaceRoot);
   const studioWorkspaceRoot = useWorkspacePathsStore((store) => store.studioWorkspaceRoot);
+  const groupsWorkspaceRoot = useWorkspacePathsStore((store) => store.groupsWorkspaceRoot);
   const sidebarThreads = useStore(selectSidebarThreads);
+  const coordinatorThreadIds = useCoordinatorThreadIds();
   return useMemo(
     () =>
       deriveActivityThreads([
         sidebarThreads,
+        coordinatorThreadIds,
         projects,
         homeDir,
         chatWorkspaceRoot,
         studioWorkspaceRoot,
+        groupsWorkspaceRoot,
         hideAutomationRunThreads,
       ]),
     [
       chatWorkspaceRoot,
+      coordinatorThreadIds,
+      groupsWorkspaceRoot,
       hideAutomationRunThreads,
       homeDir,
       projects,

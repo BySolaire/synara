@@ -6,7 +6,7 @@
 
 import { normalizeIdOrder, normalizeKnownIds, placeNewIdAfter } from "./lib/orderedIds";
 
-/** Inbox is Beta-only: the sidebar drops it where isBetaFeatureOn("inbox") is off. */
+/** Inbox is Beta-only: the sidebar drops it where INBOX_ON is off. */
 export const SIDEBAR_NAV_ITEM_IDS = [
   "newThread",
   "inbox",

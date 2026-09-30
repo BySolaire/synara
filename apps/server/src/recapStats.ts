@@ -15,6 +15,7 @@ import {
   type StatsRecapTokens,
   WsRpcError,
 } from "@synara/contracts";
+import { INBOX_BETA_FEATURE } from "@synara/shared/betaFeatures";
 import { normalizeModelSlug, stripClaudeContextWindowSuffix } from "@synara/shared/model";
 import { Effect, Layer, ServiceMap } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -29,7 +30,6 @@ import {
   userPromptEventsQuery,
 } from "./profileStats";
 
-export const INBOX_BETA_FEATURE = "inbox";
 const RECAP_TOP_LIMIT = 5;
 const HOUR_MS = 3_600_000;
 // A turn still running from before the window counts only if it started within

@@ -17,7 +17,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
 
 import { useAppSettings } from "~/appSettings";
-import { isBetaFeatureOn } from "~/betaFeatures";
+import { INBOX_ON } from "~/betaFeatures";
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
 import { resolveProviderUsageSummary } from "~/hooks/useProviderUsageSummary";
@@ -471,7 +471,7 @@ function RecapDigest({
 
 export default function InboxView() {
   const navigate = useNavigate();
-  const inboxAvailable = isBetaFeatureOn("inbox");
+  const inboxAvailable = INBOX_ON;
   useEffect(() => {
     if (!inboxAvailable) void navigate({ to: "/", replace: true });
   }, [inboxAvailable, navigate]);
@@ -488,12 +488,12 @@ export default function InboxView() {
     [projects],
   );
   const dismissedStatusKeys = useDismissedThreadStatusKeys();
-  const { visibleNonStudioThreads } = useActivityThreads({
+  const { visibleNonGroupThreads } = useActivityThreads({
     hideAutomationRunThreads: !settings.showAutomationRunThreads,
   });
   const groups = useMemo(
-    () => groupInboxThreads(visibleNonStudioThreads, dismissedStatusKeys),
-    [dismissedStatusKeys, visibleNonStudioThreads],
+    () => groupInboxThreads(visibleNonGroupThreads, dismissedStatusKeys),
+    [dismissedStatusKeys, visibleNonGroupThreads],
   );
 
   // The recap windows only move when the working day does (keyed by its start).
@@ -511,12 +511,12 @@ export default function InboxView() {
   // Completions that land close together share one refresh.
   const latestCompletionAt = useMemo(() => {
     let latest = "";
-    for (const thread of visibleNonStudioThreads) {
+    for (const thread of visibleNonGroupThreads) {
       const completedAt = thread.latestTurn?.completedAt ?? "";
       if (completedAt > latest) latest = completedAt;
     }
     return latest;
-  }, [visibleNonStudioThreads]);
+  }, [visibleNonGroupThreads]);
   const refetchRecap = recapQuery.refetch;
   const seenCompletionAtRef = useRef(latestCompletionAt);
   const lastCompletionRefetchAtRef = useRef(0);
@@ -585,8 +585,8 @@ export default function InboxView() {
   };
   // Same set as the Activity view's "Mark all as read": finished and failed alike.
   const unreadThreads = useMemo(
-    () => collectUnreadActivityThreads(visibleNonStudioThreads),
-    [visibleNonStudioThreads],
+    () => collectUnreadActivityThreads(visibleNonGroupThreads),
+    [visibleNonGroupThreads],
   );
   const markAllRead = () => {
     for (const thread of unreadThreads) {
