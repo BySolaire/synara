@@ -145,6 +145,39 @@ function verifyReleaseWorkflowSafety(): void {
     workflow.indexOf("  build:\n"),
     workflow.indexOf("  publish_cli:\n"),
   );
+  const buildSteps = buildJob.split(/\n      - /).slice(1);
+  const defenderIndex = buildSteps.findIndex((step) =>
+    step.includes("run: ./scripts/verify-windows-defender.ps1"),
+  );
+  const startupIndex = buildSteps.findIndex((step) =>
+    step.includes("node scripts/verify-packaged-desktop-startup.ts"),
+  );
+  const uploadIndex = buildSteps.findIndex((step) =>
+    step.includes("name: desktop-${{ matrix.platform }}-${{ matrix.arch }}"),
+  );
+  if (defenderIndex < 0 || startupIndex <= defenderIndex || uploadIndex <= defenderIndex) {
+    throw new Error("Windows Defender must qualify installers before startup or artifact upload.");
+  }
+  const defenderStep = buildSteps[defenderIndex]!;
+  if (/continue-on-error:\s*(?!false(?:\s|$))\S/.test(defenderStep)) {
+    throw new Error("Windows Defender qualification must not be optional.");
+  }
+  const defenderPredicate = defenderStep.match(/\n        if: (.+)/)?.[1];
+  if (!defenderPredicate) throw new Error("Missing Windows Defender platform predicate.");
+  const scans = new Function("matrix", "needs", `return ${defenderPredicate};`) as (
+    matrix: { platform: string },
+    needs: { preflight: { outputs: { package_artifacts: string } } },
+  ) => boolean;
+  for (const platform of ["win", "mac", "linux"]) {
+    for (const packageArtifacts of ["true", "false"]) {
+      if (
+        scans({ platform }, { preflight: { outputs: { package_artifacts: packageArtifacts } } }) !==
+        (platform === "win" && packageArtifacts === "true")
+      ) {
+        throw new Error(`Incorrect Defender routing for ${platform}/${packageArtifacts}.`);
+      }
+    }
+  }
   // Execute the actual job predicate against failed/skipped prerequisites. A
   // matching source string would not detect a permissive OR elsewhere in it.
   const predicate = buildJob.match(/    if: \$\{\{ (.+) \}\}/)?.[1];

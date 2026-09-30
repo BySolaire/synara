@@ -604,6 +604,7 @@ jobs:
 
       - name: Verify Windows installer with Microsoft Defender
         if: matrix.platform == 'win' && needs.preflight.outputs.package_artifacts == 'true'
+        timeout-minutes: 10
         shell: pwsh
         run: ./scripts/verify-windows-defender.ps1 -AssetsDirectory release-publish -EvidenceDirectory "${{ runner.temp }}/windows-defender-evidence"
 
