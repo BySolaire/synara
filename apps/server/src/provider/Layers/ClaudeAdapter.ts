@@ -81,6 +81,8 @@ import {
 } from "@synara/shared/model";
 import { buildClaudeSubagentPrompt } from "@synara/shared/agentMentions";
 import { assessClaudeCache } from "@synara/shared/claudeCache";
+import { approvalSessionGrantWidensSessionPolicy } from "@synara/shared/approvalSessionGrant";
+import { approvalRequestKindFromRequestType } from "@synara/shared/threadSummary";
 import {
   claudeCacheContextTokens,
   claudeCacheFromRequest,
@@ -88,6 +90,7 @@ import {
   claudeCacheForModel,
 } from "../claudeCacheObservation.ts";
 import { compareSemverVersions } from "../providerMaintenance.ts";
+import { redactSensitiveJsonFields } from "../../sensitiveKeys.ts";
 import {
   Cause,
   DateTime,
@@ -349,9 +352,12 @@ interface ClaudeSessionContext {
   initToolNames?: ReadonlySet<string>;
   readonly messageStream?: AsyncIterable<SDKMessage>;
   readonly processOwner: ClaudeProcessOwner;
+  readonly stoppedSignal: Deferred.Deferred<void>;
+  readonly pendingCompactionPreparations: Set<Deferred.Deferred<void>>;
   stopDeferred?: Deferred.Deferred<void, ProviderAdapterProcessError>;
   // Controls/attachment reads can yield before turnState is installed.
   pendingDispatches?: number;
+  pendingCompactionPublication?: Deferred.Deferred<void>;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
   readonly startedAt: string;
   readonly basePermissionMode: PermissionMode | undefined;
@@ -1169,6 +1175,12 @@ function isReadOnlyToolName(toolName: string): boolean {
 }
 
 function classifyRequestType(toolName: string): CanonicalRequestType {
+  // MCP tools are always generic tool approvals, whatever their names contain
+  // ("search", "create_file", "run_command"): a command or file kind would let
+  // "Always allow this session" on one MCP tool widen the whole session.
+  if (toolName.startsWith("mcp__")) {
+    return "tool_approval";
+  }
   if (isReadOnlyToolName(toolName)) {
     return "file_read_approval";
   }
@@ -1988,6 +2000,7 @@ function subagentRunForTask(
 
 function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
   return Effect.gen(function* () {
+    const adapterScope = yield* Effect.scope;
     const fileSystem = yield* FileSystem.FileSystem;
     const serverConfig = yield* ServerConfig;
     // Optional so adapter tests can run without the gateway layer; when
@@ -2602,9 +2615,11 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
     // Claude reports only the compact boundary, so publish the progress row the
     // transcript shows while native compaction is still running.
-    const emitCompactionProgress = (context: ClaudeSessionContext): Effect.Effect<void> =>
+    const emitCompactionProgress = (
+      context: ClaudeSessionContext,
+      turnState = context.turnState,
+    ): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const turnState = context.turnState;
         if (!turnState || turnState.compactionInProgress) return;
         turnState.compactionInProgress = true;
         const stamp = yield* makeEventStamp();
@@ -2623,6 +2638,80 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           },
           providerRefs: nativeProviderRefs(context),
         });
+      });
+
+    const emitFailedCompactionProgress = (
+      context: ClaudeSessionContext,
+      turnState: ClaudeTurnState,
+    ) =>
+      Effect.gen(function* () {
+        const stamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent(context, {
+          type: "item.completed",
+          eventId: stamp.eventId,
+          provider: PROVIDER,
+          createdAt: stamp.createdAt,
+          threadId: context.session.threadId,
+          turnId: asCanonicalTurnId(turnState.turnId),
+          itemId: asRuntimeItemId(`claude-compaction-${turnState.turnId}`),
+          payload: {
+            itemType: "context_compaction",
+            status: "failed",
+            title: "Context compaction failed",
+          },
+          providerRefs: nativeProviderRefs(context),
+        });
+      });
+
+    const cancelReservedCompaction = (
+      context: ClaudeSessionContext,
+      turnState: ClaudeTurnState,
+      publication: Fiber.Fiber<void>,
+    ) =>
+      Effect.gen(function* () {
+        if (context.turnState !== turnState) return;
+        const stamp = yield* makeEventStamp();
+        context.turnState = undefined;
+        context.session = {
+          ...context.session,
+          status: context.stopped ? context.session.status : "ready",
+          activeTurnId: undefined,
+          updatedAt: stamp.createdAt,
+        };
+        // Retain bounded, ordered publication after releasing the command. This
+        // producer only owns the captured control turn and never mutates a later
+        // turn or delivers a native prompt. Pending publication blocks another
+        // dispatch/reconfiguration rather than accumulating detached producers.
+        const publicationFinished = Deferred.makeUnsafe<void>();
+        context.pendingCompactionPublication = publicationFinished;
+        context.pendingDispatches = (context.pendingDispatches ?? 0) + 1;
+        yield* Fiber.join(publication).pipe(
+          Effect.andThen(emitFailedCompactionProgress(context, turnState)),
+          Effect.andThen(
+            offerRuntimeEvent(context, {
+              type: "turn.completed",
+              eventId: stamp.eventId,
+              provider: PROVIDER,
+              createdAt: stamp.createdAt,
+              threadId: context.session.threadId,
+              turnId: turnState.turnId,
+              payload: {
+                state: "interrupted",
+                contextCompacted: false,
+                errorMessage: "Compaction cancelled before dispatch.",
+              },
+              providerRefs: nativeProviderRefs(context),
+            }),
+          ),
+          Effect.ensuring(
+            Effect.gen(function* () {
+              delete context.pendingCompactionPublication;
+              context.pendingDispatches = (context.pendingDispatches ?? 1) - 1;
+              yield* Deferred.succeed(publicationFinished, undefined);
+            }),
+          ),
+          Effect.forkIn(adapterScope),
+        );
       });
 
     // Warn once per session per threshold when the logical prompt is large. Cache
@@ -3281,22 +3370,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         // A compaction that ended without its boundary must not leave a spinner row.
         if (turnState.compactionInProgress) {
-          const compactionStamp = yield* makeEventStamp();
-          yield* offerRuntimeEvent(context, {
-            type: "item.completed",
-            eventId: compactionStamp.eventId,
-            provider: PROVIDER,
-            createdAt: compactionStamp.createdAt,
-            threadId: context.session.threadId,
-            turnId: asCanonicalTurnId(turnState.turnId),
-            itemId: asRuntimeItemId(`claude-compaction-${turnState.turnId}`),
-            payload: {
-              itemType: "context_compaction",
-              status: "failed",
-              title: "Context compaction failed",
-            },
-            providerRefs: nativeProviderRefs(context),
-          });
+          yield* emitFailedCompactionProgress(context, turnState);
         }
 
         const stamp = yield* makeEventStamp();
@@ -3372,6 +3446,8 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           query: context.query,
           artifactsEnabled: context.artifactsEnabled,
           processOwner: context.processOwner,
+          stoppedSignal: context.stoppedSignal,
+          pendingCompactionPreparations: new Set(),
           streamFiber: undefined,
           startedAt: context.startedAt,
           basePermissionMode: context.basePermissionMode,
@@ -5094,6 +5170,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     ): Effect.Effect<void, ProviderAdapterProcessError> =>
       Effect.gen(function* () {
         context.stopped = true;
+        yield* Deferred.succeed(context.stoppedSignal, undefined);
         yield* cancelAgentGatewayTurn(context.gatewaySessionLease, context.turnState?.turnId);
         context.gatewaySessionLease?.release();
 
@@ -5221,19 +5298,28 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       return Effect.succeed(context);
     };
 
+    const awaitCancelledCompactionPublication = (context: ClaudeSessionContext) =>
+      context.pendingCompactionPublication
+        ? Deferred.await(context.pendingCompactionPublication).pipe(
+            Effect.raceFirst(Deferred.await(context.stoppedSignal)),
+          )
+        : Effect.void;
+
     const assertSessionReplaceable = (threadId: ThreadId) =>
-      Effect.suspend(() => {
+      Effect.gen(function* () {
         const context = sessions.get(threadId);
-        return context && (context.pendingDispatches || hasActiveClaudeRuntimeWork(context))
-          ? Effect.fail(
-              new ProviderAdapterValidationError({
-                provider: PROVIDER,
-                operation: "session/reconfigure",
-                issue:
-                  "Wait for Claude's active turn, shared tasks, approvals and questions to finish before changing session settings.",
-              }),
-            )
-          : Effect.void;
+        if (context) yield* awaitCancelledCompactionPublication(context);
+        const current = sessions.get(threadId);
+        if (current && (current.pendingDispatches || hasActiveClaudeRuntimeWork(current))) {
+          return yield* Effect.fail(
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "session/reconfigure",
+              issue:
+                "Wait for Claude's active turn, shared tasks, approvals and questions to finish before changing session settings.",
+            }),
+          );
+        }
       });
 
     // Only slash-shaped input pays for the lookup; the SDK serves it from the
@@ -5668,7 +5754,12 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               // calls still reach the user instead of becoming unrestricted.
               const requestId = ApprovalRequestId.makeUnsafe(yield* Random.nextUUIDv4);
               const requestType = classifyRequestType(toolName);
-              const detail = summarizeToolRequest(toolName, toolInput);
+              // The approval detail is persisted with the card; keep credentials out.
+              const detail = summarizeToolRequest(
+                toolName,
+                toolInput,
+                JSON.stringify(toolInput, redactSensitiveJsonFields),
+              );
               const decisionDeferred = yield* Deferred.make<ProviderApprovalDecision>();
               const settledDeferred = yield* Deferred.make<ProviderApprovalDecision>();
               const pendingApproval: PendingApproval = {
@@ -5750,7 +5841,16 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               );
 
               if (decision === "accept" || decision === "acceptForSession") {
-                if (decision === "acceptForSession" && runtimeMode !== "auto") {
+                // Only command and file prompts widen the whole session. A tool
+                // grant stays scoped to that tool through the SDK's permission
+                // suggestions below, so the next Bash or Edit still prompts.
+                const requestKind = approvalRequestKindFromRequestType(requestType);
+                if (
+                  decision === "acceptForSession" &&
+                  runtimeMode !== "auto" &&
+                  requestKind !== null &&
+                  approvalSessionGrantWidensSessionPolicy(requestKind)
+                ) {
                   // The SDK's permission suggestions only cover some requests;
                   // supervised mode preserves its live "always allow" fallback.
                   // Auto stays reviewer-gated and applies only SDK-provided
@@ -6040,6 +6140,8 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             query: queryRuntime,
             ...(messageStream ? { messageStream } : {}),
             processOwner,
+            stoppedSignal: Deferred.makeUnsafe<void>(),
+            pendingCompactionPreparations: new Set(),
             streamFiber: undefined,
             startedAt,
             basePermissionMode: permissionMode,
@@ -6276,6 +6378,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const sendTurnCore = (
       input: ProviderSendTurnInput,
       compactionTurnId?: TurnId,
+      cancelled?: Deferred.Deferred<void>,
     ): ReturnType<ClaudeAdapterShape["sendTurn"]> =>
       Effect.gen(function* () {
         const context = yield* requireSession(input.threadId);
@@ -6289,6 +6392,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               "Native Claude compaction does not accept attachments. Remove them before compacting.",
           });
         }
+        let nativeCommandNames: ReadonlySet<string> | undefined;
         if (isCompaction) {
           const commands = yield* Effect.tryPromise({
             try: () => context.query.supportedCommands(),
@@ -6300,17 +6404,55 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 operation: "startClaudeCompaction",
                 issue: `Could not discover native compaction support: ${toMessage(cause, "Command discovery failed.")}`,
               }),
-          }).pipe(Effect.timeoutOption(CLAUDE_CONTEXT_USAGE_TIMEOUT_MS));
-          if (
-            Option.isNone(commands) ||
-            !commands.value.some((command) => command.name === "compact")
-          ) {
+          }).pipe(
+            // SDK initialization can outlive the context-meter deadline. Keep
+            // this dispatch wait short; the same runtime can finish initializing
+            // before a retry, without holding the ordered delivery source for a minute.
+            Effect.raceFirst(
+              Deferred.await(context.stoppedSignal).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new ProviderAdapterValidationError({
+                      provider: PROVIDER,
+                      operation: "startClaudeCompaction",
+                      issue: "Claude's session changed while preparing compaction. Try again.",
+                    }),
+                  ),
+                ),
+              ),
+            ),
+            Effect.raceFirst(
+              Deferred.await(cancelled!).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new ProviderAdapterValidationError({
+                      provider: PROVIDER,
+                      operation: "startClaudeCompaction",
+                      issue: "Claude compaction preparation was cancelled. Try again.",
+                    }),
+                  ),
+                ),
+              ),
+            ),
+            Effect.timeoutOption(Duration.seconds(5)),
+          );
+          if (Option.isNone(commands)) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startClaudeCompaction",
+              issue: "Claude command discovery timed out before compaction. Try again.",
+            });
+          }
+          if (!commands.value.some((command) => command.name === "compact")) {
             return yield* new ProviderAdapterValidationError({
               provider: PROVIDER,
               operation: "startClaudeCompaction",
               issue: "Native context compaction is unavailable in this Claude runtime.",
             });
           }
+          nativeCommandNames = new Set(
+            commands.value.flatMap((command) => [command.name, ...(command.aliases ?? [])]),
+          );
           if (context.stopped || sessions.get(input.threadId) !== context) {
             return yield* new ProviderAdapterValidationError({
               provider: PROVIDER,
@@ -6333,8 +6475,13 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             issue: "Claude's native session identity is unavailable for compaction.",
           });
         }
+        // A native control operates on the established context. Selection
+        // changes belong to the next ordinary prompt, without mutating this
+        // compaction's model or waiting on SDK settings controls.
         const modelSelection =
-          input.modelSelection?.provider === "claudeAgent" ? input.modelSelection : undefined;
+          !isCompaction && input.modelSelection?.provider === "claudeAgent"
+            ? input.modelSelection
+            : undefined;
         const requestedAutoCompactWindow = resolveSelectedClaudeAutoCompactWindow(
           modelSelection?.model,
           normalizeClaudeModelOptions(modelSelection?.model, modelSelection?.options)
@@ -6506,6 +6653,13 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               "Claude's session became active while preparing compaction. Try again when idle.",
           });
         }
+        if (isCompaction && cancelled && (yield* Deferred.isDone(cancelled))) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startClaudeCompaction",
+            issue: "Claude compaction preparation was cancelled. Try again.",
+          });
+        }
         context.turnState = turnState;
         context.lastTurnId = turnId;
         context.session = {
@@ -6516,42 +6670,85 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         };
 
         const turnStartedStamp = yield* makeEventStamp();
-        yield* offerRuntimeEvent(context, {
-          type: "turn.started",
-          eventId: turnStartedStamp.eventId,
-          provider: PROVIDER,
-          createdAt: turnStartedStamp.createdAt,
-          threadId: context.session.threadId,
-          turnId,
-          payload: context.currentApiModelId
-            ? { model: stripClaudeContextWindowSuffix(context.currentApiModelId) }
-            : modelSelection?.model
-              ? { model: modelSelection.model }
-              : {},
-          providerRefs: {},
-        });
-
-        if (isCompaction) yield* emitCompactionProgress(context);
-
-        if (hasUnfinishedClaudeTasks(context.trackedTasks)) {
-          yield* emitTrackedTasksUpdated(context, {
-            rawPayload: {
-              source: "claude.resume-cursor",
-              trackedTaskCount: context.trackedTasks.size,
-            },
+        const publication = Effect.gen(function* () {
+          yield* offerRuntimeEvent(context, {
+            type: "turn.started",
+            eventId: turnStartedStamp.eventId,
+            provider: PROVIDER,
+            createdAt: turnStartedStamp.createdAt,
+            threadId: context.session.threadId,
+            turnId,
+            payload: context.currentApiModelId
+              ? { model: stripClaudeContextWindowSuffix(context.currentApiModelId) }
+              : modelSelection?.model
+                ? { model: modelSelection.model }
+                : {},
+            providerRefs: {},
           });
+
+          if (isCompaction) yield* emitCompactionProgress(context, turnState);
+
+          if (hasUnfinishedClaudeTasks(context.trackedTasks)) {
+            yield* emitTrackedTasksUpdated(context, {
+              rawPayload: {
+                source: "claude.resume-cursor",
+                trackedTaskCount: context.trackedTasks.size,
+              },
+            });
+          }
+        });
+        let compactionPublication: Fiber.Fiber<void> | undefined;
+        if (isCompaction) {
+          compactionPublication = yield* publication.pipe(Effect.forkIn(adapterScope));
+          const published = yield* Fiber.join(compactionPublication).pipe(
+            Effect.as(true),
+            Effect.raceFirst(Deferred.await(cancelled!).pipe(Effect.as(false))),
+            Effect.raceFirst(Deferred.await(context.stoppedSignal).pipe(Effect.as(false))),
+            Effect.onInterrupt(() =>
+              cancelReservedCompaction(context, turnState, compactionPublication!),
+            ),
+          );
+          if (!published) {
+            yield* cancelReservedCompaction(context, turnState, compactionPublication);
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startClaudeCompaction",
+              issue: "Claude compaction preparation was cancelled. Try again.",
+            });
+          }
+        } else {
+          yield* publication;
         }
 
         const message = yield* buildUserMessageEffect(input, {
           fileSystem,
           attachmentsDir: serverConfig.attachmentsDir,
-          nativeCommandNames: yield* resolveNativeCommandNames(context, input.input),
+          // Compaction already validated these commands before turn admission.
+          nativeCommandNames:
+            nativeCommandNames ?? (yield* resolveNativeCommandNames(context, input.input)),
         });
 
-        yield* Queue.offer(context.promptQueue, {
-          type: "message",
-          message,
-        }).pipe(Effect.mapError((cause) => toRequestError(input.threadId, "turn/start", cause)));
+        // The prompt queue is unbounded. Check cancellation and admit native
+        // compaction synchronously so cooperative yielding cannot split them.
+        const enqueued = isCompaction
+          ? yield* Effect.sync(
+              () =>
+                !Deferred.isDoneUnsafe(cancelled!) &&
+                !context.stopped &&
+                sessions.get(input.threadId) === context &&
+                Queue.offerUnsafe(context.promptQueue, { type: "message", message }),
+            )
+          : yield* Queue.offer(context.promptQueue, { type: "message", message }).pipe(
+              Effect.mapError((cause) => toRequestError(input.threadId, "turn/start", cause)),
+            );
+        if (isCompaction && !enqueued) {
+          yield* cancelReservedCompaction(context, turnState, compactionPublication!);
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startClaudeCompaction",
+            issue: "Claude compaction preparation was cancelled. Try again.",
+          });
+        }
 
         // The first prompt has been dispatched; the CLI's spawn mode is no longer
         // provably its current mode, so subsequent turns re-send unconditionally.
@@ -6570,11 +6767,23 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     // a session that has accepted a send but has not installed its turn yet.
     const withPendingDispatch = (
       input: ProviderSendTurnInput,
-      dispatch: ReturnType<ClaudeAdapterShape["sendTurn"]>,
+      dispatch: (cancelled?: Deferred.Deferred<void>) => ReturnType<ClaudeAdapterShape["sendTurn"]>,
+      cancellation?: Deferred.Deferred<void>,
     ): ReturnType<ClaudeAdapterShape["sendTurn"]> =>
       Effect.gen(function* () {
-        const context = yield* requireSession(input.threadId);
-        const selection = input.modelSelection;
+        let context = yield* requireSession(input.threadId);
+        if (context.pendingCompactionPublication) {
+          if (isClaudeCompactionCommand(input.input)) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startClaudeCompaction",
+              issue: "Claude's cancelled compaction events are still being published. Try again.",
+            });
+          }
+          yield* awaitCancelledCompactionPublication(context);
+          context = yield* requireSession(input.threadId);
+        }
+        const selection = isClaudeCompactionCommand(input.input) ? undefined : input.modelSelection;
         if (
           selection?.provider === "claudeAgent" &&
           resolveSelectedClaudeAutoCompactWindow(
@@ -6589,29 +6798,59 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               "Claude's auto-compact setting requires an idle session restart with resume before sending.",
           });
         }
+        const cancelled = isClaudeCompactionCommand(input.input)
+          ? (cancellation ?? (yield* Deferred.make<void>()))
+          : undefined;
+        if (cancelled && (yield* Deferred.isDone(cancelled))) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startClaudeCompaction",
+            issue: "Claude compaction preparation was cancelled. Try again.",
+          });
+        }
+        if (cancelled) context.pendingCompactionPreparations.add(cancelled);
         context.pendingDispatches = (context.pendingDispatches ?? 0) + 1;
-        return yield* dispatch.pipe(
+        return yield* dispatch(cancelled).pipe(
           Effect.ensuring(
             Effect.sync(() => {
               context.pendingDispatches = (context.pendingDispatches ?? 1) - 1;
+              if (cancelled) context.pendingCompactionPreparations.delete(cancelled);
             }),
           ),
         );
       });
 
-    const sendTurn: ClaudeAdapterShape["sendTurn"] = (input) =>
-      withPendingDispatch(input, sendTurnCore(input));
+    const sendTurn: ClaudeAdapterShape["sendTurn"] = (input, options) =>
+      withPendingDispatch(
+        input,
+        (cancelled) => sendTurnCore(input, undefined, cancelled),
+        options?.claudeCompactionCancellation,
+      );
 
     const startClaudeCompaction: NonNullable<ClaudeAdapterShape["startClaudeCompaction"]> = (
       input,
     ) =>
       withPendingDispatch(
         { threadId: input.threadId, input: "/compact", attachments: [] },
-        sendTurnCore(
-          { threadId: input.threadId, input: "/compact", attachments: [] },
-          input.turnId,
-        ),
+        (cancelled) =>
+          sendTurnCore(
+            { threadId: input.threadId, input: "/compact", attachments: [] },
+            input.turnId,
+            cancelled,
+          ),
+        input.cancellation,
       );
+
+    const cancelClaudeCompactionDiscovery: NonNullable<
+      ClaudeAdapterShape["cancelClaudeCompactionDiscovery"]
+    > = (threadId) =>
+      Effect.gen(function* () {
+        const context = sessions.get(threadId);
+        if (!context) return;
+        for (const cancelled of Array.from(context.pendingCompactionPreparations)) {
+          yield* Deferred.succeed(cancelled, undefined);
+        }
+      });
 
     // A steer rides the live SDK agent loop: the message is pushed into the
     // session's streaming prompt input and the work continues as the same
@@ -6621,11 +6860,10 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     // interactive Claude Code CLI behaves the same). Only a real user turn
     // can be steered; with no live turn (or only a synthetic one wrapping
     // background agent output) the message dispatches as a normal turn.
-    const steerTurn: ClaudeAdapterShape["steerTurn"] = (input) =>
-      withPendingDispatch(
-        input,
+    const steerTurn: ClaudeAdapterShape["steerTurn"] = (input, options) => {
+      if (isClaudeCompactionCommand(input.input)) return sendTurn(input, options);
+      return withPendingDispatch(input, () =>
         Effect.gen(function* () {
-          if (isClaudeCompactionCommand(input.input)) return yield* sendTurn(input);
           const context = yield* requireSession(input.threadId);
           const liveTurnState = context.turnState;
           if (liveTurnState === undefined || liveTurnState.synthetic === true) {
@@ -6681,6 +6919,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           };
         }),
       );
+    };
 
     const interruptTurn: ClaudeAdapterShape["interruptTurn"] = (
       threadId,
@@ -7393,6 +7632,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       prepareSessionReplacement,
       getClaudeCacheObservation,
       startClaudeCompaction,
+      cancelClaudeCompactionDiscovery,
       sendTurn,
       steerTurn,
       interruptTurn,

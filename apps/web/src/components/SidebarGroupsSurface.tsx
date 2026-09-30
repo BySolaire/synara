@@ -19,7 +19,8 @@ import { cn } from "../lib/utils";
 import { useWorkspacePathsStore } from "../workspacePathsStore";
 
 import { resolveSidebarProjectRowLabel, type SidebarDerivedProjectData } from "./Sidebar.logic";
-import { ChatSortMenu, SidebarPrimaryAction } from "./Sidebar";
+import { ChatSortMenu } from "./Sidebar";
+import { SidebarPrimaryAction } from "./SidebarPrimaryAction";
 import { SidebarRowHoverActions } from "./SidebarRowHoverActions";
 import { ThreadPinToggleButton } from "./ThreadPinToggleButton";
 import {

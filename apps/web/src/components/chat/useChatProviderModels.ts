@@ -116,6 +116,7 @@ export function useChatProviderModels({
       opencode: resolveHint("opencode"),
       pi: resolveHint("pi"),
       devin: resolveHint("devin"),
+      omp: resolveHint("omp"),
     };
   }, [
     activeProject?.defaultModelSelection,
@@ -195,7 +196,10 @@ export function useChatProviderModels({
   const selectedPromptEffort = composerProviderState.promptEffort;
   const selectedModelOptionsForDispatch = composerProviderState.modelOptionsForDispatch;
   const selectedModelSelection = useMemo<ModelSelection>(() => {
-    if (selectedProvider === "pi" && draftModelSelectionForSelectedProvider?.provider === "pi") {
+    if (
+      (selectedProvider === "pi" || selectedProvider === "omp") &&
+      draftModelSelectionForSelectedProvider?.provider === selectedProvider
+    ) {
       return buildModelSelection(
         selectedProvider,
         draftModelSelectionForSelectedProvider.model,
@@ -241,7 +245,11 @@ export function useChatProviderModels({
       ? activeProject?.defaultModelSelection?.provider === selectedProvider
         ? activeProject.defaultModelSelection
         : null
-      : (activeThread?.modelSelection ?? activeProject?.defaultModelSelection ?? null);
+      : activeThread?.modelSelection.provider === selectedProvider
+        ? activeThread.modelSelection
+        : activeProject?.defaultModelSelection?.provider === selectedProvider
+          ? activeProject.defaultModelSelection
+          : null;
   const providerModelsLoading = selectedProviderModelsLoading;
   const selectedProviderRequiresRuntimeModels =
     selectedProvider === "cursor" ||
@@ -249,7 +257,8 @@ export function useChatProviderModels({
     selectedProvider === "droid" ||
     selectedProvider === "opencode" ||
     selectedProvider === "pi" ||
-    selectedProvider === "devin";
+    selectedProvider === "devin" ||
+    selectedProvider === "omp";
   const showComposerModelBootstrapSkeleton = shouldShowComposerModelBootstrapSkeleton({
     selectedProvider,
     selectedModel,

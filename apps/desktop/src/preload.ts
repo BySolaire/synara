@@ -24,6 +24,18 @@ function getDesktopWsUrl(): string | null {
   }
 }
 
+function getBetaDiagnosticsBridge(): DesktopBridge["betaDiagnostics"] {
+  try {
+    if (ipcRenderer.sendSync(IPC.betaDiagnostics.enabled) !== true) return undefined;
+    return {
+      rendererReady: () => ipcRenderer.send(IPC.betaDiagnostics.rendererReady),
+      reportError: (error) => ipcRenderer.send(IPC.betaDiagnostics.reportError, error),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function parseBrowserOpenPanelRequest(payload: unknown): BrowserUseOpenPanelRequest | null {
   if (!payload || typeof payload !== "object") {
     return null;
@@ -95,7 +107,9 @@ function parseBrowserAnnotationEvent(payload: unknown): BrowserAnnotationEvent |
   return payload as BrowserAnnotationEvent;
 }
 
+const betaDiagnosticsBridge = getBetaDiagnosticsBridge();
 contextBridge.exposeInMainWorld("desktopBridge", {
+  ...(betaDiagnosticsBridge ? { betaDiagnostics: betaDiagnosticsBridge } : {}),
   getWsUrl: getDesktopWsUrl,
   // Absolute path for OS-dropped File objects (folders with spaces/parens, etc.).
   getPathForFile: (file: File) => {
@@ -208,6 +222,13 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     return () => {
       ipcRenderer.removeListener(IPC.zoomFactorChanged, wrappedListener);
     };
+  },
+  beta: {
+    getState: () => ipcRenderer.invoke(IPC.beta.getState),
+    install: () => ipcRenderer.invoke(IPC.beta.install),
+    launch: () => ipcRenderer.invoke(IPC.beta.launch),
+    importAndLaunch: () => ipcRenderer.invoke(IPC.beta.importAndLaunch),
+    leave: (input: { readonly moveToTrash: boolean }) => ipcRenderer.invoke(IPC.beta.leave, input),
   },
   getUpdateState: () => ipcRenderer.invoke(IPC.updateGetState),
   checkForUpdates: () => ipcRenderer.invoke(IPC.updateCheck),

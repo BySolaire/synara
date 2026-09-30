@@ -13,7 +13,6 @@ import {
   ClockIcon,
   CopyIcon,
   CustomizeIcon,
-  DragHandleIcon,
   ExternalLinkIcon,
   FolderOpenIcon,
   GiftIcon,
@@ -66,7 +65,6 @@ import {
   type CollisionDetection,
   PointerSensor,
   type DragStartEvent,
-  closestCenter,
   closestCorners,
   pointerWithin,
   useSensor,
@@ -113,6 +111,22 @@ import {
   normalizeSidebarNavOrder,
   type SidebarNavItemId,
 } from "../sidebarNavOrdering";
+import {
+  buildRailItemOrder,
+  buildRailSpacesSections,
+  normalizeHiddenRailItems,
+  normalizeRailItemOrder,
+  RAIL_PANEL_ITEM_LABELS,
+  railItemCanHide,
+  type RailOrderableItemId,
+  railProjectShortcutKey,
+  railSpaceShortcutKey,
+  resolveActiveRailShortcutKey,
+  resolveRailShortcuts,
+  toggleRailShortcutKey,
+} from "../appRail.logic";
+import { useRailShellStore } from "../railShellStore";
+import { useSidebarLayout } from "../hooks/useSidebarLayout";
 import { isElectron } from "../env";
 import { formatRelativeTime } from "../lib/relativeTime";
 import {
@@ -151,6 +165,7 @@ import { derivePendingApprovals, derivePendingUserInputs } from "../session-logi
 import { useThreadPullRequests } from "../hooks/useThreadPullRequests";
 import {
   providerComposerCapabilitiesQueryOptions,
+  providerModelsQueryOptions,
   supportsThreadImport,
 } from "../lib/providerDiscoveryReactQuery";
 import {
@@ -198,6 +213,22 @@ import { shouldRenderTerminalWorkspace } from "./ChatView.logic";
 import { CHAT_SURFACE_HEADER_HEIGHT_CLASS } from "./chat/chatHeaderControls";
 import { isModelPickerShortcutScopeActive } from "./chat/ComposerModelPicker.logic";
 import { SidebarLeadingControls } from "./SidebarHeaderNavigationControls";
+import {
+  APP_RAIL_GLYPH_CLASS_NAME,
+  AppRailPortal,
+  appRailButtonClassName,
+  railCentralGlyphs,
+  railItemGlyphs,
+  railProjectGlyphs,
+  type AppRailItem,
+  useAppRailSlot,
+} from "./AppRail";
+import {
+  type SidebarCustomizeItem,
+  SidebarCustomizeHeader,
+  SidebarCustomizeList,
+} from "./SidebarCustomizeList";
+import { AppRailMoreMenu } from "./AppRailMoreMenu";
 import { ProjectSidebarIcon } from "./ProjectSidebarIcon";
 import { ThreadHoverCardContent } from "./ThreadHoverCardContent";
 import { ProjectHoverCardContent } from "./ProjectHoverCardContent";
@@ -216,6 +247,9 @@ import { hasUnreadActivity as hasUnreadActivityOutsideActiveThread } from "./Sid
 import { SidebarActivityView } from "./SidebarActivityView";
 import { SidebarIconButton, sidebarIconButtonSlotClass } from "./SidebarIconButton";
 import { SidebarLeadingIcon } from "./SidebarLeadingIcon";
+import { SidebarPrimaryAction } from "./SidebarPrimaryAction";
+import { RailAutomationsPanel } from "./RailAutomationsPanel";
+import { SIDEBAR_PANEL_TITLE_CLASS_NAME, SidebarPanelTitle } from "./SidebarPanelTitle";
 import { SidebarMetaChipStack } from "./SidebarMetaChip";
 import { SidebarRowHoverActions } from "./SidebarRowHoverActions";
 import { SidebarSectionToolbar } from "./SidebarSectionToolbar";
@@ -236,9 +270,11 @@ import {
 
 import { useProjectAgentSummaries } from "./chat/project/useProjectAgentSummaries";
 import { RenameDialog } from "./RenameDialog";
+import { EditProjectDialog, type EditProjectValue } from "./EditProjectDialog";
 import { RelocateProjectDialog } from "./RelocateProjectDialog";
 import { RenameThreadDialog } from "./RenameThreadDialog";
 import ReleaseHistoryDialog from "./ReleaseHistoryDialog";
+import { isBetaFeatureOn } from "../betaFeatures";
 import { WHATS_NEW_ENTRIES } from "../whatsNew/entries";
 import { sortEntriesByVersionDesc } from "../whatsNew/logic";
 import {
@@ -270,6 +306,7 @@ import {
   getDesktopUpdateDownloadPercent,
   getDesktopUpdateErrorSignature,
   isDesktopUpdateButtonDisabled,
+  isDesktopUpdateInstallInFlight,
   resolveDesktopUpdateButtonAction,
   shouldRecommendManualDesktopDownload,
   shouldShowArm64IntelBuildWarning,
@@ -278,7 +315,7 @@ import {
 } from "./desktopUpdate.logic";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "./ui/alert";
 import { Button } from "./ui/button";
-import { Checkbox } from "./ui/checkbox";
+import { Popover, PopoverPopup } from "./ui/popover";
 import { DisclosureChevron } from "./ui/DisclosureChevron";
 import { Input } from "./ui/input";
 import {
@@ -394,6 +431,7 @@ import {
   SIDEBAR_ROW_ACTIVE_CLASS_NAME,
   SIDEBAR_ROW_FOCUS_CLASS_NAME,
   SIDEBAR_ROW_HOVER_CLASS_NAME,
+  SIDEBAR_PROJECT_NAME_CLASS_NAME,
   SIDEBAR_ROW_IDLE_TEXT_CLASS_NAME,
   SIDEBAR_ROW_LABEL_TEXT_CLASS_NAME,
   SIDEBAR_SECTION_LABEL_CLASS_NAME,
@@ -462,6 +500,7 @@ import {
 const ExpandAllIcon = createCentralIconComponent("expand-45");
 const CollapseAllIcon = createCentralIconComponent("minimize-45");
 const SortFilterIcon = createCentralIconComponent("filter-2");
+const BackArrowIcon = createCentralIconComponent("arrow-left");
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const subscribeGitHubProvisioningCapability = (listener: () => void) =>
@@ -842,12 +881,16 @@ function SidebarHelpMenu({
   onOpenShortcuts,
   onOpenFeedback,
   onCustomizeSidebar,
+  inRail: inRailProp,
 }: {
   onOpenShortcuts: () => void;
   onOpenFeedback: () => void;
   /** Null hides the entry (e.g. on surfaces without the primary nav block). */
   onCustomizeSidebar: (() => void) | null;
+  /** Rail layout: the trigger takes the rail button look and the menu opens to the side. */
+  inRail?: boolean;
 }) {
+  const inRail = inRailProp ?? false;
   // `openCount` keys the dialog so each open remounts the accordion — its rows
   // capture `defaultOpen` in mount state, so a stale mount would ignore a
   // newly selected version.
@@ -869,8 +912,19 @@ function SidebarHelpMenu({
           icon={CircleQuestionIcon}
           label="Help"
           tooltip="Help"
+          {...(inRail
+            ? {
+                tooltipSide: "right" as const,
+                iconClassName: APP_RAIL_GLYPH_CLASS_NAME,
+                className: appRailButtonClassName(false),
+              }
+            : {})}
         />
-        <ComposerPickerMenuPopup align="end" side="top" className="w-64 min-w-64">
+        <ComposerPickerMenuPopup
+          align="end"
+          side={inRail ? "right" : "top"}
+          className="w-64 min-w-64"
+        >
           <MenuGroup>
             <div className="px-2 py-1 sm:text-ui leading-snug font-medium text-muted-foreground">
               What’s new
@@ -994,86 +1048,6 @@ export function ChatSortMenu({
   );
 }
 
-export function SidebarPrimaryAction({
-  icon: Icon,
-  iconClassName,
-  label,
-  onClick,
-  onMouseEnter,
-  onFocus,
-  active: activeProp,
-  disabled: disabledProp,
-  shortcutLabel,
-  badge,
-}: {
-  // Accepts both Lucide adapters and raw react-icons glyphs (rendered via SidebarGlyph).
-  icon: ComponentType<{ className?: string }>;
-  /** Optional optical correction for glyphs whose artwork fills more of its view box. */
-  iconClassName?: string;
-  label: string;
-  onClick?: () => void;
-  onMouseEnter?: () => void;
-  onFocus?: () => void;
-  active?: boolean;
-  disabled?: boolean;
-  shortcutLabel?: string | null;
-  badge?: SidebarActionBadge | null;
-}) {
-  // Defaults live in the body, not the destructuring pattern: an AssignmentPattern in
-  // the parameter list makes React Compiler bail out on the whole component.
-  const active = activeProp ?? false;
-  const disabled = disabledProp ?? false;
-  const shortcutParts = shortcutLabel ? splitShortcutLabel(shortcutLabel) : [];
-
-  return (
-    <SidebarMenuItem>
-      <SidebarMenuButton
-        size="sm"
-        data-active={active}
-        aria-current={active ? "page" : undefined}
-        className={cn(
-          "group/sidebar-primary-action",
-          SIDEBAR_HEADER_ROW_CLASS_NAME,
-          active
-            ? SIDEBAR_ROW_ACTIVE_CLASS_NAME
-            : cn(SIDEBAR_ROW_IDLE_TEXT_CLASS_NAME, SIDEBAR_ROW_HOVER_CLASS_NAME),
-        )}
-        aria-disabled={disabled || undefined}
-        disabled={disabled}
-        onClick={onClick}
-        onMouseEnter={onMouseEnter}
-        onFocus={onFocus}
-      >
-        <SidebarLeadingIcon size="sm" tone="text-inherit">
-          <SidebarGlyph
-            icon={Icon}
-            variant="leading"
-            {...(iconClassName ? { className: iconClassName } : {})}
-          />
-        </SidebarLeadingIcon>
-        <span className="truncate">{label}</span>
-        {badge ? (
-          <span
-            className="ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-md bg-muted px-1 text-ui-xs font-medium text-muted-foreground"
-            aria-label={badge.accessibleLabel}
-            title={badge.accessibleLabel}
-          >
-            {badge.text}
-          </span>
-        ) : shortcutParts.length > 0 ? (
-          <span className="ml-auto opacity-0 transition-opacity group-hover/sidebar-primary-action:opacity-100 group-focus-visible/sidebar-primary-action:opacity-100">
-            <KbdGroup>
-              {shortcutParts.map((part) => (
-                <Kbd key={part}>{part}</Kbd>
-              ))}
-            </KbdGroup>
-          </span>
-        ) : null}
-      </SidebarMenuButton>
-    </SidebarMenuItem>
-  );
-}
-
 /** Everything a primary nav row needs, keyed by `SidebarNavItemId` so persisted
  *  order/visibility settings can drive both the live rows and the customize card. */
 type SidebarNavItemDescriptor = {
@@ -1086,72 +1060,6 @@ type SidebarNavItemDescriptor = {
   readonly onMouseEnter?: () => void;
   readonly onFocus?: () => void;
 };
-
-/** One row of the nav customize card: visibility checkbox + label + drag handle. */
-function SidebarNavCustomizeRow({
-  id,
-  icon: Icon,
-  iconClassName,
-  label,
-  visible,
-  onVisibleChange,
-}: {
-  id: SidebarNavItemId;
-  icon: ComponentType<{ className?: string }>;
-  iconClassName?: string;
-  label: string;
-  visible: boolean;
-  onVisibleChange: (visible: boolean) => void;
-}) {
-  const {
-    attributes,
-    listeners,
-    setActivatorNodeRef,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id });
-  return (
-    <li
-      ref={setNodeRef}
-      style={{ transform: CSS.Translate.toString(transform), transition }}
-      className={cn("relative list-none", isDragging && "z-20 opacity-80")}
-    >
-      <div
-        className={cn(
-          SIDEBAR_HEADER_ROW_CLASS_NAME,
-          SIDEBAR_ROW_LABEL_TEXT_CLASS_NAME,
-          "cursor-default",
-        )}
-      >
-        <Checkbox
-          checked={visible}
-          onCheckedChange={(checked) => onVisibleChange(Boolean(checked))}
-          aria-label={visible ? `Hide ${label} from the sidebar` : `Show ${label} in the sidebar`}
-        />
-        <SidebarLeadingIcon size="sm" tone="text-inherit">
-          <SidebarGlyph
-            icon={Icon}
-            variant="leading"
-            {...(iconClassName ? { className: iconClassName } : {})}
-          />
-        </SidebarLeadingIcon>
-        <span className="truncate">{label}</span>
-        <button
-          type="button"
-          ref={setActivatorNodeRef}
-          className="ml-auto inline-flex size-6 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
-          aria-label={`Reorder ${label}`}
-          {...attributes}
-          {...listeners}
-        >
-          <DragHandleIcon className="size-3.5" />
-        </button>
-      </div>
-    </li>
-  );
-}
 
 function SortableProjectItem({
   projectId,
@@ -1341,9 +1249,7 @@ export function SidebarSurfacePicker({
           />
         }
       >
-        <span className="font-display min-w-0 truncate text-[17px] text-foreground">
-          {activeCopy.title}
-        </span>
+        <span className={SIDEBAR_PANEL_TITLE_CLASS_NAME}>{activeCopy.title}</span>
         <DisclosureChevron open className="text-muted-foreground/70" />
       </MenuTrigger>
       <ComposerPickerMenuPopup
@@ -1406,6 +1312,17 @@ export default function Sidebar() {
   );
   const activeSpaceId = resolveActiveSpaceId(storedActiveSpaceId, spaces, pendingActiveSpaceId);
   const threadsHydrated = useStore((store) => store.threadsHydrated);
+  // Rail layout: nav destinations move to the rail (portaled next to this panel) and the
+  // panel shows Home or Spaces. Classic renders exactly as before.
+  const isRailLayout = useSidebarLayout() === "rail";
+  const railActiveItem = useRailShellStore((store) => store.activeItem);
+  const railPanelView = useRailShellStore((store) => store.panelView);
+  const railSpacesProjectId = useRailShellStore((store) => store.spacesProjectId);
+  const selectRailPanelItem = useRailShellStore((store) => store.selectPanelItem);
+  const selectRailRouteItem = useRailShellStore((store) => store.selectRouteItem);
+  const openRailSpacesProject = useRailShellStore((store) => store.openSpacesProject);
+  const closeRailSpacesProject = useRailShellStore((store) => store.closeSpacesProject);
+  const reconcileRailShell = useRailShellStore((store) => store.reconcile);
   const sidebarThreadSummaryById = useStore((store) => store.sidebarThreadSummaryById);
   const syncServerShellSnapshot = useStore((store) => store.syncServerShellSnapshot);
   const markThreadVisited = useStore((store) => store.markThreadVisited);
@@ -1416,6 +1333,7 @@ export default function Sidebar() {
   const collapseProjectsExcept = useStore((store) => store.collapseProjectsExcept);
   const reorderProjects = useStore((store) => store.reorderProjects);
   const renameProjectLocally = useStore((store) => store.renameProjectLocally);
+  const setProjectAppearanceLocally = useStore((store) => store.setProjectAppearanceLocally);
   const removeDeletedProjectFromClientState = useStore(
     (store) => store.removeDeletedProjectFromClientState,
   );
@@ -1636,6 +1554,7 @@ export default function Sidebar() {
   const { activeProjectId: focusedProjectId } = useFocusedChatContext();
   const latestProjectId = useLatestProjectStore((state) => state.latestProjectId);
   const [createProjectDialogOpen, setCreateProjectDialogOpen] = useState(false);
+  const [createProjectSpaceId, setCreateProjectSpaceId] = useState<SpaceId | null | undefined>();
   const [searchPaletteOpen, setSearchPaletteOpen] = useState(false);
   const openFeedbackDialog = useFeedbackDialogStore((state) => state.openDialog);
   const [searchPaletteMode, setSearchPaletteMode] = useState<SidebarSearchPaletteMode>("search");
@@ -1672,6 +1591,11 @@ export default function Sidebar() {
     },
     [],
   );
+  // The project stays set after close so the dialog can play its exit transition.
+  const [editProjectDialog, setEditProjectDialog] = useState<{
+    projectId: ProjectId;
+    open: boolean;
+  } | null>(null);
   const [relocateProjectDialogId, setRelocateProjectDialogId] = useState<ProjectId | null>(null);
   const [projectContextMenuState, setProjectContextMenuState] =
     useState<ProjectContextMenuState | null>(null);
@@ -1977,6 +1901,14 @@ export default function Sidebar() {
       studioWorkspaceRoot,
       groupsWorkspaceRoot,
     });
+  useEffect(() => {
+    if (!isRailLayout) return;
+    reconcileRailShell({
+      pathname,
+      onStudioSurface: isOnGroups,
+      projectIds: threadsHydrated ? new Set(projects.map((project) => project.id)) : null,
+    });
+  }, [isOnGroups, isRailLayout, pathname, projects, reconcileRailShell, threadsHydrated]);
   const ordinarySpaceProjects = useMemo(
     () =>
       projects.filter((project) =>
@@ -2819,7 +2751,7 @@ export default function Sidebar() {
       }
 
       const providerDefaultModel = getDefaultModel(provider);
-      const modelSelection =
+      let modelSelection =
         activeProject.defaultModelSelection?.provider === provider
           ? activeProject.defaultModelSelection
           : providerDefaultModel
@@ -2828,8 +2760,32 @@ export default function Sidebar() {
                 model: providerDefaultModel,
               }
             : null;
+      if (!modelSelection && provider === "omp") {
+        // OMP has no static default model; the imported session's own last-used
+        // model wins server-side during import. The thread record still needs a
+        // catalog-valid placeholder selection.
+        const catalog = await queryClient
+          .fetchQuery(
+            providerModelsQueryOptions({
+              provider: "omp",
+              cwd: activeProject.cwd,
+            }),
+          )
+          .catch(() => null);
+        const fallbackModel = catalog?.models[0]?.slug;
+        modelSelection = fallbackModel
+          ? {
+              provider: "omp",
+              model: fallbackModel,
+            }
+          : null;
+      }
       if (!modelSelection) {
-        throw new Error("Select a Pi model before importing a Pi thread.");
+        throw new Error(
+          provider === "omp"
+            ? "No Oh My Pi models are discovered yet; configure an OMP provider before importing."
+            : "Select a Pi model before importing a Pi thread.",
+        );
       }
       const threadId = newThreadId();
       const createdAt = new Date().toISOString();
@@ -2842,7 +2798,9 @@ export default function Sidebar() {
             ? `Imported Cursor session${suffix ? ` ${suffix}` : ""}`
             : provider === "opencode"
               ? `Imported OpenCode session${suffix ? ` ${suffix}` : ""}`
-              : `Imported Codex thread${suffix ? ` ${suffix}` : ""}`;
+              : provider === "omp"
+                ? `Imported Oh My Pi session${suffix ? ` ${suffix}` : ""}`
+                : `Imported Codex thread${suffix ? ` ${suffix}` : ""}`;
       let createdThread = false;
 
       try {
@@ -2886,7 +2844,13 @@ export default function Sidebar() {
         throw error;
       }
     },
-    [appSettings.defaultThreadEnvMode, currentProjectShortcutTargetId, navigate, projects],
+    [
+      appSettings.defaultThreadEnvMode,
+      currentProjectShortcutTargetId,
+      navigate,
+      projects,
+      queryClient,
+    ],
   );
 
   const commitRename = useCallback(
@@ -3831,7 +3795,7 @@ export default function Sidebar() {
         return;
       }
       if (clicked === "rename") {
-        setRenameProjectDialogId(projectId);
+        setEditProjectDialog({ projectId, open: true });
         return;
       }
       if (clicked === "edit-project-agent") {
@@ -4016,6 +3980,8 @@ export default function Sidebar() {
     [appSettings.hiddenSidebarNavItems],
   );
   const [isCustomizingNav, setIsCustomizingNav] = useState(false);
+  // Rail layout: the customize editor opens as a popover beside the rail.
+  const railSlot = useAppRailSlot();
   const [navCustomizeMenuPosition, setNavCustomizeMenuPosition] = useState<{
     x: number;
     y: number;
@@ -4087,24 +4053,24 @@ export default function Sidebar() {
       ),
     [hiddenSidebarNavItems, sidebarNavDescriptors, sidebarNavOrder],
   );
-  const handleNavOrderDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      const { active, over } = event;
-      if (!over || active.id === over.id) return;
+  const handleNavOrderReorder = useCallback(
+    (activeId: string, overId: string) => {
       const order = normalizeSidebarNavOrder(appSettings.sidebarNavOrder);
-      const fromIndex = order.indexOf(active.id as SidebarNavItemId);
-      const toIndex = order.indexOf(over.id as SidebarNavItemId);
+      const fromIndex = order.indexOf(activeId as SidebarNavItemId);
+      const toIndex = order.indexOf(overId as SidebarNavItemId);
       if (fromIndex < 0 || toIndex < 0) return;
       updateSettings({ sidebarNavOrder: arrayMove(order, fromIndex, toIndex) });
     },
     [appSettings.sidebarNavOrder, updateSettings],
   );
   const handleNavItemVisibleChange = useCallback(
-    (id: SidebarNavItemId, visible: boolean) => {
+    (id: string, visible: boolean) => {
+      // Ids come from the customize rows, which list SidebarNavItemIds only.
+      const navId = id as SidebarNavItemId;
       const hidden = normalizeHiddenSidebarNavItems(appSettings.hiddenSidebarNavItems).filter(
-        (entry) => entry !== id,
+        (entry) => entry !== navId,
       );
-      updateSettings({ hiddenSidebarNavItems: visible ? hidden : [...hidden, id] });
+      updateSettings({ hiddenSidebarNavItems: visible ? hidden : [...hidden, navId] });
     },
     [appSettings.hiddenSidebarNavItems, updateSettings],
   );
@@ -4142,16 +4108,17 @@ export default function Sidebar() {
     suppressProjectClickAfterDragRef.current = false;
   }, []);
 
-  const handleRenameProjectSave = useCallback(
-    (projectId: ProjectId, nextName: string, previousLocalName: string | null) => {
-      const trimmed = nextName.trim();
+  const handleEditProjectSave = useCallback(
+    (projectId: ProjectId, next: EditProjectValue, previousLocalName: string | null) => {
+      setProjectAppearanceLocally(projectId, next.appearance);
+      const trimmed = next.name.trim();
       const normalizedPrevious = previousLocalName?.trim() ?? "";
       if (trimmed === normalizedPrevious) {
         return;
       }
       renameProjectLocally(projectId, trimmed.length > 0 ? trimmed : null);
     },
-    [renameProjectLocally],
+    [renameProjectLocally, setProjectAppearanceLocally],
   );
 
   const sortedProjects = useMemo(
@@ -4407,20 +4374,82 @@ export default function Sidebar() {
     () => standardProjects.length > 0 && standardProjects.every((project) => project.expanded),
     [standardProjects],
   );
+  // Rail layout Spaces panel: every ordinary project grouped by Space (level 1), and the
+  // drill-in project's rows (level 2). The drill-in always lists the project's threads,
+  // whatever its folder state in the Home tree, so it derives as expanded.
+  const railSpacesSections = useMemo(
+    () =>
+      isRailLayout
+        ? buildRailSpacesSections({
+            items: allStandardProjectsBase,
+            spaces,
+            activeSpaceId,
+            spaceIdOf: (project) => project.spaceId ?? null,
+            voidSpace,
+          })
+        : [],
+    [activeSpaceId, allStandardProjectsBase, isRailLayout, spaces, voidSpace],
+  );
+  // Rail layout: Spaces and single projects the user added to the rail from its "…" menu.
+  const railShortcuts = useMemo(
+    () =>
+      isRailLayout
+        ? resolveRailShortcuts({
+            keys: appSettings.railShortcuts,
+            spaceIds: new Set(spaces.map((space) => space.id)),
+            projectIds: new Set(allStandardProjectsBase.map((project) => project.id)),
+          })
+        : [],
+    [allStandardProjectsBase, appSettings.railShortcuts, isRailLayout, spaces],
+  );
+  const railSpacesProject =
+    isRailLayout && railSpacesProjectId !== null
+      ? (projectById.get(railSpacesProjectId) ?? null)
+      : null;
+  const railSpacesProjectSidebarData = useMemo(() => {
+    if (!railSpacesProject) {
+      return null;
+    }
+    return (
+      deriveSidebarProjectData({
+        projects: [{ id: railSpacesProject.id, cwd: railSpacesProject.cwd, expanded: true }],
+        sortedSidebarThreadsByProjectId,
+        pinnedThreadIds,
+        threadListExtraPagesByProjectCwd,
+        normalizeProjectCwd: normalizeSidebarProjectThreadListCwd,
+        activeSidebarThreadId: activeSidebarThreadId ?? undefined,
+        previewLimit: THREAD_PREVIEW_LIMIT,
+        previewPageSize: THREAD_PREVIEW_PAGE_SIZE,
+        resolveThreadStatus: resolveThreadStatusForSidebar,
+      }).get(railSpacesProject.id) ?? null
+    );
+  }, [
+    activeSidebarThreadId,
+    pinnedThreadIds,
+    railSpacesProject,
+    resolveThreadStatusForSidebar,
+    sortedSidebarThreadsByProjectId,
+    threadListExtraPagesByProjectCwd,
+  ]);
+  const railSpacesPagedProjectId = railSpacesProject?.id ?? null;
 
   // Reset per-project preview paging when a folder closes so reopening starts at five rows again.
+  // The Spaces drill-in shows its project as open whatever the tree says, so its paging stays.
   useEffect(() => {
     const settle = window.setTimeout(() => {
       setThreadListExtraPagesByProjectCwd((current) =>
         pruneProjectThreadListPagingForCollapsedProjects({
           threadListExtraPagesByProjectCwd: current,
-          projects: standardProjects,
+          projects:
+            railSpacesPagedProjectId === null
+              ? standardProjects
+              : standardProjects.filter((project) => project.id !== railSpacesPagedProjectId),
           normalizeProjectCwd: normalizeSidebarProjectThreadListCwd,
         }),
       );
     }, 0);
     return () => window.clearTimeout(settle);
-  }, [standardProjects]);
+  }, [railSpacesPagedProjectId, standardProjects]);
 
   useEffect(() => {
     if (!shouldPrunePinnedThreads({ threadsHydrated })) {
@@ -4806,6 +4835,7 @@ export default function Sidebar() {
           timeLabel={formatRelativeTime(thread.updatedAt ?? thread.createdAt)}
           projectName={hoverMetadata.projectName}
           projectCwd={hoverMetadata.projectCwd}
+          projectAppearance={hoverProject?.appearance ?? null}
           sourceProjectName={hoverMetadata.sourceProjectName}
           branch={hoverMetadata.branch}
           worktreeName={hoverMetadata.worktreeName}
@@ -4833,6 +4863,8 @@ export default function Sidebar() {
       >
         <ProjectHoverCardContent
           name={project.name}
+          cwd={project.cwd}
+          appearance={project.appearance ?? null}
           isPinned={pinnedProjectIdSet.has(project.id)}
           chatCount={chatCount}
           path={abbreviateHomePath(project.cwd, homeDir)}
@@ -5181,6 +5213,136 @@ export default function Sidebar() {
     );
   }
 
+  // Pull requests / new terminal thread / new thread for one project. Shared by the tree's
+  // hover toolbar and the rail layout's Spaces drill-in header.
+  function renderProjectThreadActions(project: (typeof sortedProjects)[number]) {
+    return (
+      <>
+        <SidebarIconButton
+          icon={IoIosGitCompare}
+          label={`View pull requests for ${project.name}`}
+          tooltip="Pull requests"
+          tooltipSide="top"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            // Opens the in-app pull requests view scoped to this project (selecting a
+            // row there opens the right-dock detail panel) instead of leaving for GitHub.
+            void navigate({
+              to: "/pull-requests",
+              search: { involvement: "all", state: "open", projectId: project.id },
+            });
+          }}
+        />
+        <SidebarIconButton
+          icon={TerminalIcon}
+          label={`Create new terminal thread in ${project.name}`}
+          tooltip={
+            newTerminalThreadShortcutLabel
+              ? `New terminal thread (${newTerminalThreadShortcutLabel})`
+              : "New terminal thread"
+          }
+          tooltipSide="top"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void handleNewThread(project.id, { entryPoint: "terminal" });
+          }}
+        />
+        <SidebarIconButton
+          icon={NewThreadIcon}
+          label={`Create new thread in ${project.name}`}
+          tooltip={newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
+          tooltipSide="top"
+          data-testid="new-thread-button"
+          onMouseEnter={() => {
+            prefetchModelsForProjectNewThread(project.id);
+          }}
+          onFocus={() => {
+            prefetchModelsForProjectNewThread(project.id);
+          }}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            prefetchModelsForProjectNewThread(project.id, { includeDroid: true });
+            void handleNewThread(project.id);
+          }}
+        />
+      </>
+    );
+  }
+
+  // A project's thread rows plus its show more/less paging. Shared by the tree's folder
+  // disclosure and the rail layout's Spaces drill-in.
+  function renderProjectThreadList(
+    project: (typeof sortedProjects)[number],
+    projectSidebarData: SidebarDerivedProjectData,
+  ) {
+    const {
+      orderedProjectThreadIds,
+      visibleEntries,
+      threadListExtraPages,
+      canShowMoreThreads,
+      canShowLessThreads,
+    } = projectSidebarData;
+    return (
+      <>
+        {visibleEntries.map((entry) =>
+          renderThreadRow(entry.thread, orderedProjectThreadIds, entry.depth),
+        )}
+
+        {(canShowMoreThreads || canShowLessThreads) && (
+          <SidebarMenuSubItem className="w-full">
+            <div className="flex w-full items-center gap-1">
+              {canShowMoreThreads && (
+                <SidebarMenuSubButton
+                  render={<button type="button" />}
+                  data-thread-selection-safe
+                  size="sm"
+                  className="h-7 flex-1 translate-x-0 justify-start rounded-lg pr-2 pl-8 text-left text-ui text-muted-foreground/79 hover:bg-transparent hover:text-foreground active:bg-transparent active:text-foreground"
+                  onMouseDown={preventFocusOnMouseDown}
+                  onClick={() => {
+                    showMoreThreadsForProject(project.cwd, threadListExtraPages);
+                  }}
+                >
+                  <span>Show more</span>
+                </SidebarMenuSubButton>
+              )}
+              {canShowLessThreads && (
+                <SidebarMenuSubButton
+                  render={<button type="button" />}
+                  data-thread-selection-safe
+                  size="sm"
+                  className={cn(
+                    "h-7 translate-x-0 justify-start rounded-lg text-left text-ui text-muted-foreground/79 hover:bg-transparent hover:text-foreground active:bg-transparent active:text-foreground",
+                    // Keep the left indent when "Show less" is the only affordance left.
+                    canShowMoreThreads ? "w-auto flex-none px-2" : "flex-1 pr-2 pl-8",
+                  )}
+                  onMouseDown={preventFocusOnMouseDown}
+                  onClick={() => {
+                    showLessThreadsForProject(project.cwd, threadListExtraPages);
+                  }}
+                >
+                  <span>Show less</span>
+                </SidebarMenuSubButton>
+              )}
+            </div>
+          </SidebarMenuSubItem>
+        )}
+      </>
+    );
+  }
+
+  // A project reads as "running" when Synara tracks a run for it or when a local server
+  // (possibly started outside Synara) is attributed by cwd. Shared by the tree's project
+  // header and the rail layout's Spaces rows.
+  function isSidebarProjectRunning(projectId: ProjectId): boolean {
+    return (
+      (projectRunsByProjectId[projectId] ?? null) !== null ||
+      (projectRunServerByProjectId.get(projectId) ?? null) !== null
+    );
+  }
+
   function renderProjectItem(
     project: (typeof sortedProjects)[number],
     dragHandleProps: SortableProjectHandleProps | null,
@@ -5190,23 +5352,11 @@ export default function Sidebar() {
     if (!projectSidebarData) {
       return null;
     }
-    const {
-      orderedProjectThreadIds,
-      allProjectThreadCount,
-      projectStatus,
-      visibleEntries,
-      threadListExtraPages,
-      canShowMoreThreads,
-      canShowLessThreads,
-    } = projectSidebarData;
+    const { allProjectThreadCount, projectStatus } = projectSidebarData;
     const projectFolderIconClassName = isProjectPinned
       ? "opacity-0"
       : sidebarHoverRevealHideClassName("project-header");
-    const projectRun = projectRunsByProjectId[project.id] ?? null;
-    const projectRunServer = projectRunServerByProjectId.get(project.id) ?? null;
-    // A project reads as "running" when Synara tracks a run for it or when a
-    // local server (possibly started outside Synara) is attributed by cwd.
-    const isProjectRunning = projectRun !== null || projectRunServer !== null;
+    const isProjectRunning = isSidebarProjectRunning(project.id);
     const collapsedProjectStatus = project.expanded ? null : projectStatus;
     // The "open dev server" affordance now lives in the project context menu, so
     // the hover toolbar always reserves space for the three thread actions. The
@@ -5272,7 +5422,11 @@ export default function Sidebar() {
                 tone={SIDEBAR_ROW_LABEL_TEXT_CLASS_NAME}
                 className={projectFolderIconClassName}
               >
-                <ProjectSidebarIcon cwd={project.cwd} expanded={project.expanded} />
+                <ProjectSidebarIcon
+                  cwd={project.cwd}
+                  expanded={project.expanded}
+                  appearance={project.appearance}
+                />
               </SidebarLeadingIcon>
               <div
                 className={cn(
@@ -5280,14 +5434,7 @@ export default function Sidebar() {
                   projectToolbarReserveClassName,
                 )}
               >
-                <span
-                  className={cn(
-                    "min-w-0 flex-1 truncate font-system-ui text-ui font-normal",
-                    SIDEBAR_ROW_LABEL_TEXT_CLASS_NAME,
-                  )}
-                >
-                  {projectRowLabel}
-                </span>
+                <span className={SIDEBAR_PROJECT_NAME_CLASS_NAME}>{projectRowLabel}</span>
               </div>
               {/* Closed folders surface child-chat status on the project row; open
                   folders leave that signal to their visible child thread rows. */}
@@ -5336,58 +5483,7 @@ export default function Sidebar() {
               <PinStatusIcon pinned={isProjectPinned} className="size-3.5" />
             </button>
             <SidebarSectionToolbar placement="overlay" revealOnHover>
-              <SidebarIconButton
-                icon={IoIosGitCompare}
-                label={`View pull requests for ${project.name}`}
-                tooltip="Pull requests"
-                tooltipSide="top"
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  // Opens the in-app pull requests view scoped to this project (selecting a
-                  // row there opens the right-dock detail panel) instead of leaving for GitHub.
-                  void navigate({
-                    to: "/pull-requests",
-                    search: { involvement: "all", state: "open", projectId: project.id },
-                  });
-                }}
-              />
-              <SidebarIconButton
-                icon={TerminalIcon}
-                label={`Create new terminal thread in ${project.name}`}
-                tooltip={
-                  newTerminalThreadShortcutLabel
-                    ? `New terminal thread (${newTerminalThreadShortcutLabel})`
-                    : "New terminal thread"
-                }
-                tooltipSide="top"
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  void handleNewThread(project.id, { entryPoint: "terminal" });
-                }}
-              />
-              <SidebarIconButton
-                icon={NewThreadIcon}
-                label={`Create new thread in ${project.name}`}
-                tooltip={
-                  newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"
-                }
-                tooltipSide="top"
-                data-testid="new-thread-button"
-                onMouseEnter={() => {
-                  prefetchModelsForProjectNewThread(project.id);
-                }}
-                onFocus={() => {
-                  prefetchModelsForProjectNewThread(project.id);
-                }}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  prefetchModelsForProjectNewThread(project.id, { includeDroid: true });
-                  void handleNewThread(project.id);
-                }}
-              />
+              {renderProjectThreadActions(project)}
             </SidebarSectionToolbar>
           </PreviewCardTrigger>
           {renderProjectHoverCardPopup(project, allProjectThreadCount)}
@@ -5407,52 +5503,128 @@ export default function Sidebar() {
                 disclosureContentClassName(project.expanded),
               )}
             >
-              {visibleEntries.map((entry) =>
-                renderThreadRow(entry.thread, orderedProjectThreadIds, entry.depth),
-              )}
-
-              {(canShowMoreThreads || canShowLessThreads) && (
-                <SidebarMenuSubItem className="w-full">
-                  <div className="flex w-full items-center gap-1">
-                    {canShowMoreThreads && (
-                      <SidebarMenuSubButton
-                        render={<button type="button" />}
-                        data-thread-selection-safe
-                        size="sm"
-                        className="h-7 flex-1 translate-x-0 justify-start rounded-lg pr-2 pl-8 text-left text-ui text-muted-foreground/79 hover:bg-transparent hover:text-foreground active:bg-transparent active:text-foreground"
-                        onMouseDown={preventFocusOnMouseDown}
-                        onClick={() => {
-                          showMoreThreadsForProject(project.cwd, threadListExtraPages);
-                        }}
-                      >
-                        <span>Show more</span>
-                      </SidebarMenuSubButton>
-                    )}
-                    {canShowLessThreads && (
-                      <SidebarMenuSubButton
-                        render={<button type="button" />}
-                        data-thread-selection-safe
-                        size="sm"
-                        className={cn(
-                          "h-7 translate-x-0 justify-start rounded-lg text-left text-ui text-muted-foreground/79 hover:bg-transparent hover:text-foreground active:bg-transparent active:text-foreground",
-                          // Keep the left indent when "Show less" is the only affordance left.
-                          canShowMoreThreads ? "w-auto flex-none px-2" : "flex-1 pr-2 pl-8",
-                        )}
-                        onMouseDown={preventFocusOnMouseDown}
-                        onClick={() => {
-                          showLessThreadsForProject(project.cwd, threadListExtraPages);
-                        }}
-                      >
-                        <span>Show less</span>
-                      </SidebarMenuSubButton>
-                    )}
-                  </div>
-                </SidebarMenuSubItem>
-              )}
+              {renderProjectThreadList(project, projectSidebarData)}
             </SidebarMenuSub>
           </div>
         </div>
       </div>
+    );
+  }
+
+  // Rail layout Spaces panel, level 1 row: opens the project's drill-in on click and keeps
+  // the tree's project context menu.
+  function renderRailSpacesProjectRow(project: (typeof sortedProjects)[number]) {
+    const isProjectRunning = isSidebarProjectRunning(project.id);
+    return (
+      <SidebarMenuItem key={project.id}>
+        <SidebarMenuButton
+          size="sm"
+          className={cn(
+            SIDEBAR_HEADER_ROW_CLASS_NAME,
+            SIDEBAR_ROW_IDLE_TEXT_CLASS_NAME,
+            SIDEBAR_ROW_HOVER_CLASS_NAME,
+          )}
+          onClick={() => openRailSpacesProject(project.id)}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            void handleProjectContextMenu(project.id, {
+              x: event.clientX,
+              y: event.clientY,
+            });
+          }}
+        >
+          <SidebarLeadingIcon size="sm" tone={SIDEBAR_ROW_LABEL_TEXT_CLASS_NAME}>
+            <ProjectSidebarIcon
+              cwd={project.cwd}
+              expanded={false}
+              appearance={project.appearance}
+            />
+          </SidebarLeadingIcon>
+          <span className={SIDEBAR_PROJECT_NAME_CLASS_NAME}>
+            {resolveSidebarProjectRowLabel(project)}
+          </span>
+          {isProjectRunning ? <ProjectRunIndicatorDot /> : null}
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    );
+  }
+
+  // Rail layout Spaces panel: level 1 lists every Space with its projects; level 2 is one
+  // project's threads, opened from level 1 without leaving the current route.
+  function renderRailSpacesPanel() {
+    if (railSpacesProject && railSpacesProjectSidebarData) {
+      return (
+        <SidebarGroup className="px-1.5 py-1.5">
+          <div className="my-1 flex h-7 min-w-0 items-center gap-1.5 ps-1 pe-1.5">
+            <SidebarIconButton
+              icon={BackArrowIcon}
+              label="Back to spaces"
+              tooltip="Back to spaces"
+              tooltipSide="bottom"
+              onClick={closeRailSpacesProject}
+            />
+            <span className={SIDEBAR_PROJECT_NAME_CLASS_NAME}>
+              {resolveSidebarProjectRowLabel(railSpacesProject)}
+            </span>
+            <SidebarSectionToolbar>
+              {renderProjectThreadActions(railSpacesProject)}
+            </SidebarSectionToolbar>
+          </div>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuSub
+                className={cn(
+                  "mx-0 my-0 w-full translate-x-0 border-l-0 px-0 py-0",
+                  SIDEBAR_NESTED_LIST_GAP_CLASS_NAME,
+                )}
+              >
+                {renderProjectThreadList(railSpacesProject, railSpacesProjectSidebarData)}
+              </SidebarMenuSub>
+            </SidebarMenuItem>
+          </SidebarMenu>
+          {railSpacesProjectSidebarData.visibleEntries.length === 0 ? (
+            <div className="px-2 pt-4 text-center text-ui text-muted-foreground/58">
+              No threads yet
+            </div>
+          ) : null}
+        </SidebarGroup>
+      );
+    }
+    return (
+      <SidebarGroup className="px-1.5 py-1.5">
+        {threadsHydrated
+          ? railSpacesSections.map((section) => (
+              <div key={section.key}>
+                {renderListSectionHeader(
+                  section.name,
+                  <SidebarIconButton
+                    icon={AddPlusIcon}
+                    label="Add project"
+                    onClick={() => {
+                      setCreateProjectSpaceId(section.spaceId);
+                      setCreateProjectDialogOpen(true);
+                    }}
+                    tooltip="Add project"
+                    tooltipSide="right"
+                  />,
+                )}
+                {section.items.length > 0 ? (
+                  <SidebarMenu className="gap-0.5">
+                    {section.items.map((project) => renderRailSpacesProjectRow(project))}
+                  </SidebarMenu>
+                ) : (
+                  <SpaceEmptyState
+                    space={spaces.find((space) => space.id === section.spaceId) ?? null}
+                    hasProjectsElsewhere={allStandardProjectsBase.length > 0}
+                    onMoveProjects={() => {
+                      if (section.spaceId !== null) openSpaceProjectPicker(section.spaceId);
+                    }}
+                  />
+                )}
+              </div>
+            ))
+          : null}
+      </SidebarGroup>
     );
   }
 
@@ -5804,7 +5976,19 @@ export default function Sidebar() {
     });
   }, [desktopUpdateState, surfaceDesktopUpdateError]);
 
+  // Install failures deliberately preserve "downloaded" so the same artifact
+  // can be retried. Watch the error as well as the status to release the latch.
+  useEffect(() => {
+    if (
+      desktopUpdateState?.status !== "downloaded" ||
+      desktopUpdateState.errorContext === "install"
+    ) {
+      setInstallingDesktopUpdate(false);
+    }
+  }, [desktopUpdateState?.status, desktopUpdateState?.errorContext]);
+
   const showDesktopUpdateButton = isElectron && shouldShowDesktopUpdateButton(desktopUpdateState);
+  const isBetaDesktopFlavor = desktopUpdateState?.flavor === "beta";
 
   const desktopUpdateTooltip = desktopUpdateState
     ? getDesktopUpdateButtonTooltip(desktopUpdateState, {
@@ -5833,7 +6017,8 @@ export default function Sidebar() {
     desktopUpdateButtonPresentation.secondaryLabel !== null;
   const desktopUpdateDownloadPercent = getDesktopUpdateDownloadPercent(desktopUpdateState);
   const desktopUpdateRowButtonClasses = cn(
-    "inline-flex h-6 shrink-0 items-center justify-center gap-1.5 rounded-full bg-[var(--info)] px-2.5 font-system-ui text-ui-xs font-medium leading-none text-white transition-colors",
+    "inline-flex h-6 shrink-0 items-center justify-center gap-1.5 rounded-full px-2.5 font-system-ui text-ui-xs font-medium leading-none text-white transition-colors",
+    isBetaDesktopFlavor ? "bg-[image:var(--beta-gradient)]" : "bg-[var(--info)]",
     desktopUpdateButtonHasSecondaryLabel && "min-h-6 py-0.5",
     desktopUpdateButtonInteractivityClasses,
   );
@@ -5845,6 +6030,7 @@ export default function Sidebar() {
         remoteName: project.remoteName,
         folderName: project.folderName,
         localName: project.localName,
+        appearance: project.appearance ?? null,
         cwd: project.cwd,
         // Containers (Chats, Groups) are reachable from every Space, so they search as "Global".
         spaceName: isOrdinarySpaceProject(project, {
@@ -6094,7 +6280,9 @@ export default function Sidebar() {
         .installUpdate()
         .then((result) => {
           setDesktopUpdateState(result.state);
-          setInstallingDesktopUpdate(false);
+          if (!isDesktopUpdateInstallInFlight(result)) {
+            setInstallingDesktopUpdate(false);
+          }
           const alreadyCurrentNotice = getDesktopUpdateAlreadyCurrentNotice(result);
           if (alreadyCurrentNotice) {
             toastManager.add({
@@ -6185,17 +6373,256 @@ export default function Sidebar() {
 
   const headerControls = <SidebarLeadingControls className="ml-auto hidden md:flex" />;
 
+  const betaBadge = isBetaDesktopFlavor ? (
+    <span
+      aria-label="Synara Beta"
+      className="inline-flex shrink-0 items-center rounded-full bg-[var(--beta-pill)] px-1.5 py-0.5 text-ui-xs font-semibold leading-none text-[var(--beta-pill-ink)]"
+    >
+      Beta
+    </span>
+  ) : null;
+
   const wordmark = (
     <div className="flex w-full items-center gap-1.5">
       <SidebarTrigger className="shrink-0 text-muted-foreground/75 hover:text-foreground md:hidden" />
       {headerControls}
     </div>
   );
+  // Rail layout: Home and Spaces switch the panel; route items navigate exactly like their
+  // classic nav rows (prewarm included). The store's active item keeps one item selected.
+  const isOnThreadsSection =
+    !isOnSettings && !isOnGroups && !isOnKanban && !isOnPullRequests && !isOnAutomations;
+  // One Help menu wiring for both homes: the classic footer and the rail's bottom cluster.
+  const sidebarHelpMenuProps = {
+    onOpenShortcuts: () => void navigate({ to: "/settings", search: { section: "shortcuts" } }),
+    onOpenFeedback: openFeedbackDialog,
+    // The rail customizes from its "…" menu; the classic card lives in the thread view's
+    // nav block.
+    onCustomizeSidebar:
+      isRailLayout || isOnGroups || isOnSettings
+        ? null
+        : () => {
+            setIsCustomizingNav(true);
+          },
+  };
+  // A pinned Space or project stands for what the panel shows, so Home/Spaces step back.
+  const activeRailShortcutKey = resolveActiveRailShortcutKey({
+    activeItem: railActiveItem,
+    activeSpaceId,
+    spacesProjectId: railSpacesProjectId,
+    shortcuts: railShortcuts,
+  });
+  // Groups sits in the "…" menu and, when the user adds it from Customize, in the rail too.
+  // The rail item keeps its stored id "studio" so saved rail orders stay valid.
+  const openRailStudio = groupsSectionVisible
+    ? () => {
+        selectRailRouteItem("studio");
+        handleSidebarViewChange("groups");
+      }
+    : null;
+  // The rail's top items, in the user's Customize order (hidden ones drop out unless active).
+  const railItemOrder = normalizeRailItemOrder(appSettings.railItemOrder);
+  const hiddenRailItems = new Set(normalizeHiddenRailItems(appSettings.hiddenRailItems));
+  const railItemLabel = (id: RailOrderableItemId): string =>
+    id === "home" || id === "spaces"
+      ? RAIL_PANEL_ITEM_LABELS[id]
+      : id === "studio"
+        ? "Groups"
+        : sidebarNavDescriptors[id].label;
+  const railItemFor = (id: RailOrderableItemId): AppRailItem => {
+    const base = { id, glyphs: railItemGlyphs(id), label: railItemLabel(id) };
+    if (id === "home" || id === "spaces") {
+      return {
+        ...base,
+        badge: null,
+        active: railActiveItem === id && activeRailShortcutKey === null,
+        onSelect: () => {
+          setActivityViewEnabledSmoothly(false);
+          selectRailPanelItem(id);
+          // Projects live next to the threads only: from another section, Home and
+          // Spaces go back to the thread view instead of opening over that section.
+          if (!isOnThreadsSection) handleSidebarViewChange("threads");
+        },
+      };
+    }
+    if (id === "studio") {
+      return {
+        ...base,
+        badge: null,
+        active: railActiveItem === "studio",
+        onSelect: () => openRailStudio?.(),
+      };
+    }
+    const item = sidebarNavDescriptors[id];
+    return {
+      ...base,
+      badge: item.badge,
+      active: railActiveItem === id,
+      onSelect: () => {
+        selectRailRouteItem(id);
+        item.onClick();
+      },
+      onMouseEnter: item.onMouseEnter,
+      onFocus: item.onFocus,
+    };
+  };
+  const railVisibleItemIds = buildRailItemOrder({
+    order: railItemOrder,
+    hidden: hiddenRailItems,
+    activeItem: railActiveItem,
+    studioAvailable: openRailStudio !== null,
+  });
+  const railItems: AppRailItem[] = railVisibleItemIds.map(railItemFor);
+  const railShortcutItems: AppRailItem[] = railShortcuts.flatMap((shortcut): AppRailItem[] => {
+    if (shortcut.kind === "space") {
+      return [
+        {
+          id: shortcut.key,
+          glyphs: railCentralGlyphs(spaceDisplayIcon(shortcut.spaceId, spaces, voidSpace)),
+          label: spaceDisplayName(shortcut.spaceId, spaces, voidSpace),
+          badge: null,
+          active: activeRailShortcutKey === shortcut.key,
+          onSelect: () => {
+            setActivityViewEnabledSmoothly(false);
+            selectRailPanelItem("home");
+            // Switching Space already lands on its last thread; the same Space only needs
+            // the thread view back when another section is open.
+            if (shortcut.spaceId !== activeSpaceId) handleSelectSpace(shortcut.spaceId);
+            else if (!isOnThreadsSection) handleSidebarViewChange("threads");
+          },
+        },
+      ];
+    }
+    const project = projectById.get(shortcut.projectId);
+    if (!project) return [];
+    return [
+      {
+        id: shortcut.key,
+        glyphs: railProjectGlyphs(project.cwd, project.appearance ?? null),
+        label: resolveSidebarProjectRowLabel(project),
+        badge: null,
+        active: activeRailShortcutKey === shortcut.key,
+        onSelect: () => {
+          setActivityViewEnabledSmoothly(false);
+          selectRailPanelItem("spaces");
+          openRailSpacesProject(project.id);
+          if (!isOnThreadsSection) handleSidebarViewChange("threads");
+        },
+      },
+    ];
+  });
+  const railMoreMenu = (
+    <AppRailMoreMenu
+      spaces={[null, ...spaces.map((space) => space.id)].map((spaceId) => ({
+        key: railSpaceShortcutKey(spaceId),
+        label: spaceDisplayName(spaceId, spaces, voidSpace),
+      }))}
+      projects={allStandardProjectsBase.map((project) => ({
+        key: railProjectShortcutKey(project.id),
+        label: resolveSidebarProjectRowLabel(project),
+      }))}
+      pinnedKeys={new Set(railShortcuts.map((shortcut) => shortcut.key))}
+      onToggleShortcut={(key) =>
+        updateSettings({
+          railShortcuts: toggleRailShortcutKey(appSettings.railShortcuts, key),
+        })
+      }
+      onOpenStudio={openRailStudio}
+      onCustomize={() => setIsCustomizingNav(true)}
+      // "…" stands for Groups while it is open, unless Groups has its own rail button.
+      active={railActiveItem === "studio" && !railVisibleItemIds.includes("studio")}
+    />
+  );
+  // Customize rows: the classic card lists the nav block; the rail popover lists the rail's
+  // own items (Groups only while its section is enabled), then its Space/project shortcuts.
+  const sidebarNavCustomizeItems: SidebarCustomizeItem[] = sidebarNavOrder.map((id) => {
+    const item = sidebarNavDescriptors[id];
+    return {
+      id,
+      icon: item.icon,
+      iconClassName: item.iconClassName,
+      label: item.label,
+      visible: !hiddenSidebarNavItems.has(id),
+    };
+  });
+  const railCustomizeItems: SidebarCustomizeItem[] = railItemOrder
+    .filter((id) => id !== "studio" || openRailStudio !== null)
+    .map((id) => ({
+      id,
+      icon: railItemGlyphs(id).idle,
+      label: railItemLabel(id),
+      visible: !hiddenRailItems.has(id),
+      locked: !railItemCanHide(id),
+    }));
+  const handleRailItemReorder = (activeId: string, overId: string) => {
+    const fromIndex = railItemOrder.indexOf(activeId as RailOrderableItemId);
+    const toIndex = railItemOrder.indexOf(overId as RailOrderableItemId);
+    if (fromIndex < 0 || toIndex < 0) return;
+    updateSettings({ railItemOrder: arrayMove(railItemOrder, fromIndex, toIndex) });
+  };
+  const handleRailItemVisibleChange = (id: string, visible: boolean) => {
+    // Ids come from the rail customize rows, which list RailOrderableItemIds only.
+    const railId = id as RailOrderableItemId;
+    const hidden = [...hiddenRailItems].filter((entry) => entry !== railId);
+    updateSettings({ hiddenRailItems: visible ? hidden : [...hidden, railId] });
+  };
+  const railShortcutCustomizeItems: SidebarCustomizeItem[] = railShortcutItems.map((item) => ({
+    id: item.id,
+    icon: item.glyphs.idle,
+    label: item.label,
+    visible: true,
+  }));
+  const handleRailShortcutReorder = (activeKey: string, overKey: string) => {
+    const keys = [...appSettings.railShortcuts];
+    const fromIndex = keys.indexOf(activeKey);
+    const toIndex = keys.indexOf(overKey);
+    if (fromIndex < 0 || toIndex < 0) return;
+    updateSettings({ railShortcuts: arrayMove(keys, fromIndex, toIndex) });
+  };
+  // Unchecking a shortcut removes it from the rail; the "…" menu adds it back.
+  const handleRailShortcutVisibleChange = (key: string, visible: boolean) => {
+    if (visible) return;
+    updateSettings({ railShortcuts: toggleRailShortcutKey(appSettings.railShortcuts, key) });
+  };
+  const railBottomItems: AppRailItem[] = [
+    {
+      id: "settings",
+      glyphs: railItemGlyphs("settings"),
+      label: "Settings",
+      badge: null,
+      active: railActiveItem === "settings",
+      onSelect: () => {
+        selectRailRouteItem("settings");
+        void navigate({ to: "/settings" });
+      },
+    },
+  ];
+  // The rail owns the route destinations, so the panel keeps only "New thread": always
+  // there, since the rail's Customize has no New thread row to bring it back.
+  const panelSidebarNavIds: readonly SidebarNavItemId[] = isRailLayout
+    ? ["newThread"]
+    : visibleSidebarNavIds;
+  // Rail layout: Automations owns its panel (its list), like Settings and Groups do.
+  const showRailAutomationsPanel = isRailLayout && isOnAutomations;
+  const showRailSpacesPanel =
+    isRailLayout &&
+    railPanelView === "spaces" &&
+    !isOnGroups &&
+    !isOnSettings &&
+    !activityViewEnabled;
+  // Switching Home/Spaces or the Spaces level replays the surface enter animation.
+  const sidebarSurfaceKey = showRailSpacesPanel
+    ? `spaces:${railSpacesProject?.id ?? ""}`
+    : isOnGroups
+      ? "groups"
+      : activityViewEnabled
+        ? "activity"
+        : "threads";
   const relocateProjectDialogProject = relocateProjectDialogId
     ? (projectById.get(relocateProjectDialogId) ?? null)
     : null;
-  const renameProjectDialogProject = renameProjectDialogId
-    ? (projectById.get(renameProjectDialogId) ?? null)
+  const editProjectDialogProject = editProjectDialog
+    ? (projectById.get(editProjectDialog.projectId) ?? null)
     : null;
   const projectAgentDialogProject = projectAgentDialogState
     ? (projectById.get(projectAgentDialogState.projectId) ?? null)
@@ -6237,7 +6664,53 @@ export default function Sidebar() {
 
   return (
     <>
-      {isElectron ? (
+      {isRailLayout ? (
+        <AppRailPortal
+          items={railItems}
+          shortcuts={railShortcutItems}
+          moreSlot={railMoreMenu}
+          bottomItems={railBottomItems}
+          bottomSlot={<SidebarHelpMenu inRail {...sidebarHelpMenuProps} />}
+          onContextMenu={handleNavContextMenu}
+        />
+      ) : null}
+      {isRailLayout && railSlot ? (
+        <Popover
+          open={isCustomizingNav}
+          onOpenChange={(open) => {
+            if (!open) setIsCustomizingNav(false);
+          }}
+        >
+          <PopoverPopup
+            anchor={railSlot}
+            side="right"
+            align="start"
+            sideOffset={8}
+            alignOffset={8}
+            className="w-64 [&_[data-slot=popover-viewport]]:p-1.5"
+          >
+            <SidebarCustomizeHeader onDone={() => setIsCustomizingNav(false)} />
+            <SidebarCustomizeList
+              items={railCustomizeItems}
+              onReorder={handleRailItemReorder}
+              onVisibleChange={handleRailItemVisibleChange}
+            />
+            {railShortcutCustomizeItems.length > 0 ? (
+              <>
+                <div className={cn(SIDEBAR_SECTION_LABEL_CLASS_NAME, "ps-2 pt-2.5 pb-1")}>
+                  Shortcuts
+                </div>
+                <SidebarCustomizeList
+                  items={railShortcutCustomizeItems}
+                  onReorder={handleRailShortcutReorder}
+                  onVisibleChange={handleRailShortcutVisibleChange}
+                />
+              </>
+            ) : null}
+          </PopoverPopup>
+        </Popover>
+      ) : null}
+      {isRailLayout ? null : isElectron ? (
         <>
           <SidebarHeader
             className={cn(
@@ -6283,9 +6756,13 @@ export default function Sidebar() {
         ) : null}
         {isOnSettings ? (
           <SidebarGroup className="p-0">
+            {isRailLayout ? (
+              // The rail is the way back, so the panel opens on its title like every section.
+              <SidebarPanelTitle title="Settings" />
+            ) : null}
             <SettingsSidebarNav
               activeSection={activeSettingsSection}
-              onBack={handleBackToAppFromSettings}
+              onBack={isRailLayout ? null : handleBackToAppFromSettings}
               onSelectSection={(section, options) => {
                 void navigate({
                   to: "/settings",
@@ -6298,9 +6775,19 @@ export default function Sidebar() {
               }}
             />
           </SidebarGroup>
+        ) : showRailAutomationsPanel ? (
+          <RailAutomationsPanel />
         ) : (
           <>
-            <div className="flex items-center gap-1 pt-0 pb-1 pr-2.5 pl-1.5">
+            <div
+              className={cn(
+                "flex items-center gap-1 pt-0 pb-1 pr-2.5 pl-1.5",
+                // Rail layout: the panel has no header above it, so the title row gets
+                // breathing room from the panel's top edge. pt-1.5 puts the title's cap
+                // height as far from the top edge as its first letter is from the side.
+                isRailLayout && "pt-1.5",
+              )}
+            >
               <SidebarSurfacePicker
                 views={["threads", ...(groupsSectionVisible ? (["groups"] as const) : [])]}
                 activeView={isOnGroups ? "groups" : "threads"}
@@ -6327,69 +6814,30 @@ export default function Sidebar() {
                     onClick={() => setActivityViewEnabledSmoothly(!activityViewEnabled)}
                   />
                 ) : null}
+                {betaBadge}
               </div>
             </div>
             {/* The keyed content remounts with a short enter animation while the picker
                 stays mounted so its thumb can glide between Projects and Groups. */}
-            <div
-              key={isOnGroups ? "groups" : activityViewEnabled ? "activity" : "threads"}
-              className="sidebar-surface-enter"
-            >
+            <div key={sidebarSurfaceKey} className="sidebar-surface-enter">
               {/* Primary sidebar actions stay limited to features we currently ship. */}
-              {!isOnGroups && isCustomizingNav ? (
+              {!isOnGroups && isCustomizingNav && !isRailLayout ? (
                 <SidebarGroup className="px-1.5 pt-1 pb-1.5">
                   {/* Customize mode: the nav block lifts into a raised card (same chrome as
                       the Environment panel/composer) with per-item visibility + reorder. */}
                   <div className={cn(ENVIRONMENT_PANEL_SURFACE_CLASS_NAME, "p-1.5")}>
-                    <div className="flex items-center justify-between ps-2 pe-1 pt-0.5 pb-1">
-                      <span className={SIDEBAR_SECTION_LABEL_CLASS_NAME}>Customize</span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 px-2 text-ui text-primary hover:text-primary"
-                        onClick={() => setIsCustomizingNav(false)}
-                      >
-                        Done
-                      </Button>
-                    </div>
-                    <DndContext
-                      sensors={projectDnDSensors}
-                      collisionDetection={closestCenter}
-                      modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
-                      onDragEnd={handleNavOrderDragEnd}
-                    >
-                      <SortableContext
-                        items={sidebarNavOrder}
-                        strategy={verticalListSortingStrategy}
-                      >
-                        <ul className="flex w-full min-w-0 flex-col gap-0.5">
-                          {sidebarNavOrder.map((id) => {
-                            const item = sidebarNavDescriptors[id];
-                            return (
-                              <SidebarNavCustomizeRow
-                                key={id}
-                                id={id}
-                                icon={item.icon}
-                                {...(item.iconClassName
-                                  ? { iconClassName: item.iconClassName }
-                                  : {})}
-                                label={item.label}
-                                visible={!hiddenSidebarNavItems.has(id)}
-                                onVisibleChange={(visible) =>
-                                  handleNavItemVisibleChange(id, visible)
-                                }
-                              />
-                            );
-                          })}
-                        </ul>
-                      </SortableContext>
-                    </DndContext>
+                    <SidebarCustomizeHeader onDone={() => setIsCustomizingNav(false)} />
+                    <SidebarCustomizeList
+                      items={sidebarNavCustomizeItems}
+                      onReorder={handleNavOrderReorder}
+                      onVisibleChange={handleNavItemVisibleChange}
+                    />
                   </div>
                 </SidebarGroup>
               ) : !isOnGroups ? (
                 <SidebarGroup className="px-1.5 pt-1 pb-1.5" onContextMenu={handleNavContextMenu}>
                   <SidebarMenu className="gap-0.5">
-                    {visibleSidebarNavIds.map((id) => {
+                    {panelSidebarNavIds.map((id) => {
                       const item = sidebarNavDescriptors[id];
                       return (
                         <SidebarPrimaryAction
@@ -6463,6 +6911,8 @@ export default function Sidebar() {
                     onAddProject={handleStartAddProject}
                   />
                 </SidebarGroup>
+              ) : showRailSpacesPanel ? (
+                renderRailSpacesPanel()
               ) : (
                 <SidebarGroup className="px-1.5 py-1.5">
                   <SpaceSwitcher
@@ -6593,7 +7043,12 @@ export default function Sidebar() {
             </div>
           </>
         )}
-        {!isOnSettings && !isOnGroups && !activityViewEnabled && chatsSectionVisible ? (
+        {!isOnSettings &&
+        !isOnGroups &&
+        !activityViewEnabled &&
+        !showRailSpacesPanel &&
+        !showRailAutomationsPanel &&
+        chatsSectionVisible ? (
           // sidebar-surface-enter: mounts on the Groups -> Projects switch, so it
           // animates in step with the keyed surface wrapper above.
           <SidebarGroup className="sidebar-surface-enter px-1.5 pt-1 pb-2">
@@ -6711,7 +7166,13 @@ export default function Sidebar() {
         ) : null}
       </SidebarContent>
 
-      <SidebarFooter className="gap-2 border-sidebar-border border-t p-2 font-system-ui">
+      <SidebarFooter
+        className={cn(
+          "gap-2 border-sidebar-border border-t p-2 font-system-ui",
+          // Rail layout: Help lives in the rail, so the footer only carries the update pill.
+          isRailLayout && "border-t-0 pt-0",
+        )}
+      >
         <SidebarMenu>
           <SidebarMenuItem>
             <div className="flex flex-col gap-1">
@@ -6721,7 +7182,7 @@ export default function Sidebar() {
                 </Suspense>
               ) : null}
               <div className="flex items-center gap-2">
-                {!isOnSettings && (
+                {!isOnSettings && !isRailLayout && (
                   <SidebarMenuButton
                     size="sm"
                     className={cn(
@@ -6770,20 +7231,8 @@ export default function Sidebar() {
                     />
                     <TooltipPopup side="top">{desktopUpdateTooltip}</TooltipPopup>
                   </Tooltip>
-                ) : (
-                  <SidebarHelpMenu
-                    onOpenShortcuts={() =>
-                      void navigate({ to: "/settings", search: { section: "shortcuts" } })
-                    }
-                    onOpenFeedback={openFeedbackDialog}
-                    onCustomizeSidebar={
-                      isOnGroups || isOnSettings
-                        ? null
-                        : () => {
-                            setIsCustomizingNav(true);
-                          }
-                    }
-                  />
+                ) : isRailLayout ? null : (
+                  <SidebarHelpMenu {...sidebarHelpMenuProps} />
                 )}
               </div>
             </div>
@@ -6795,9 +7244,12 @@ export default function Sidebar() {
         open={createProjectDialogOpen}
         githubProvisioningAvailable={githubProvisioningAvailable}
         spaces={spaces}
-        activeSpaceId={activeSpaceId}
+        activeSpaceId={createProjectSpaceId === undefined ? activeSpaceId : createProjectSpaceId}
         defaultCloneParent={homeDir ?? "~"}
-        onOpenChange={setCreateProjectDialogOpen}
+        onOpenChange={(open) => {
+          setCreateProjectDialogOpen(open);
+          if (!open) setCreateProjectSpaceId(undefined);
+        }}
         onSubmit={handleCreateProjectSubmit}
       />
 
@@ -6979,7 +7431,7 @@ export default function Sidebar() {
                 }
               >
                 <ProjectContextMenuIcon icon={PencilIcon} />
-                <span>Edit name</span>
+                <span>Edit project</span>
               </MenuItem>
               {isGroupContainerProject(projectContextMenuProject, {
                 homeDir,
@@ -7206,27 +7658,28 @@ export default function Sidebar() {
         />
       ) : null}
 
-      <RenameDialog
-        open={renameProjectDialogId !== null && renameProjectDialogProject !== null}
-        title="Rename project"
-        description="Keep it short and recognizable."
-        initialValue={
-          renameProjectDialogProject?.localName ?? renameProjectDialogProject?.name ?? ""
-        }
-        allowEmpty
-        placeholder={renameProjectDialogProject?.folderName}
-        onOpenChange={(nextOpen) => {
-          if (!nextOpen) setRenameProjectDialogId(null);
-        }}
-        onSave={(nextName) => {
-          if (!renameProjectDialogProject) return;
-          handleRenameProjectSave(
-            renameProjectDialogProject.id,
-            nextName,
-            renameProjectDialogProject.localName,
-          );
-        }}
-      />
+      {editProjectDialogProject ? (
+        <EditProjectDialog
+          open={editProjectDialog?.open ?? false}
+          cwd={editProjectDialogProject.cwd}
+          folderName={editProjectDialogProject.folderName}
+          initialValue={{
+            name: editProjectDialogProject.localName ?? "",
+            appearance: editProjectDialogProject.appearance ?? null,
+          }}
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen)
+              setEditProjectDialog((current) => current && { ...current, open: false });
+          }}
+          onSave={(next) =>
+            handleEditProjectSave(
+              editProjectDialogProject.id,
+              next,
+              editProjectDialogProject.localName,
+            )
+          }
+        />
+      ) : null}
 
       {projectAgentDialogProject ? (
         <GroupSettingsDialog
@@ -7364,15 +7817,19 @@ function SidebarSearchPaletteController(props: {
   // structurally nested side chats stay out of standalone thread results.
   const selectSidebarDisplayThreads = useMemo(() => createSidebarDisplayThreadsSelector(), []);
   const importProviderCapabilityQueries = useQueries({
-    queries: (["codex", "claudeAgent", "cursor", "opencode"] as const).map((provider) =>
+    queries: (["codex", "claudeAgent", "cursor", "opencode", "omp"] as const).map((provider) =>
       providerComposerCapabilitiesQueryOptions(provider),
     ),
   });
   const threads = useStore(selectAllThreads);
   const sidebarDisplayThreads = useStore(selectSidebarDisplayThreads);
   const importProviders: ReadonlyArray<ImportProviderKind> = (
-    ["codex", "claudeAgent", "cursor", "opencode"] as const
-  ).filter((provider, index) => supportsThreadImport(importProviderCapabilityQueries[index]?.data));
+    ["codex", "claudeAgent", "cursor", "opencode", "omp"] as const
+  ).filter(
+    (provider, index) =>
+      isBetaFeatureOn(provider) &&
+      supportsThreadImport(importProviderCapabilityQueries[index]?.data),
+  );
   // `threads` is rebuilt on every streamed store flush, so this projection is
   // cheap by construction (message text is cached per thread-messages array
   // below) and its result keeps the previous identity while nothing the
