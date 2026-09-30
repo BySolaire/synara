@@ -92,8 +92,6 @@ import { makeProject } from "~/storeTestFixtures";
 import { useStore } from "~/store";
 import { useProjectAgentSummariesStore } from "./useProjectAgentSummaries";
 
-import { GroupPanelSectionBar } from "./GroupOverview";
-import { GROUP_PANEL_SECTIONS } from "./groupPanelSections";
 import { ProjectPanel } from "./ProjectPanel";
 
 function overview(overrides: Partial<ProjectAgentOverview> = {}): ProjectAgentOverview {
@@ -331,110 +329,27 @@ describe("ProjectPanel polished sections", () => {
     });
   });
 
-  it("keeps every section-bar button inside the bar from 260px up", async () => {
-    for (const width of [260, 290, 360]) {
-      const { container, unmount } = await render(
-        <div style={{ width: `${width}px` }} data-testid={`bar-${width}`}>
-          <GroupPanelSectionBar
-            sections={GROUP_PANEL_SECTIONS}
-            sectionCounts={{
-              threads: { count: 12, waiting: 2 },
-              "pull-requests": { count: 3, waiting: 0 },
-              automations: { count: 1, waiting: 0 },
-              context: { count: 3, waiting: 0 },
-            }}
-            openSectionId="threads"
-            regionId="sections-region"
-            onToggle={() => {}}
-          />
-        </div>,
-      );
-      const bar = container.querySelector<HTMLElement>("[data-testid^=bar-] > div");
-      expect(bar).not.toBeNull();
-      const barRect = bar!.getBoundingClientRect();
-      const buttons = Array.from(bar!.querySelectorAll("button"));
-      expect(buttons).toHaveLength(4);
-      let previousRight = barRect.left - 0.5;
-      for (const button of buttons) {
-        const rect = button.getBoundingClientRect();
-        expect(rect.left + 0.5).toBeGreaterThanOrEqual(previousRight);
-        expect(rect.right).toBeLessThanOrEqual(barRect.right + 0.5);
-        previousRight = rect.right;
-      }
-      // Corner badges hang off the icon but must stay inside the bar.
-      for (const badge of Array.from(bar!.querySelectorAll("span.absolute"))) {
-        const rect = badge.getBoundingClientRect();
-        expect(rect.left).toBeGreaterThanOrEqual(barRect.left - 0.5);
-        expect(rect.right).toBeLessThanOrEqual(barRect.right + 0.5);
-      }
-      expect(bar!.scrollWidth).toBeLessThanOrEqual(bar!.clientWidth + 1);
-      // The label renders only under the open section's icon.
-      for (const [index, button] of buttons.entries()) {
-        const label = button.querySelector<HTMLElement>(":scope > span:nth-child(2)");
-        expect(label !== null).toBe(index === 0);
-        if (label !== null) {
-          expect(label.textContent).toBe("Threads");
-        }
-      }
-      await unmount();
-    }
-  });
+  it("shows secondary sections as rows with a plain count that open in place", async () => {
+    await renderPanel();
 
-  it("centres the section-bar icons horizontally and vertically, pills included", async () => {
-    for (const open of [null, "threads"] as const) {
-      const { container, unmount } = await render(
-        <div style={{ width: "290px" }} data-testid={`bar-centre-${open ?? "none"}`}>
-          <GroupPanelSectionBar
-            sections={GROUP_PANEL_SECTIONS}
-            sectionCounts={{
-              threads: { count: 12, waiting: 2 },
-              "pull-requests": { count: 0, waiting: 0 },
-              automations: { count: 3, waiting: 0 },
-              context: { count: 9, waiting: 0 },
-            }}
-            openSectionId={open}
-            regionId="sections-region"
-            onToggle={() => {}}
-          />
-        </div>,
+    const contextRow = await vi.waitFor(() => {
+      const found = Array.from(document.querySelectorAll("button")).find((button) =>
+        button.textContent?.startsWith("Context"),
       );
-      const bar = container.querySelector<HTMLElement>("[data-testid^=bar-centre-] > div")!;
-      const barRect = bar.getBoundingClientRect();
-      const iconCentres = Array.from(bar.querySelectorAll("button")).map((button) => {
-        // First child span is the icon wrapper; the corner pill hangs off it
-        // absolutely and must not pull the icon off-centre.
-        const icon = button.querySelector<HTMLElement>(":scope > span")!;
-        const iconRect = icon.getBoundingClientRect();
-        const buttonRect = button.getBoundingClientRect();
-        return {
-          x: iconRect.left + iconRect.width / 2,
-          slotX: buttonRect.left + buttonRect.width / 2,
-          y: iconRect.top + iconRect.height / 2,
-        };
-      });
-      // Icon centres sit on their slot centres and are evenly spaced.
-      const gaps: number[] = [];
-      for (const [index, centre] of iconCentres.entries()) {
-        expect(Math.abs(centre.x - centre.slotX)).toBeLessThanOrEqual(1);
-        if (index > 0) {
-          gaps.push(centre.x - iconCentres[index - 1]!.x);
-        }
-      }
-      for (const gap of gaps.slice(1)) {
-        expect(Math.abs(gap - gaps[0]!)).toBeLessThanOrEqual(1.5);
-      }
-      // All icons share one row and, with nothing open, sit dead-centre.
-      for (const centre of iconCentres) {
-        expect(Math.abs(centre.y - iconCentres[0]!.y)).toBeLessThanOrEqual(0.5);
-      }
-      if (open === null) {
-        const barCentreY = barRect.top + barRect.height / 2;
-        for (const centre of iconCentres) {
-          expect(Math.abs(centre.y - barCentreY)).toBeLessThanOrEqual(1);
-        }
-      }
-      await unmount();
-    }
+      expect(found).not.toBeUndefined();
+      return found!;
+    });
+    // Counts sit in the row as text, never as a badge pinned over an icon.
+    expect(contextRow.textContent).toMatch(/^Context\d+$/);
+    expect(document.querySelector("[data-environment-panel-variant] span.absolute")).toBeNull();
+    expect(contextRow.getAttribute("aria-expanded")).toBe("false");
+
+    await page.getByRole("button", { name: /^Context/ }).click();
+    expect(contextRow.getAttribute("aria-expanded")).toBe("true");
+    await expect.element(page.getByRole("region", { name: "Context" })).toBeInTheDocument();
+    // One section open at a time: opening Automations closes Context.
+    await page.getByRole("button", { name: /^Automations/ }).click();
+    expect(contextRow.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("lists every group thread by state in the Threads section, not an empty state", async () => {
@@ -454,7 +369,7 @@ describe("ProjectPanel polished sections", () => {
     setSidebarSummaries([idleOne, idleTwo, waiting]);
     await renderPanel();
 
-    // Threads is the default section: the list shows without touching the bar.
+    // Threads is always shown: the list needs no click.
     await expect.element(page.getByText("Idle", { exact: true })).toBeInTheDocument();
     await vi.waitFor(() => {
       expect(document.body.textContent).toContain("Idle one");
@@ -462,7 +377,6 @@ describe("ProjectPanel polished sections", () => {
       expect(document.body.textContent).toContain("Needs you");
     });
     expect(document.body.textContent).not.toContain("No threads in progress or waiting on you.");
-    // The body holds Focus only — the Threads section owns the full list.
     expect(document.body.textContent).not.toContain("Other threads");
   });
 
@@ -499,22 +413,19 @@ describe("ProjectPanel polished sections", () => {
         1,
     );
 
-    // The body scrolls inside; header (title) and section bar stay pinned
-    // inside the capped surface.
+    // The body scrolls inside; the header (title) stays pinned inside the
+    // capped surface.
     const scrollBody = surface.querySelector<HTMLElement>("div.overflow-y-auto");
     expect(scrollBody).not.toBeNull();
     expect(scrollBody!.scrollHeight).toBeGreaterThan(scrollBody!.clientHeight);
-    const bar = surface.lastElementChild as HTMLElement;
-    const title = Array.from(surface.querySelectorAll("div")).find(
+    const title = Array.from(surface.querySelectorAll("p")).find(
       (el) => el.textContent === "Groups",
     )!;
-    expect(title.getBoundingClientRect().top).toBeGreaterThanOrEqual(surfaceRect.top - 0.5);
-    expect(bar.getBoundingClientRect().bottom).toBeLessThanOrEqual(surfaceRect.bottom + 1);
-    // Scrolling the body moves rows — the bar stays put.
-    const barTopBefore = bar.getBoundingClientRect().top;
+    const titleTopBefore = title.getBoundingClientRect().top;
+    expect(titleTopBefore).toBeGreaterThanOrEqual(surfaceRect.top - 0.5);
     scrollBody!.scrollTop = scrollBody!.scrollHeight;
     await vi.waitFor(() => expect(scrollBody!.scrollTop).toBeGreaterThan(0));
-    expect(Math.abs(bar.getBoundingClientRect().top - barTopBefore)).toBeLessThanOrEqual(1);
+    expect(Math.abs(title.getBoundingClientRect().top - titleTopBefore)).toBeLessThanOrEqual(1);
   });
 
   it("renders the coordinator model line without repeating the provider name", async () => {
@@ -540,13 +451,13 @@ describe("ProjectPanel polished sections", () => {
       return found!;
     });
     const text = modelButton.textContent ?? "";
-    expect(text).toContain("Coordinator · ");
+    expect(text).toContain("Coordinator");
     expect(text).toContain("Claude Opus 5.5");
     expect(text).toContain("Medium");
     expect(text).not.toContain("Claude ·");
   });
 
-  it("opens on Threads by state, with live threads under Working and no activity chart", async () => {
+  it("always shows Threads by state, with live threads under Working and no activity chart", async () => {
     const idle = makeThreadSummary(ThreadId.makeUnsafe("thread-idle-1"), { title: "Idle one" });
     const coordinator = makeThreadSummary(COORDINATOR_THREAD_ID, { title: "alpha Coordinator" });
     harness.api.projectAgent.listThreadIndex.mockResolvedValue(
@@ -568,12 +479,6 @@ describe("ProjectPanel polished sections", () => {
       expect(document.body.textContent).toContain("Working one");
       expect(document.body.textContent).toContain("Idle one");
     });
-    expect(
-      page
-        .getByRole("button", { name: /^Threads/ })
-        .element()
-        .getAttribute("aria-expanded"),
-    ).toBe("true");
     expect(document.querySelector('[role="img"][aria-label*="working now"]')).toBeNull();
   });
 });

@@ -1,29 +1,25 @@
 // FILE: GroupOverview.tsx
-// Purpose: Section bodies for the Group panel's bottom section bar — Threads
-//          grouped by live state, Pull requests opened by group threads, and
-//          group-scoped Automations. The panel hoists the derivation (thread
-//          rows, PR rows, automation scoping) so the bar's badges and the
-//          expanded body read the same data.
+// Purpose: Section bodies for the Group panel — Threads grouped by live state,
+//          Pull requests opened by group threads, and group-scoped Automations.
+//          The panel hoists the derivation (thread rows, PR rows, automation
+//          scoping) so each row's count and its expanded body read the same data.
 // Layer: Group panel UI
 // Why: Claude Code's Projects Overview lists every thread by live state; this is
 //      Synara's version, derived from the same helpers the sidebar uses.
 
 import type { AutomationDefinition, ThreadId } from "@synara/contracts";
-import { type MouseEvent as ReactMouseEvent, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { DisclosureChevron } from "~/components/ui/DisclosureChevron";
 import { IconButton } from "~/components/ui/icon-button";
 import { Switch } from "~/components/ui/switch";
 import { toastManager } from "~/components/ui/toast";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { PanelStateMessage } from "~/components/chat/PanelStateMessage";
 import { PrStateChip } from "~/components/pullRequest/PrStateChip";
 import { resolvePrStatePresentation } from "~/components/pullRequest/pullRequestStatePresentation";
 import { ProviderIcon } from "~/components/ProviderIcon";
-import { EnvironmentSectionLabel } from "~/components/chat/environment/EnvironmentRow";
+import { EnvironmentCollapsibleSection } from "~/components/chat/environment/EnvironmentRow";
 import { CheckIcon, Columns2Icon, EllipsisIcon, GitHubIcon, RotateCcwIcon } from "~/lib/icons";
-import type { GroupPanelSectionDescriptor, GroupPanelSectionId } from "./groupPanelSections";
 import { formatSchedule } from "~/lib/automationForm";
 import { formatRelativeTime } from "~/lib/relativeTime";
 import { archiveThreadFromClient, unarchiveThreadFromClient } from "~/lib/threadArchive";
@@ -48,102 +44,12 @@ const RESOLVE_MENU_ICON = renderToStaticMarkup(<CheckIcon />);
 const SPLIT_VIEW_MENU_ICON = renderToStaticMarkup(<Columns2Icon />);
 const REOPEN_MENU_ICON = renderToStaticMarkup(<RotateCcwIcon />);
 
-// Row titles size off the same token as sidebar thread rows and the Focus card,
-// never the panel's ambient font size.
-const GROUP_OVERVIEW_ROW_TITLE_CLASS_NAME = "min-w-0 truncate text-ui font-medium text-foreground";
+// Row titles use the same size and weight as Environment panel rows, never the
+// panel's ambient font size.
+const GROUP_OVERVIEW_ROW_TITLE_CLASS_NAME = "min-w-0 truncate text-ui font-normal text-foreground";
 
-// — Section bar —
-
-// Corner pill for a section's item count — small enough to sit on the icon
-// without touching neighbouring buttons at the panel's narrowest width.
-const SECTION_COUNT_PILL_CLASS_NAME =
-  "absolute -right-2.5 -top-1.5 flex h-3 min-w-3 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--foreground)_8%,transparent)] px-0.5 text-ui-2xs leading-none tabular-nums text-muted-foreground/90";
-
-/**
- * The Group panel's bottom bar: one evenly spaced icon button per section, each
- * centred in its equal slot so the row reads as a centred, evenly spaced unit.
- * Only the open section shows its label under the icon — closed buttons render
- * no label, so an all-closed bar is a vertically centred icon row with no dead
- * space under it. Every button carries the label in a tooltip and its
- * accessible name. Counts ride on the icon's top-right corner and a "waiting on
- * you" dot on the top-left; both are absolutely positioned and never shift the
- * icon off-centre, so the bar stays readable from ~260px up where inline labels
- * ran together.
- */
-export function GroupPanelSectionBar({
-  sections,
-  sectionCounts,
-  openSectionId,
-  regionId,
-  onToggle,
-}: {
-  readonly sections: readonly GroupPanelSectionDescriptor[];
-  readonly sectionCounts: Readonly<
-    Record<GroupPanelSectionId, { readonly count: number; readonly waiting: number }>
-  >;
-  readonly openSectionId: GroupPanelSectionId | null;
-  readonly regionId: string;
-  readonly onToggle: (sectionId: GroupPanelSectionId | null) => void;
-}) {
-  return (
-    <div className="flex items-stretch">
-      {sections.map((section) => {
-        const counts = sectionCounts[section.id];
-        const isOpen = openSectionId === section.id;
-        const ariaLabel =
-          counts.waiting > 0
-            ? `${section.label}, ${counts.waiting} waiting on you`
-            : counts.count > 0
-              ? `${section.label}, ${counts.count}`
-              : section.label;
-        const toggle = () => {
-          onToggle(isOpen ? null : section.id);
-        };
-        return (
-          <Tooltip key={section.id}>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  aria-label={ariaLabel}
-                  aria-expanded={isOpen}
-                  aria-controls={regionId}
-                  aria-pressed={isOpen}
-                  className={cn(
-                    "flex min-w-0 flex-1 flex-col items-center gap-0.5 rounded-lg px-1 py-1 text-ui-xs transition-colors",
-                    isOpen
-                      ? "bg-foreground/8 text-foreground"
-                      : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
-                  )}
-                  onClick={toggle}
-                />
-              }
-            >
-              <span className="relative flex size-4 items-center justify-center">
-                <section.icon className="size-4" aria-hidden />
-                {counts.waiting > 0 ? (
-                  <span
-                    className="absolute -left-1.5 -top-1 block size-1.5 rounded-full bg-amber-500 dark:bg-amber-300/90"
-                    aria-hidden
-                  />
-                ) : null}
-                {counts.count > 0 ? (
-                  <span className={SECTION_COUNT_PILL_CLASS_NAME} aria-hidden>
-                    {counts.count}
-                  </span>
-                ) : null}
-              </span>
-              {isOpen ? <span className="min-w-0 max-w-full truncate">{section.label}</span> : null}
-            </TooltipTrigger>
-            <TooltipPopup>
-              <p>{section.label}</p>
-            </TooltipPopup>
-          </Tooltip>
-        );
-      })}
-    </div>
-  );
-}
+// Empty states line up with the panel's rows instead of centring in a narrow column.
+const GROUP_PANEL_EMPTY_STATE_CLASS_NAME = "justify-start px-2 py-1 text-left";
 
 // — Threads —
 
@@ -163,11 +69,6 @@ export function GroupThreadsSection({
   readonly onOpenThread: (threadId: ThreadId) => void;
   readonly onOpenThreadSplit: (threadId: ThreadId) => void;
 }) {
-  // Sections toggled away from their default: "Resolved" starts collapsed and the
-  // rest start open, so the set records the direction change, not the collapsed state.
-  const [toggledSections, setToggledSections] = useState<ReadonlySet<GroupThreadSectionId>>(
-    () => new Set(),
-  );
   const visibleSections = sectionIds
     ? GROUP_THREAD_SECTIONS.filter((section) => sectionIds.includes(section.id))
     : GROUP_THREAD_SECTIONS;
@@ -177,7 +78,7 @@ export function GroupThreadsSection({
   );
   if (totalRows === 0) {
     return (
-      <PanelStateMessage density="compact">
+      <PanelStateMessage density="compact" className={GROUP_PANEL_EMPTY_STATE_CLASS_NAME}>
         <p>
           {emptyMessage ??
             "No threads yet. Ask the coordinator for work and it will start threads here."}
@@ -190,43 +91,31 @@ export function GroupThreadsSection({
       {visibleSections.map((section) => {
         const rows = sections.get(section.id) ?? [];
         if (rows.length === 0) return null;
-        const collapsed = section.defaultOpen === toggledSections.has(section.id);
-        const toggleSection = () => {
-          setToggledSections((current) => {
-            const next = new Set(current);
-            if (next.has(section.id)) next.delete(section.id);
-            else next.add(section.id);
-            return next;
-          });
-        };
+        // Same collapsible header as the Environment panel's sections; Resolved
+        // starts collapsed through the section's defaultOpen.
         return (
-          <section key={section.id} className="flex flex-col">
-            <button
-              type="button"
-              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-left"
-              aria-expanded={!collapsed}
-              onClick={toggleSection}
-            >
-              <DisclosureChevron open={!collapsed} className="size-3 shrink-0 opacity-70" />
-              <span className="flex-1">
-                <EnvironmentSectionLabel>{section.label}</EnvironmentSectionLabel>
+          <EnvironmentCollapsibleSection
+            key={section.id}
+            defaultOpen={section.defaultOpen}
+            label={
+              <span className="flex items-center gap-1.5">
+                <span>{section.label}</span>
+                <span className="tabular-nums">{rows.length}</span>
               </span>
-              <span className="text-ui-xs text-muted-foreground/80">{rows.length}</span>
-            </button>
-            {collapsed ? null : (
-              <div className="flex flex-col gap-0.5">
-                {rows.map((row) => (
-                  <GroupThreadRow
-                    key={row.thread.id}
-                    row={row}
-                    agent={agent}
-                    onOpenThread={onOpenThread}
-                    onOpenThreadSplit={onOpenThreadSplit}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
+            }
+          >
+            <div className="flex flex-col gap-0.5">
+              {rows.map((row) => (
+                <GroupThreadRow
+                  key={row.thread.id}
+                  row={row}
+                  agent={agent}
+                  onOpenThread={onOpenThread}
+                  onOpenThreadSplit={onOpenThreadSplit}
+                />
+              ))}
+            </div>
+          </EnvironmentCollapsibleSection>
         );
       })}
     </div>
@@ -329,14 +218,15 @@ export function GroupThreadRow({
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-1.5">
-            <ProviderIcon
-              provider={row.thread.session?.provider ?? null}
-              className="size-3 shrink-0 opacity-70"
-            />
             <span className={GROUP_OVERVIEW_ROW_TITLE_CLASS_NAME}>{threadTitle}</span>
             {row.pullRequest ? <PrStateChip pr={row.pullRequest} /> : null}
           </span>
           <span className="flex items-center gap-1.5 text-ui-xs text-muted-foreground">
+            {/* Provider sits with the other metadata so titles share one left edge
+                whether or not the thread has a live session. */}
+            {row.thread.session?.provider ? (
+              <ProviderIcon provider={row.thread.session.provider} className="size-3 shrink-0" />
+            ) : null}
             {row.projectName ? <span className="truncate">{row.projectName}</span> : null}
             {row.taskLine ? <span className="truncate">{row.taskLine}</span> : null}
             <span className="shrink-0">
@@ -372,7 +262,7 @@ export function GroupPullRequestsSection({
 }) {
   if (rows.length === 0) {
     return (
-      <PanelStateMessage density="compact">
+      <PanelStateMessage density="compact" className={GROUP_PANEL_EMPTY_STATE_CLASS_NAME}>
         <p>No pull requests yet. PRs opened by group threads land here.</p>
       </PanelStateMessage>
     );
@@ -431,14 +321,14 @@ export function GroupAutomationsSection({
 }) {
   if (automations.isLoading && definitions.length === 0) {
     return (
-      <PanelStateMessage density="compact">
+      <PanelStateMessage density="compact" className={GROUP_PANEL_EMPTY_STATE_CLASS_NAME}>
         <p>Loading automations…</p>
       </PanelStateMessage>
     );
   }
   if (definitions.length === 0) {
     return (
-      <PanelStateMessage density="compact">
+      <PanelStateMessage density="compact" className={GROUP_PANEL_EMPTY_STATE_CLASS_NAME}>
         <p>No automations yet. Ask the coordinator to check something on a schedule.</p>
       </PanelStateMessage>
     );

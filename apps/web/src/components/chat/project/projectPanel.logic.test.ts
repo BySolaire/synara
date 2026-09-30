@@ -1,41 +1,11 @@
-import { ProjectTaskId, ThreadId, type ProjectTask } from "@synara/contracts";
 import { describe, expect, it } from "vitest";
 
 import { INITIAL_PROJECT_DIGEST_SUMMARY } from "@synara/shared/projectAgent";
 
 import {
-  mergeProjectFocusRows,
-  partitionProjectFocusRows,
-  projectThreadIndexFocusRows,
   rewriteThreadIdsAsMarkdownLinks,
   sanitizeProjectDigestSummary,
 } from "./projectPanel.logic";
-
-function task(input: {
-  id: string;
-  title: string;
-  status: "planned" | "running" | "done" | "cancelled";
-  description?: string | null;
-  archivedAt?: string | null;
-  assignedThreadId?: string | null;
-}) {
-  return {
-    id: ProjectTaskId.makeUnsafe(input.id),
-    projectId: "project-1" as never,
-    goalId: "goal-1" as never,
-    title: input.title,
-    description: input.description ?? null,
-    acceptanceCriteria: null,
-    status: input.status,
-    dependsOnTaskIds: [],
-    assignedThreadId: input.assignedThreadId ? ThreadId.makeUnsafe(input.assignedThreadId) : null,
-    repairCount: 0,
-    archivedAt: input.archivedAt ?? null,
-    revision: 1,
-    createdAt: "2026-09-17T00:00:00.000Z",
-    updatedAt: "2026-09-17T00:00:00.000Z",
-  } as ProjectTask;
-}
 
 describe("sanitizeProjectDigestSummary", () => {
   it("hides leftover start-a-goal copy in Focus", () => {
@@ -44,66 +14,6 @@ describe("sanitizeProjectDigestSummary", () => {
         "Coordinator is configured. Start a goal to begin bounded coordination.",
       ),
     ).toBe(INITIAL_PROJECT_DIGEST_SUMMARY);
-  });
-});
-
-describe("partitionProjectFocusRows", () => {
-  it("splits open, done, and archived work", () => {
-    const partitioned = partitionProjectFocusRows([
-      task({
-        id: "open-1",
-        title: "Write auth skill",
-        status: "running",
-        description: "Needs GitHub MCP auth",
-        assignedThreadId: "thread-open",
-      }),
-      task({ id: "done-1", title: "Test emulator", status: "done" }),
-      task({
-        id: "arch-1",
-        title: "Old attempt",
-        status: "cancelled",
-        archivedAt: "2026-09-16T00:00:00.000Z",
-      }),
-    ]);
-    expect(partitioned.open.map((row) => row.title)).toEqual(["Write auth skill"]);
-    expect(partitioned.open[0]?.detail).toBe("Needs GitHub MCP auth");
-    expect(partitioned.done.map((row) => row.title)).toEqual(["Test emulator"]);
-    expect(partitioned.archived.map((row) => row.title)).toEqual(["Old attempt"]);
-  });
-});
-
-describe("projectThreadIndexFocusRows", () => {
-  it("lists worker threads and hides the coordinator", () => {
-    const coordinatorId = ThreadId.makeUnsafe("thread-coordinator");
-    const workerId = ThreadId.makeUnsafe("thread-worker");
-    const rows = projectThreadIndexFocusRows({
-      coordinatorThreadId: coordinatorId,
-      titlesById: new Map([[workerId, "Sample map Focus"]]),
-      threads: [
-        {
-          projectId: "project-1" as never,
-          threadId: coordinatorId,
-          excluded: false,
-          archived: false,
-          summaryStatus: "covered",
-          lastUpdatedAt: "2026-09-17T00:00:00.000Z",
-          lastSummarizedAt: null,
-        },
-        {
-          projectId: "project-1" as never,
-          threadId: workerId,
-          excluded: false,
-          archived: false,
-          summaryStatus: "pending",
-          lastUpdatedAt: "2026-09-17T00:00:00.000Z",
-          lastSummarizedAt: null,
-        },
-      ],
-    });
-    expect(rows.open.map((row) => row.title)).toEqual(["Sample map Focus"]);
-    expect(
-      mergeProjectFocusRows(partitionProjectFocusRows([]), rows).open.map((row) => row.title),
-    ).toEqual(["Sample map Focus"]);
   });
 });
 

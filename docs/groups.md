@@ -158,13 +158,12 @@ From top to bottom:
   settings** (gear), and **Close**.
 - **Coordinator line**: **Coordinator** and its model, with a status dot (**Needs you**, **Working**,
   **Paused**, **Stopped**, or **Idle**). Click it to open the coordinator conversation.
-- **Focus**: a short summary of what matters now, refreshed after coordinator turns, with links to
-  the threads involved.
-- **Threads**, open by default: every thread in the group, grouped by state, so you can see at a
-  glance what is working, what is done, and what is waiting on you.
-- **Icon bar** at the bottom: **Threads**, **Pull requests**, **Automations**, and **Context**,
-  each with a count. An amber dot on **Threads** means a thread is waiting on you. Click an icon
-  to open that section in place, above the bar; click it again to close it.
+- **Focus**: the coordinator's short summary of what matters now, refreshed after coordinator
+  turns, with links to the threads it calls out. It is hidden when there is nothing to say.
+- **Threads**, always shown: every thread in the group, grouped by state, so you can see at a
+  glance what is working, what is done, and what is waiting on you. Each state can be collapsed.
+- **Pull requests**, **Automations**, and **Context** rows, each with a count. Click a row to open
+  that section in place under it; only one is open at a time.
 
 The panel grows with its content up to a height based on your screen; past that, its body scrolls.
 

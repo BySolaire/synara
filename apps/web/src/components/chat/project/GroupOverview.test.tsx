@@ -72,7 +72,7 @@ describe("GroupThreadsSection", () => {
 
     // SidebarThreadRowContent titles carry `text-ui`; panel rows must match so
     // titles track the Settings font size instead of the ambient default.
-    expect(markup).toContain('class="min-w-0 truncate text-ui font-medium text-foreground"');
+    expect(markup).toContain('class="min-w-0 truncate text-ui font-normal text-foreground"');
     expect(markup).toContain("Mars recruitment web");
   });
 });
