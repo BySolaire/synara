@@ -10,8 +10,18 @@ $unqualified = $false
 function Save-State($name) {
     Get-MpComputerStatus | ConvertTo-Json -Depth 6 | Set-Content "$evidence/$name-status.json"
     Get-MpPreference | ConvertTo-Json -Depth 6 | Set-Content "$evidence/$name-preferences.json"
-    @(Get-MpThreatDetection) | ConvertTo-Json -Depth 8 | Set-Content "$evidence/$name-detections.json"
-    @(Get-MpThreat) | ConvertTo-Json -Depth 8 | Set-Content "$evidence/$name-threats.json"
+    ConvertTo-Json -InputObject @(Get-MpThreatDetection | Select-Object * -ExcludeProperty CimClass, CimInstanceProperties, CimSystemProperties) -Depth 8 | Set-Content "$evidence/$name-detections.json"
+    ConvertTo-Json -InputObject @(Get-MpThreat | Select-Object * -ExcludeProperty CimClass, CimInstanceProperties, CimSystemProperties) -Depth 8 | Set-Content "$evidence/$name-threats.json"
+}
+function Assert-NotExcluded($file, $log) {
+    for ($attempt = 0; $attempt -lt 12; $attempt++) {
+        $output = @(& $scanner -CheckExclusion -Path $file 2>&1)
+        $code = $LASTEXITCODE
+        if ($code -eq 1 -and ($output -join "`n") -match 'is not excluded') { break }
+        Start-Sleep -Seconds 5
+    }
+    $output | Set-Content $log
+    if ($code -ne 1 -or ($output -join "`n") -notmatch 'is not excluded') { throw "File exclusion state is unqualified: $file" }
 }
 Save-State 'initial'
 Get-ComputerInfo -Property WindowsProductName, WindowsVersion, OsBuildNumber |
@@ -61,8 +71,8 @@ try {
             $result.hashBefore = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($result.hashBefore -ne $sample.Hash) { throw 'Official installer hash mismatch.' }
             Get-AuthenticodeSignature -LiteralPath $installer | ConvertTo-Json -Depth 5 | Set-Content "$evidence/$version-signature.json"
-            & $scanner -CheckExclusion -Path $installer 2>&1 | Tee-Object "$evidence/$version-exclusion.txt"
-            $result.exclusionCheckExit = $LASTEXITCODE
+            Assert-NotExcluded $installer "$evidence/$version-exclusion.txt"
+            $result.excluded = $false
             & $scanner -Scan -ScanType 3 -File $installer 2>&1 | Tee-Object "$evidence/$version-scan.txt"
             $result.scanExit = $LASTEXITCODE
             if (Test-Path -LiteralPath $installer) {
@@ -94,8 +104,12 @@ try {
                 $result.hashBefore = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
                 if ($result.hashBefore -ne $entry.sha256) { throw 'Component hash mismatch.' }
                 $logName = "$version-component-$($componentResults.Count)"
-                & $scanner -Scan -ScanType 3 -File $file 2>&1 | Tee-Object "$evidence/$logName-scan.txt"
+                Assert-NotExcluded $file "$evidence/$logName-exclusion.txt"
+                $result.excluded = $false
+                $output = @(& $scanner -Scan -ScanType 3 -File $file 2>&1)
                 $result.scanExit = $LASTEXITCODE
+                $output | Tee-Object "$evidence/$logName-scan.txt" | Write-Host
+                $result.explicitNoThreats = ($output -join "`n") -match 'found no threats\.'
                 if (Test-Path -LiteralPath $file) {
                     $result.hashAfter = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
                 }
@@ -103,7 +117,7 @@ try {
                 $result.error = $_.ToString()
             }
             $componentResults += $result
-            if ($result.error -or $result.scanExit -ne 0 -or $result.hashAfter -ne $entry.sha256) { $unqualified = $true }
+            if ($result.error -or $result.scanExit -ne 0 -or -not $result.explicitNoThreats -or $result.hashAfter -ne $entry.sha256) { $unqualified = $true }
         }
         $componentResults | ConvertTo-Json -Depth 6 | Set-Content "$evidence/$version-component-results.json"
     }

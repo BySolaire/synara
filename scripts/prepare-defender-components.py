@@ -41,11 +41,13 @@ with tempfile.TemporaryDirectory(prefix="synara-defender-") as temporary:
         for source in sorted(root.rglob("*")):
             if not source.is_file() or source == installer:
                 continue
-            if source.suffix.lower() not in {".exe", ".dll", ".node", ".asar"}:
+            if source.suffix.lower() not in {".exe", ".dll", ".node", ".asar", ".7z"}:
                 continue
             relative = source.relative_to(root)
             target = output / version / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target)
             manifest.append({"version": version, "path": relative.as_posix(), "sha256": digest(source), "bytes": source.stat().st_size})
+        if version == "0.9.2":
+            shutil.copytree(payload, "defender-full-payload")
 (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

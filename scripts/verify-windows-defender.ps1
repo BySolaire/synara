@@ -61,6 +61,16 @@ try {
     $scanner = if ($platform) { Join-Path $platform.FullName 'MpCmdRun.exe' } else { "$env:ProgramFiles/Windows Defender/MpCmdRun.exe" }
     foreach ($sample in $expected) {
         $name = Split-Path $sample.path -Leaf
+        for ($attempt = 0; $attempt -lt 12; $attempt++) {
+            $exclusion = @(& $scanner -CheckExclusion -Path $sample.path 2>&1)
+            $exclusionExit = $LASTEXITCODE
+            if ($exclusionExit -eq 1 -and ($exclusion -join "`n") -match 'is not excluded') { break }
+            Start-Sleep -Seconds 5
+        }
+        $exclusion | Set-Content "$evidence/$name-exclusion.txt"
+        if ($exclusionExit -ne 1 -or ($exclusion -join "`n") -notmatch 'is not excluded') {
+            throw "Defender has not confirmed $name is outside exclusions."
+        }
         $output = @(& $scanner -Scan -ScanType 3 -File $sample.path 2>&1)
         $exitCode = $LASTEXITCODE
         $output | Tee-Object "$evidence/$name-scan.txt" | Write-Host
