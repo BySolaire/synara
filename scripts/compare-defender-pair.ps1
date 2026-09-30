@@ -64,7 +64,7 @@ try {
     )
     foreach ($sample in $samples) {
         $name = $sample.Name
-        $installer = (Resolve-Path "pair/$name").Path + '/Synara-0.9.2-x64.exe'
+        $installer = Join-Path (Resolve-Path "pair/$name").Path 'Synara-0.9.2-x64.exe'
         $result = [ordered]@{ name = $name; expectedHash = $sample.Hash; definitionBefore = (Get-MpComputerStatus).AntivirusSignatureVersion }
         try {
             Assert-NotExcluded $installer "$evidence/$name-exclusion.txt"
@@ -82,6 +82,7 @@ try {
             $result | ConvertTo-Json -Depth 6 | Set-Content "$evidence/$name-result.json"
             Save-State $name
             if ($result.definitionBefore -ne $definition -or $result.definitionAfter -ne $definition) { $unqualified = $true }
+            if ($name -eq 'normal' -and ($result.error -or -not $result.explicitNoThreats -or $result.hashAfter -ne $sample.Hash)) { $unqualified = $true }
         }
     }
 } finally {
@@ -90,4 +91,4 @@ try {
     @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-Windows Defender/Operational'; StartTime = $started } -ErrorAction SilentlyContinue) |
         Select-Object TimeCreated, Id, Message | ConvertTo-Json -Depth 6 | Set-Content "$evidence/events.json"
 }
-if ($unqualified) { throw 'Definitions changed during the paired comparison.' }
+if ($unqualified) { throw 'Definitions changed or the normal candidate did not receive an explicit clean scan.' }
