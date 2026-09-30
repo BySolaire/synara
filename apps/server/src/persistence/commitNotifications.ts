@@ -18,7 +18,8 @@ export const notifyAfterCommit = (notification: Effect.Effect<void>): Effect.Eff
 
 /** The supplied effect must own the transaction boundary. Failed transactions
  * discard notifications; successful ones flush outside the SQL connection
- * context, so background work cannot inherit a released transaction. */
+ * context, so background work cannot inherit a released transaction. Once
+ * committed, notification defects must never turn success into compensation. */
 export const withCommitNotifications = <A, E, R>(transaction: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const pending: Array<Effect.Effect<void>> = [];
@@ -27,6 +28,13 @@ export const withCommitNotifications = <A, E, R>(transaction: Effect.Effect<A, E
         enqueue: (notification) => pending.push(notification),
       }),
     );
-    yield* Effect.forEach(pending, (notification) => notification, { discard: true });
+    yield* Effect.forEach(
+      pending,
+      (notification) =>
+        notification.pipe(
+          Effect.catchCause((cause) => Effect.logWarning("Post-commit notification failed", cause)),
+        ),
+      { discard: true },
+    ).pipe(Effect.uninterruptible);
     return result;
   });

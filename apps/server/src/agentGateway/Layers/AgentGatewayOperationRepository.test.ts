@@ -7,6 +7,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { expect } from "vitest";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { notifyAfterCommit } from "../../persistence/commitNotifications.ts";
 import { AgentGatewayOperationRepository } from "../Services/AgentGatewayOperationRepository.ts";
 import { AgentGatewayOperationRepositoryLive } from "./AgentGatewayOperationRepository.ts";
 
@@ -84,6 +85,63 @@ layer("AgentGatewayOperationRepository", (it) => {
       yield* repository.complete(complete, track);
       assert.equal((yield* repository.getById(scoped.operationId))?.status, "completed");
       assert.equal((yield* groups.listThreadIndex(projectId)).length, 1);
+    }),
+  );
+
+  it.effect("preserves a committed create when post-commit notifications die or interrupt", () =>
+    Effect.gen(function* () {
+      const repository = yield* AgentGatewayOperationRepository;
+      const groups = yield* ProjectAgentRepository;
+      const projectId = ProjectId.makeUnsafe("post-commit-project");
+      const delivered: string[] = [];
+      for (const [index, notification] of [
+        Effect.die("publish failed"),
+        Effect.interrupt,
+      ].entries()) {
+        const operationId = `post-commit-${index}`;
+        const threadId = ThreadId.makeUnsafe(`post-commit-child-${index}`);
+        yield* repository.reserve({
+          ...base,
+          operationId,
+          callerTurnId: `post-commit-turn-${index}`,
+        });
+        yield* repository.markDispatching({ operationId, now: base.now });
+        const resultJson = JSON.stringify({ threadIds: [threadId] });
+        const completed = yield* repository
+          .complete(
+            { operationId, resultJson, now: base.now },
+            groups
+              .upsertThreadIndex({
+                projectId,
+                threadId,
+                excluded: false,
+                archived: false,
+                summaryStatus: "pending",
+                lastUpdatedAt: base.now,
+                lastSummarizedAt: null,
+              })
+              .pipe(
+                Effect.andThen(notifyAfterCommit(notification)),
+                Effect.andThen(
+                  notifyAfterCommit(
+                    Effect.sync(() => {
+                      delivered.push(operationId);
+                    }),
+                  ),
+                ),
+              ),
+          )
+          .pipe(Effect.exit);
+        assert.equal(completed._tag, "Success");
+        const persisted = yield* repository.getById(operationId);
+        assert.equal(persisted?.status, "completed");
+        assert.equal(persisted?.resultJson, resultJson);
+        assert.equal(
+          (yield* groups.listThreadIndex(projectId)).some((entry) => entry.threadId === threadId),
+          true,
+        );
+      }
+      assert.deepEqual(delivered, ["post-commit-0", "post-commit-1"]);
     }),
   );
 
