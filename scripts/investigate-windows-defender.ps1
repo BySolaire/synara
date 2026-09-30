@@ -26,8 +26,14 @@ try {
             Remove-MpPreference @arguments
         }
     }
-    Set-MpPreference -DisableRealtimeMonitoring $false -DisableArchiveScanning $false -DisableIOAVProtection $false -DisableBehaviorMonitoring $false
+    Set-MpPreference -DisableRealtimeMonitoring $false -DisableArchiveScanning $false -DisableIOAVProtection $false -DisableBehaviorMonitoring $false -DisableScriptScanning $false
     Update-MpSignature
+    # Defender applies preference changes asynchronously. Wait for the service's
+    # observed state rather than accepting only the requested preference value.
+    for ($attempt = 0; $attempt -lt 12; $attempt++) {
+        if ((Get-MpComputerStatus).RealTimeProtectionEnabled) { break }
+        Start-Sleep -Seconds 5
+    }
     Save-State 'ready'
     $status = Get-MpComputerStatus
     $preferences = Get-MpPreference
