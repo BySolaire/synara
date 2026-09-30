@@ -17,8 +17,10 @@ import { toastManager } from "~/components/ui/toast";
 import { PanelStateMessage } from "~/components/chat/PanelStateMessage";
 import { PrStateChip } from "~/components/pullRequest/PrStateChip";
 import { resolvePrStatePresentation } from "~/components/pullRequest/pullRequestStatePresentation";
-import { ProviderIcon } from "~/components/ProviderIcon";
-import { EnvironmentCollapsibleSection } from "~/components/chat/environment/EnvironmentRow";
+import {
+  EnvironmentCollapsibleSection,
+  EnvironmentSectionLabel,
+} from "~/components/chat/environment/EnvironmentRow";
 import { CheckIcon, Columns2Icon, EllipsisIcon, GitHubIcon, RotateCcwIcon } from "~/lib/icons";
 import { formatSchedule } from "~/lib/automationForm";
 import { formatRelativeTime } from "~/lib/relativeTime";
@@ -87,34 +89,39 @@ export function GroupThreadsSection({
     );
   }
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-2">
       {visibleSections.map((section) => {
         const rows = sections.get(section.id) ?? [];
         if (rows.length === 0) return null;
-        // Same collapsible header as the Environment panel's sections; Resolved
-        // starts collapsed through the section's defaultOpen.
-        return (
-          <EnvironmentCollapsibleSection
-            key={section.id}
-            defaultOpen={section.defaultOpen}
-            label={
-              <span className="flex items-center gap-1.5">
-                <span>{section.label}</span>
-                <span className="tabular-nums">{rows.length}</span>
-              </span>
-            }
-          >
-            <div className="flex flex-col gap-0.5">
-              {rows.map((row) => (
-                <GroupThreadRow
-                  key={row.thread.id}
-                  row={row}
-                  agent={agent}
-                  onOpenThread={onOpenThread}
-                  onOpenThreadSplit={onOpenThreadSplit}
-                />
-              ))}
-            </div>
+        const label = (
+          <span className="flex items-center gap-1.5">
+            <span>{section.label}</span>
+            <span className="tabular-nums">{rows.length}</span>
+          </span>
+        );
+        const list = (
+          <div className="flex flex-col">
+            {rows.map((row) => (
+              <GroupThreadRow
+                key={row.thread.id}
+                row={row}
+                agent={agent}
+                onOpenThread={onOpenThread}
+                onOpenThreadSplit={onOpenThreadSplit}
+              />
+            ))}
+          </div>
+        );
+        // Live states are plain labels; only the collapsed-by-default Resolved
+        // bucket needs a disclosure, so no chevron sits on every heading.
+        return section.defaultOpen ? (
+          <section key={section.id} className="flex flex-col">
+            <EnvironmentSectionLabel>{label}</EnvironmentSectionLabel>
+            {list}
+          </section>
+        ) : (
+          <EnvironmentCollapsibleSection key={section.id} defaultOpen={false} label={label}>
+            {list}
           </EnvironmentCollapsibleSection>
         );
       })}
@@ -201,45 +208,40 @@ export function GroupThreadRow({
   };
 
   const threadTitle = row.thread.title.trim() || "Untitled thread";
+  const updatedLabel = formatRelativeTime(row.thread.updatedAt ?? row.thread.createdAt);
+  // One line per thread: state dot, title, and a quiet trailing meta that gives
+  // way to the actions button on hover. The task line rides in the tooltip.
+  const meta = row.projectName ? `${row.projectName} · ${updatedLabel}` : updatedLabel;
   return (
     <div
-      className="group/grouprow flex items-center gap-1.5 rounded-lg px-2 py-1 hover:bg-foreground/5"
+      className="group/grouprow flex h-7 items-center gap-2 rounded-lg px-2 transition-colors hover:bg-[var(--color-background-elevated-secondary)]"
       onContextMenu={onContextMenu}
     >
       <button
         type="button"
-        className="flex min-w-0 flex-1 items-start gap-2 text-left"
+        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        title={row.taskLine ? `${threadTitle} — ${row.taskLine}` : threadTitle}
         onClick={() => onOpenThread(row.thread.id)}
       >
-        <span className="relative mt-1.5 shrink-0" aria-hidden>
-          <span
-            className={cn("block size-2 rounded-full", dotClassName, pulse && "animate-pulse")}
-          />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-1.5">
-            <span className={GROUP_OVERVIEW_ROW_TITLE_CLASS_NAME}>{threadTitle}</span>
-            {row.pullRequest ? <PrStateChip pr={row.pullRequest} /> : null}
-          </span>
-          <span className="flex items-center gap-1.5 text-ui-xs text-muted-foreground">
-            {/* Provider sits with the other metadata so titles share one left edge
-                whether or not the thread has a live session. */}
-            {row.thread.session?.provider ? (
-              <ProviderIcon provider={row.thread.session.provider} className="size-3 shrink-0" />
-            ) : null}
-            {row.projectName ? <span className="truncate">{row.projectName}</span> : null}
-            {row.taskLine ? <span className="truncate">{row.taskLine}</span> : null}
-            <span className="shrink-0">
-              {formatRelativeTime(row.thread.updatedAt ?? row.thread.createdAt)}
-            </span>
-          </span>
-        </span>
+        <span
+          className={cn(
+            "block size-1.5 shrink-0 rounded-full",
+            dotClassName,
+            pulse && "animate-pulse",
+          )}
+          aria-hidden
+        />
+        <span className={GROUP_OVERVIEW_ROW_TITLE_CLASS_NAME}>{threadTitle}</span>
+        {row.pullRequest ? <PrStateChip pr={row.pullRequest} /> : null}
       </button>
+      <span className="max-w-24 shrink-0 truncate text-ui-xs text-muted-foreground group-focus-within/grouprow:hidden group-hover/grouprow:hidden">
+        {meta}
+      </span>
       <IconButton
         type="button"
         label={`Thread actions for ${threadTitle}`}
         tooltip="Thread actions"
-        className="opacity-0 group-hover/grouprow:opacity-100"
+        className="hidden group-focus-within/grouprow:inline-flex group-hover/grouprow:inline-flex"
         onClick={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
           void showRowMenu({ x: rect.right, y: rect.bottom });

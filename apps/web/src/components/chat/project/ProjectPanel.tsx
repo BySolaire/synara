@@ -35,8 +35,6 @@ import {
   ENVIRONMENT_ROW_ICON_CLASS_NAME,
   EnvironmentPanelTitle,
   EnvironmentRow,
-  EnvironmentSectionDivider,
-  EnvironmentSectionLabel,
 } from "../environment/EnvironmentRow";
 import { GroupSettingsDialog } from "../group/GroupSettingsDialog";
 import type { GroupSettingsSection } from "../group/groupSettingsDialog.logic";
@@ -361,86 +359,94 @@ export function ProjectPanel({
         </p>
       ) : null}
 
-      {configured ? (
-        <div className="px-1.5">
-          <EnvironmentRow
-            icon={
-              coordinatorModelSummary ? (
-                <ProviderIcon
-                  provider={coordinatorModelSummary.provider}
-                  className={ENVIRONMENT_ROW_ICON_CLASS_NAME}
-                />
-              ) : (
-                <BotIcon className={ENVIRONMENT_ROW_ICON_CLASS_NAME} aria-hidden />
-              )
-            }
-            label="Coordinator"
-            aria-label={`Open ${coordinatorDisplayName}`}
-            title={coordinatorDisplayName}
-            onClick={openCoordinatorThread}
-            trailing={
-              <>
-                {coordinatorModelSummary ? (
-                  <span className="max-w-36 truncate text-ui-sm text-muted-foreground">
-                    {formatThreadModelSummaryLabel(coordinatorModelSummary)}
-                  </span>
-                ) : null}
-                {coordinatorModelSummary?.fastMode ? (
-                  <FastModeIcon
-                    className="size-3 shrink-0 text-[var(--color-text-foreground-secondary)]"
-                    aria-hidden
+      {/* Apple-style inset groups: soft tiles float on the panel and spacing, not
+          rules, separates them. The header stays pinned; everything else scrolls. */}
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-2 pb-2 pt-1">
+        {configured ? (
+          <div className={GROUP_PANEL_TILE_CLASS_NAME}>
+            <EnvironmentRow
+              icon={
+                coordinatorModelSummary ? (
+                  <ProviderIcon
+                    provider={coordinatorModelSummary.provider}
+                    className={ENVIRONMENT_ROW_ICON_CLASS_NAME}
                   />
-                ) : null}
-                {coordinatorStatusDot ? (
-                  <span className="flex size-3 shrink-0 items-center justify-center" aria-hidden>
-                    <span
-                      className={cn(
-                        "block size-1.5 rounded-full",
-                        coordinatorStatusDot.dotClassName,
-                        coordinatorStatusDot.pulse && "animate-pulse",
-                      )}
-                      title={coordinatorStatusDot.label}
+                ) : (
+                  <BotIcon className={ENVIRONMENT_ROW_ICON_CLASS_NAME} aria-hidden />
+                )
+              }
+              label="Coordinator"
+              aria-label={`Open ${coordinatorDisplayName}`}
+              title={coordinatorDisplayName}
+              onClick={openCoordinatorThread}
+              trailing={
+                <>
+                  {coordinatorModelSummary ? (
+                    <span className="max-w-36 truncate text-ui-sm text-muted-foreground">
+                      {formatThreadModelSummaryLabel(coordinatorModelSummary)}
+                    </span>
+                  ) : null}
+                  {coordinatorModelSummary?.fastMode ? (
+                    <FastModeIcon
+                      className="size-3 shrink-0 text-[var(--color-text-foreground-secondary)]"
+                      aria-hidden
                     />
-                  </span>
-                ) : null}
-              </>
-            }
-          />
-        </div>
-      ) : (
-        <div className="px-1.5">
-          <EnvironmentRow
-            icon={<BotIcon className={ENVIRONMENT_ROW_ICON_CLASS_NAME} aria-hidden />}
-            label="Set up coordinator"
-            onClick={() => setAgentDialogOpen(true)}
-          />
-        </div>
-      )}
-
-      {/* The panel is sized by its content and capped by the overlay; past the
-          cap this body scrolls under the pinned header. */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-1.5">
-        {configured && projectId !== null ? (
-          <div className="flex flex-col">
-            {focusSummary || focusUpdating || digestFocus.length > 0 ? (
-              <>
-                <EnvironmentSectionDivider />
-                <ProjectFocus
-                  summary={focusSummary}
-                  updating={focusUpdating}
-                  items={digestFocus}
-                  onOpenThread={onOpenThread}
-                />
-              </>
+                  ) : null}
+                  {coordinatorStatusDot ? (
+                    <span className="flex size-3 shrink-0 items-center justify-center" aria-hidden>
+                      <span
+                        className={cn(
+                          "block size-1.5 rounded-full",
+                          coordinatorStatusDot.dotClassName,
+                          coordinatorStatusDot.pulse && "animate-pulse",
+                        )}
+                        title={coordinatorStatusDot.label}
+                      />
+                    </span>
+                  ) : null}
+                </>
+              }
+            />
+            {/* The coordinator's digest reads as its status line, not a card of its own. */}
+            {focusSummary ? (
+              <p className="px-2 pb-1.5 text-ui-sm leading-relaxed text-muted-foreground">
+                {focusSummary}
+              </p>
+            ) : focusUpdating ? (
+              <p className="px-2 pb-1.5 text-ui-xs text-muted-foreground">Updating…</p>
             ) : null}
+            {digestFocus.length > 0 ? (
+              <ul className="flex flex-col gap-1 px-2 pb-1.5">
+                {digestFocus.map((item) => (
+                  <li key={item.id} className="flex gap-2 text-ui-sm leading-snug">
+                    <span
+                      className="mt-1.5 size-1 shrink-0 rounded-full bg-foreground/40"
+                      aria-hidden
+                    />
+                    <ProjectFocusLink row={item} onOpenThread={onOpenThread} />
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : (
+          <div className={GROUP_PANEL_TILE_CLASS_NAME}>
+            <EnvironmentRow
+              icon={<BotIcon className={ENVIRONMENT_ROW_ICON_CLASS_NAME} aria-hidden />}
+              label="Set up coordinator"
+              onClick={() => setAgentDialogOpen(true)}
+            />
+          </div>
+        )}
 
+        {configured && projectId !== null ? (
+          <>
             {agent.overview?.blockers.map((blocker) => (
               <p key={blocker.taskId} className="px-2 text-ui-sm text-destructive">
                 Blocked: {blocker.title} — {blocker.reason}
               </p>
             ))}
 
-            <EnvironmentSectionDivider />
             <GroupThreadsSection
               sections={threadSections}
               agent={agent}
@@ -448,66 +454,69 @@ export function ProjectPanel({
               onOpenThreadSplit={onOpenThreadSplit}
             />
 
-            <EnvironmentSectionDivider />
-            {GROUP_PANEL_SECTIONS.map((section) => {
-              const isOpen = openSection === section.id;
-              const regionId = `${sectionsRegionId}-${section.id}`;
-              const count = sectionCounts[section.id];
-              return (
-                <div key={section.id} className="flex flex-col">
-                  <EnvironmentRow
-                    icon={<section.icon className={ENVIRONMENT_ROW_ICON_CLASS_NAME} aria-hidden />}
-                    label={section.label}
-                    aria-expanded={isOpen}
-                    aria-controls={regionId}
-                    onClick={() => setOpenSection(isOpen ? null : section.id)}
-                    trailing={
-                      <>
-                        {count > 0 ? (
-                          <span className="text-ui-sm text-muted-foreground">{count}</span>
+            <div className={GROUP_PANEL_TILE_CLASS_NAME}>
+              {GROUP_PANEL_SECTIONS.map((section) => {
+                const isOpen = openSection === section.id;
+                const regionId = `${sectionsRegionId}-${section.id}`;
+                const count = sectionCounts[section.id];
+                return (
+                  <div key={section.id} className="flex flex-col">
+                    <EnvironmentRow
+                      icon={
+                        <section.icon className={ENVIRONMENT_ROW_ICON_CLASS_NAME} aria-hidden />
+                      }
+                      label={section.label}
+                      aria-expanded={isOpen}
+                      aria-controls={regionId}
+                      onClick={() => setOpenSection(isOpen ? null : section.id)}
+                      trailing={
+                        <>
+                          {count > 0 ? (
+                            <span className="text-ui-sm text-muted-foreground">{count}</span>
+                          ) : null}
+                          <DisclosureChevron
+                            open={isOpen}
+                            className="size-3 shrink-0 text-[var(--color-text-foreground-secondary)] opacity-60"
+                          />
+                        </>
+                      }
+                    />
+                    <DisclosureRegion open={isOpen} contentClassName="pb-1 pt-0.5">
+                      <div id={regionId} role="region" aria-label={section.label}>
+                        {section.id === "pull-requests" ? (
+                          <GroupPullRequestsSection
+                            rows={pullRequestRows}
+                            onOpenThread={onOpenThread}
+                          />
                         ) : null}
-                        <DisclosureChevron
-                          open={isOpen}
-                          className="size-3 shrink-0 text-[var(--color-text-foreground-secondary)] opacity-60"
-                        />
-                      </>
-                    }
-                  />
-                  <DisclosureRegion open={isOpen} contentClassName="pb-1 pt-0.5">
-                    <div id={regionId} role="region" aria-label={section.label}>
-                      {section.id === "pull-requests" ? (
-                        <GroupPullRequestsSection
-                          rows={pullRequestRows}
-                          onOpenThread={onOpenThread}
-                        />
-                      ) : null}
-                      {section.id === "automations" ? (
-                        <GroupAutomationsSection
-                          definitions={scopedAutomations}
-                          automations={automations}
-                          onOpenAutomation={onOpenAutomation}
-                        />
-                      ) : null}
-                      {section.id === "context" ? (
-                        <div className="flex flex-col gap-0.5 pb-1">
-                          {contextDocuments.map((document) => (
-                            <ProjectContextFile
-                              key={document.logicalPath}
-                              logicalPath={document.logicalPath}
-                              editable={document.editable}
-                              enabled={open && isOpen}
-                              projectId={projectId}
-                              agent={agent}
-                            />
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  </DisclosureRegion>
-                </div>
-              );
-            })}
-          </div>
+                        {section.id === "automations" ? (
+                          <GroupAutomationsSection
+                            definitions={scopedAutomations}
+                            automations={automations}
+                            onOpenAutomation={onOpenAutomation}
+                          />
+                        ) : null}
+                        {section.id === "context" ? (
+                          <div className="flex flex-col gap-0.5 pb-1">
+                            {contextDocuments.map((document) => (
+                              <ProjectContextFile
+                                key={document.logicalPath}
+                                logicalPath={document.logicalPath}
+                                editable={document.editable}
+                                enabled={open && isOpen}
+                                projectId={projectId}
+                                agent={agent}
+                              />
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    </DisclosureRegion>
+                  </div>
+                );
+              })}
+            </div>
+          </>
         ) : (
           <p className="px-2 py-1 text-ui text-muted-foreground">
             Threads, context, and memory for the group live in this folder after you set up the
@@ -562,47 +571,13 @@ export function ProjectPanel({
   );
 }
 
+// A soft grouped tile (Apple inset-group style): rows sit on a faint fill with
+// no rules between them; hovering a row deepens the same fill.
+const GROUP_PANEL_TILE_CLASS_NAME =
+  "flex flex-col rounded-xl bg-[var(--color-background-elevated-secondary)] p-1";
+
 const CONTEXT_TEXTAREA_CLASS_NAME =
   "relative inline-flex w-full rounded-lg border border-[color:var(--color-border-light)] bg-transparent text-ui text-foreground transition-colors has-focus-visible:border-foreground/25 [&_[data-slot=textarea]]:px-3 [&_[data-slot=textarea]]:py-2";
-
-/**
- * The coordinator's digest of what matters now: its one-paragraph summary plus
- * the threads it chose to call out. Rendered as a plain labelled section like
- * the Environment panel's, and hidden when the digest has nothing to say — the
- * Threads list below already covers every thread.
- */
-function ProjectFocus({
-  summary,
-  updating,
-  items,
-  onOpenThread,
-}: {
-  summary: string | null;
-  updating: boolean;
-  items: ReadonlyArray<ProjectFocusRow>;
-  onOpenThread: (threadId: ThreadId) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-1 pb-1">
-      <EnvironmentSectionLabel>Focus</EnvironmentSectionLabel>
-      {summary ? (
-        <p className="px-2 text-ui leading-relaxed text-muted-foreground">{summary}</p>
-      ) : updating ? (
-        <p className="px-2 text-ui-xs text-muted-foreground">Updating…</p>
-      ) : null}
-      {items.length > 0 ? (
-        <ul className="flex flex-col gap-1.5 px-2 pt-0.5">
-          {items.map((item) => (
-            <li key={item.id} className="flex gap-2 text-ui leading-snug">
-              <span className="mt-1.5 size-1 shrink-0 rounded-full bg-foreground/45" aria-hidden />
-              <ProjectFocusLink row={item} onOpenThread={onOpenThread} />
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
-  );
-}
 
 function ProjectFocusLink({
   row,

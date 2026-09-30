@@ -156,12 +156,11 @@ From top to bottom:
 
 - **Header**: **Pause goal** / **Resume goal** (only when the group has a goal), **Group
   settings** (gear), and **Close**.
-- **Coordinator line**: **Coordinator** and its model, with a status dot (**Needs you**, **Working**,
-  **Paused**, **Stopped**, or **Idle**). Click it to open the coordinator conversation.
-- **Focus**: the coordinator's short summary of what matters now, refreshed after coordinator
-  turns, with links to the threads it calls out. It is hidden when there is nothing to say.
-- **Threads**, always shown: every thread in the group, grouped by state, so you can see at a
-  glance what is working, what is done, and what is waiting on you. Each state can be collapsed.
+- **Coordinator**: its model and a status dot (**Needs you**, **Working**, **Paused**, **Stopped**,
+  or **Idle**), with the coordinator's short summary of what matters now under it, refreshed after
+  coordinator turns. Click it to open the coordinator conversation.
+- **Threads**, always shown: one line per thread, grouped by state, so you can see at a glance what
+  is working, what is done, and what is waiting on you. **Resolved** starts collapsed.
 - **Pull requests**, **Automations**, and **Context** rows, each with a count. Click a row to open
   that section in place under it; only one is open at a time.
 
@@ -169,8 +168,8 @@ The panel grows with its content up to a height based on your screen; past that,
 
 The sections:
 
-- **Threads**: every thread in the group, sorted into the states below. Right-click a row (or use
-  its **…** button) for **Mark resolved** (or **Reopen**) and **Open in split view**.
+- **Threads**: every thread in the group, sorted into the states below. Right-click a row (or hover
+  it and use its **…** button) for **Mark resolved** (or **Reopen**) and **Open in split view**.
 - **Pull requests**: PRs opened by group threads, each with an **Open on GitHub** link.
 - **Automations**: scheduled work that belongs to the group, with its last run and an on/off
   switch.

@@ -559,7 +559,9 @@ export function LibraryPanel({ open, variant, projectId, onClose }: LibraryPanel
       ) : (
         <>
           {viewMode === "list" ? (
-            <div className="grid grid-cols-[1fr_auto] items-center gap-1 border-b border-[color:var(--color-border-light)] px-2 pb-1 text-ui-xs font-medium uppercase tracking-wide text-muted-foreground">
+            // Quiet sentence-case sort headers with no rule under them: the rows
+            // below carry the structure.
+            <div className="grid grid-cols-[1fr_auto] items-center gap-1 px-3 pb-0.5 text-ui-xs text-muted-foreground">
               {(
                 [
                   ["name", "Name"],
@@ -569,7 +571,7 @@ export function LibraryPanel({ open, variant, projectId, onClose }: LibraryPanel
                 <button
                   key={key}
                   type="button"
-                  className="flex items-center gap-0.5 text-left uppercase"
+                  className="flex items-center gap-0.5 text-left transition-colors hover:text-foreground"
                   aria-label={`Sort by ${label}`}
                   onClick={() => setSort((current) => nextLibrarySort(current, key))}
                 >
