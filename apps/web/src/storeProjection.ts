@@ -610,6 +610,7 @@ function rebuildThreadShellRecords(
       thread.claudeCacheReview != null || previousThread?.claudeCacheReviewSequence !== undefined
         ? snapshotSequence
         : undefined,
+      { fromSnapshot: true },
     );
     const threadId = next.shell.id;
 
@@ -1484,6 +1485,7 @@ export function syncServerReadModel(state: AppState, readModel: OrchestrationRea
         thread.claudeCacheReview != null || existing?.claudeCacheReviewSequence !== undefined
           ? readModel.snapshotSequence
           : undefined,
+        { fromSnapshot: true },
       );
     });
   const nextThreadIds = new Set(nextThreads.map((thread) => thread.id));

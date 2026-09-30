@@ -284,8 +284,11 @@ To put a feature behind the list:
 
 Promote a feature to Stable by deleting its entry; every gate resolves itself.
 
-The list currently contains `omp` (Oh My Pi), available in Beta and gated off in
-Stable. The rail sidebar layout is available in both Stable and Beta.
+The list currently contains `omp` (Oh My Pi) and `inbox`, both available in Beta and
+gated off in Stable. `inbox` is the rail's Inbox page: the server refuses its
+`stats.getRecap` RPC on Stable, the web hides the rail item and redirects the route,
+and a saved rail order that mentions it is ignored there. The rail sidebar layout
+is available in both Stable and Beta.
 
 ## Diagnostics
 

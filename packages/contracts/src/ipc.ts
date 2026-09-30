@@ -298,6 +298,8 @@ import type {
   StatsGetProfileStatsResult,
   StatsGetProfileTokenStatsInput,
   StatsGetProfileTokenStatsResult,
+  StatsGetRecapInput,
+  StatsGetRecapResult,
 } from "./stats";
 import type { BrowserAnnotationMethods } from "./browserAnnotations";
 
@@ -1095,6 +1097,7 @@ export interface NativeApi {
     getProfileTokenStats: (
       input: StatsGetProfileTokenStatsInput,
     ) => Promise<StatsGetProfileTokenStatsResult>;
+    getRecap: (input: StatsGetRecapInput) => Promise<StatsGetRecapResult>;
   };
   provider: {
     getComposerCapabilities: (

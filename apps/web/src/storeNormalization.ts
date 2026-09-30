@@ -22,6 +22,7 @@ import { isStalePendingRequestFailureDetail } from "./lib/pendingInteraction";
 import { toAttachmentPreviewUrl } from "./lib/wsHttpUrl";
 import { hasLiveTurnTailWork } from "./session-logic";
 import { getRememberedProjectUiState, projectCwdKey } from "./storePersistence";
+import { resolveInitialLastVisitedAt } from "./threadVisitedPersistence";
 import type {
   ChatAttachment,
   ChatMessage,
@@ -1593,6 +1594,8 @@ export function normalizeThreadFromReadModel(
   incoming: ReadModelThread,
   previous: Thread | undefined,
   snapshotSequence?: number,
+  /** `fromSnapshot`: the thread came in a full snapshot (see resolveInitialLastVisitedAt). */
+  options: { readonly fromSnapshot?: boolean } = {},
 ): Thread {
   const modelSelection = normalizeModelSelection(incoming.modelSelection, previous?.modelSelection);
   const session = normalizeThreadSession(incoming.session, previous?.session);
@@ -1652,7 +1655,9 @@ export function normalizeThreadFromReadModel(
         ? undefined
         : [...incomingPendingInteractions];
   const error = normalizeThreadErrorMessage(incoming.session?.lastError);
-  const lastVisitedAt = previous?.lastVisitedAt ?? incoming.updatedAt;
+  const lastVisitedAt =
+    previous?.lastVisitedAt ??
+    resolveInitialLastVisitedAt(incoming.id, incoming.updatedAt, options);
   const resolvedLatestHumanMessageAt = incoming.latestHumanMessageAt;
   const resolvedLatestUserMessageAt =
     Object.hasOwn(incoming, "latestUserMessageAt") && incoming.latestUserMessageAt !== undefined
@@ -1825,6 +1830,8 @@ export function normalizeThreadShellSnapshot(
   incoming: ShellSnapshotThread,
   previous: Thread | undefined,
   snapshotSequence?: number,
+  /** `fromSnapshot`: the thread came in a full snapshot (see resolveInitialLastVisitedAt). */
+  options: { readonly fromSnapshot?: boolean } = {},
 ): {
   shell: ThreadShell;
   session: ThreadSession | null;
@@ -1857,7 +1864,9 @@ export function normalizeThreadShellSnapshot(
       ? previous.lastKnownPr
       : (incoming.lastKnownPr ?? null);
   const error = normalizeThreadErrorMessage(incoming.session?.lastError);
-  const lastVisitedAt = previous?.lastVisitedAt ?? incoming.updatedAt;
+  const lastVisitedAt =
+    previous?.lastVisitedAt ??
+    resolveInitialLastVisitedAt(incoming.id, incoming.updatedAt, options);
   const nextWorktreePath = incoming.worktreePath;
   const nextWorkingDirectory = incoming.workingDirectory ?? null;
   const nextAssociatedWorktreePath = incoming.associatedWorktreePath ?? null;

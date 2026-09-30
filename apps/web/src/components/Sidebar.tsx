@@ -15,6 +15,7 @@ import {
   ExternalLinkIcon,
   FolderOpenIcon,
   GiftIcon,
+  InboxIcon,
   KanbanIcon,
   KeyboardIcon,
   BellIcon,
@@ -112,6 +113,7 @@ import {
 } from "../sidebarNavOrdering";
 import {
   buildRailItemOrder,
+  isRailItemAvailable,
   buildRailSpacesSections,
   normalizeHiddenRailItems,
   normalizeRailItemOrder,
@@ -155,11 +157,12 @@ import {
   createAllThreadsSelector,
   createProjectLastActivityAtSelector,
   createSidebarDisplayThreadsSelector,
-  createSidebarThreadSummariesSelector,
   createSidebarTreeThreadsSelector,
   isSidebarThreadVisible,
 } from "../storeSelectors";
 import { derivePendingApprovals, derivePendingUserInputs } from "../session-logic";
+import { useActivityThreads } from "../hooks/useActivityThreads";
+import { countNeedsYouActions } from "./inbox/inbox.logic";
 import { useThreadPullRequests } from "../hooks/useThreadPullRequests";
 import {
   providerComposerCapabilitiesQueryOptions,
@@ -187,11 +190,7 @@ import {
   readNativeApiServerCapability,
 } from "../nativeApi";
 import { isHomeChatContainerProject, prewarmHomeChatProject } from "../lib/chatProjects";
-import {
-  collectStudioProjectIds,
-  isStudioContainerProject,
-  prewarmStudioProject,
-} from "../lib/studioProjects";
+import { isStudioContainerProject, prewarmStudioProject } from "../lib/studioProjects";
 import { useProjectEnvironmentStore } from "../projectEnvironmentStore";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useLatestProjectStore } from "../latestProjectStore";
@@ -1339,6 +1338,7 @@ export default function Sidebar() {
   const isOnKanban = pathname.startsWith("/kanban");
   const isOnAutomations = pathname.startsWith("/automations");
   const isOnPullRequests = pathname.startsWith("/pull-requests");
+  const isOnInbox = pathname.startsWith("/inbox");
   // Lightweight read of automations to drive the sidebar attention badge. Shares the
   // ["automations"] query cache with the Automations route (and its live stream updates).
   const automationListQuery = useQuery({
@@ -1620,45 +1620,54 @@ export default function Sidebar() {
   const routeActiveSidebarThreadId = routeThreadId;
   const activeSidebarThreadId = optimisticActiveThreadId ?? routeActiveSidebarThreadId;
   const visualActiveSidebarThreadId = optimisticActiveThreadId ?? routeThreadId;
-  const selectSidebarThreads = useMemo(() => createSidebarThreadSummariesSelector(), []);
   const hideAutomationRunThreads = !appSettings.showAutomationRunThreads;
   const selectSidebarTreeThreads = useMemo(
     () => createSidebarTreeThreadsSelector({ hideAutomationRunThreads }),
     [hideAutomationRunThreads],
   );
-  const sidebarThreads = useStore(selectSidebarThreads);
   const sidebarTreeThreads = useStore(selectSidebarTreeThreads);
   const selectProjectLastActivityAt = useMemo(() => createProjectLastActivityAtSelector(), []);
   const projectLastActivityAt = useStore(selectProjectLastActivityAt);
-  const studioProjectIdSet = useMemo(
-    () => collectStudioProjectIds(projects, { homeDir, chatWorkspaceRoot, studioWorkspaceRoot }),
-    [chatWorkspaceRoot, homeDir, projects, studioWorkspaceRoot],
-  );
-  const { nonStudioThreads: nonStudioSidebarThreads, studioThreads: studioSidebarThreads } =
-    useMemo(
-      () => partitionSidebarThreadsByProjectIds(sidebarThreads, studioProjectIdSet),
-      [sidebarThreads, studioProjectIdSet],
-    );
+  // Activity view + unread bell (and the Inbox) read the same visibility-filtered list,
+  // so the bell can never point at a row the Activity list is hiding.
+  const {
+    sidebarThreads,
+    studioProjectIdSet,
+    studioThreads: studioSidebarThreads,
+    visibleNonStudioThreads: visibleNonStudioSidebarThreads,
+  } = useActivityThreads({ hideAutomationRunThreads });
   const { nonStudioThreads: nonStudioSidebarTreeThreads, studioThreads: studioSidebarTreeThreads } =
     useMemo(
       () => partitionSidebarThreadsByProjectIds(sidebarTreeThreads, studioProjectIdSet),
       [sidebarTreeThreads, studioProjectIdSet],
     );
-  // Activity view + unread bell read the same visibility-filtered list, so the
-  // bell can never point at a row the Activity list is hiding.
-  const visibleNonStudioSidebarThreads = useMemo(
-    () =>
-      nonStudioSidebarThreads.filter((thread) =>
-        isSidebarThreadVisible(thread, { hideAutomationRunThreads }),
-      ),
-    [hideAutomationRunThreads, nonStudioSidebarThreads],
-  );
   // Drives the unread dot on the header Activity bell.
   const hasUnreadActivity = useMemo(
     () =>
       hasUnreadActivityOutsideActiveThread(visibleNonStudioSidebarThreads, activeSidebarThreadId),
     [activeSidebarThreadId, visibleNonStudioSidebarThreads],
   );
+  // Inbox is Beta-only: its rail item and page stay hidden on Stable.
+  const inboxAvailable = isBetaFeatureOn("inbox");
+  const inboxBadge = useMemo(() => {
+    if (!inboxAvailable) return null;
+    const count = countNeedsYouActions(
+      visibleNonStudioSidebarThreads,
+      activeSidebarThreadId,
+      dismissedThreadStatusKeyByThreadId,
+    );
+    return count > 0
+      ? {
+          text: String(count),
+          accessibleLabel: `${count} ${pluralize(count, "thread needs", "threads need")} you`,
+        }
+      : null;
+  }, [
+    activeSidebarThreadId,
+    dismissedThreadStatusKeyByThreadId,
+    inboxAvailable,
+    visibleNonStudioSidebarThreads,
+  ]);
   const dismissThreadStatus = useCallback(
     (threadId: ThreadId, statusKey: string | null | undefined) => {
       if (!statusKey) {
@@ -3751,6 +3760,15 @@ export default function Sidebar() {
         onMouseEnter: prefetchModelsForPrimaryNewThread,
         onFocus: prefetchModelsForPrimaryNewThread,
       },
+      inbox: {
+        icon: InboxIcon,
+        label: "Inbox",
+        active: isOnInbox,
+        badge: inboxBadge,
+        onClick: () => {
+          void navigate({ to: "/inbox" });
+        },
+      },
       kanban: {
         icon: KanbanIcon,
         label: "Kanban",
@@ -3785,7 +3803,9 @@ export default function Sidebar() {
     [
       automationAttentionBadge,
       handlePrimaryNewThread,
+      inboxBadge,
       isOnAutomations,
+      isOnInbox,
       isOnKanban,
       isOnPullRequests,
       navigate,
@@ -3793,14 +3813,19 @@ export default function Sidebar() {
       pullRequestsReviewBadge,
     ],
   );
+  // Inbox exists only where it ships (Beta); everything else is always available.
+  const availableSidebarNavIds = useMemo(
+    () => sidebarNavOrder.filter((id) => id !== "inbox" || inboxAvailable),
+    [inboxAvailable, sidebarNavOrder],
+  );
   // A hidden item whose route is currently active stays visible so the current
   // surface never loses its sidebar row (mirrors the hidden-provider rule).
   const visibleSidebarNavIds = useMemo(
     () =>
-      sidebarNavOrder.filter(
+      availableSidebarNavIds.filter(
         (id) => !hiddenSidebarNavItems.has(id) || sidebarNavDescriptors[id].active,
       ),
-    [hiddenSidebarNavItems, sidebarNavDescriptors, sidebarNavOrder],
+    [availableSidebarNavIds, hiddenSidebarNavItems, sidebarNavDescriptors],
   );
   const handleNavOrderReorder = useCallback(
     (activeId: string, overId: string) => {
@@ -6113,7 +6138,12 @@ export default function Sidebar() {
   // Rail layout: Home and Spaces switch the panel; route items navigate exactly like their
   // classic nav rows (prewarm included). The store's active item keeps one item selected.
   const isOnThreadsSection =
-    !isOnSettings && !isOnStudio && !isOnKanban && !isOnPullRequests && !isOnAutomations;
+    !isOnSettings &&
+    !isOnStudio &&
+    !isOnKanban &&
+    !isOnPullRequests &&
+    !isOnAutomations &&
+    !isOnInbox;
   // One Help menu wiring for both homes: the classic footer and the rail's bottom cluster.
   const sidebarHelpMenuProps = {
     onOpenShortcuts: () => void navigate({ to: "/settings", search: { section: "shortcuts" } }),
@@ -6187,11 +6217,12 @@ export default function Sidebar() {
       onFocus: item.onFocus,
     };
   };
+  const railAvailability = { studioAvailable: openRailStudio !== null, inboxAvailable };
   const railVisibleItemIds = buildRailItemOrder({
     order: railItemOrder,
     hidden: hiddenRailItems,
     activeItem: railActiveItem,
-    studioAvailable: openRailStudio !== null,
+    ...railAvailability,
   });
   const railItems: AppRailItem[] = railVisibleItemIds.map(railItemFor);
   const railShortcutItems: AppRailItem[] = railShortcuts.flatMap((shortcut): AppRailItem[] => {
@@ -6255,8 +6286,9 @@ export default function Sidebar() {
     />
   );
   // Customize rows: the classic card lists the nav block; the rail popover lists the rail's
-  // own items (Studio only while its section is enabled), then its Space/project shortcuts.
-  const sidebarNavCustomizeItems: SidebarCustomizeItem[] = sidebarNavOrder.map((id) => {
+  // own items (Studio only while its section is enabled, Inbox only where it ships), then
+  // its Space/project shortcuts.
+  const sidebarNavCustomizeItems: SidebarCustomizeItem[] = availableSidebarNavIds.map((id) => {
     const item = sidebarNavDescriptors[id];
     return {
       id,
@@ -6267,7 +6299,7 @@ export default function Sidebar() {
     };
   });
   const railCustomizeItems: SidebarCustomizeItem[] = railItemOrder
-    .filter((id) => id !== "studio" || openRailStudio !== null)
+    .filter((id) => isRailItemAvailable(id, railAvailability))
     .map((id) => ({
       id,
       icon: railItemGlyphs(id).idle,
