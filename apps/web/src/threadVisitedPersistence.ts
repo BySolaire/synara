@@ -60,29 +60,41 @@ function readPersisted(): PersistedThreadVisitedState {
  * old behavior of counting as read.
  */
 export function resolveInitialLastVisitedAt(
-  threadId: string,
-  updatedAt: string | undefined,
+  thread: ThreadServerTimes & { readonly id: string },
   options: { readonly restoringSession?: boolean } = {},
 ): string | undefined {
   const { watermarkAt, byThreadId } = readPersisted();
-  const visitedAt = byThreadId[threadId];
+  const visitedAt = byThreadId[thread.id];
   if (visitedAt !== undefined) return visitedAt;
+  const latestAt = latestServerTime(thread);
   if (
     options.restoringSession === true &&
     watermarkAt !== null &&
-    updatedAt !== undefined &&
-    Date.parse(updatedAt) > Date.parse(watermarkAt)
+    latestAt !== undefined &&
+    Date.parse(latestAt) > Date.parse(watermarkAt)
   ) {
     return watermarkAt;
   }
-  return updatedAt;
+  return latestAt;
 }
 
-function latestServerTimeMs(thread: SidebarThreadSummary): number {
-  return Math.max(
-    Date.parse(thread.updatedAt ?? "") || 0,
-    Date.parse(thread.latestTurn?.completedAt ?? "") || 0,
-  );
+interface ThreadServerTimes {
+  readonly updatedAt?: string | undefined;
+  readonly latestTurn?: { readonly completedAt?: string | null | undefined } | null | undefined;
+}
+
+// A thread's newest server time: its last update or its latest turn's completion,
+// whichever is later. The unread rule compares visits with the completion, so a thread
+// seen "up to its update" alone could read as unread again.
+function latestServerTime(thread: ThreadServerTimes): string | undefined {
+  const completedAt = thread.latestTurn?.completedAt ?? undefined;
+  return (Date.parse(completedAt ?? "") || 0) > (Date.parse(thread.updatedAt ?? "") || 0)
+    ? completedAt
+    : thread.updatedAt;
+}
+
+function latestServerTimeMs(thread: ThreadServerTimes): number {
+  return Date.parse(latestServerTime(thread) ?? "") || 0;
 }
 
 function sameVisits(left: Readonly<Record<string, string>>, right: Record<string, string>) {

@@ -1655,9 +1655,7 @@ export function normalizeThreadFromReadModel(
         ? undefined
         : [...incomingPendingInteractions];
   const error = normalizeThreadErrorMessage(incoming.session?.lastError);
-  const lastVisitedAt =
-    previous?.lastVisitedAt ??
-    resolveInitialLastVisitedAt(incoming.id, incoming.updatedAt, options);
+  const lastVisitedAt = previous?.lastVisitedAt ?? resolveInitialLastVisitedAt(incoming, options);
   const resolvedLatestHumanMessageAt = incoming.latestHumanMessageAt;
   const resolvedLatestUserMessageAt =
     Object.hasOwn(incoming, "latestUserMessageAt") && incoming.latestUserMessageAt !== undefined
@@ -1864,9 +1862,7 @@ export function normalizeThreadShellSnapshot(
       ? previous.lastKnownPr
       : (incoming.lastKnownPr ?? null);
   const error = normalizeThreadErrorMessage(incoming.session?.lastError);
-  const lastVisitedAt =
-    previous?.lastVisitedAt ??
-    resolveInitialLastVisitedAt(incoming.id, incoming.updatedAt, options);
+  const lastVisitedAt = previous?.lastVisitedAt ?? resolveInitialLastVisitedAt(incoming, options);
   const nextWorktreePath = incoming.worktreePath;
   const nextWorkingDirectory = incoming.workingDirectory ?? null;
   const nextAssociatedWorktreePath = incoming.associatedWorktreePath ?? null;

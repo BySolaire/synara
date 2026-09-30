@@ -41,9 +41,9 @@ describe("threadVisitedPersistence", () => {
   it("keeps first-run behavior when nothing was saved", async () => {
     const { resolveInitialLastVisitedAt } = await importThreadVisitedPersistence(new Map());
 
-    expect(resolveInitialLastVisitedAt("thread-1", "2026-09-30T10:00:00.000Z")).toBe(
-      "2026-09-30T10:00:00.000Z",
-    );
+    expect(
+      resolveInitialLastVisitedAt({ id: "thread-1", updatedAt: "2026-09-30T10:00:00.000Z" }),
+    ).toBe("2026-09-30T10:00:00.000Z");
   });
 
   it("restores saved visits and treats updates after the last save as unseen", async () => {
@@ -60,22 +60,25 @@ describe("threadVisitedPersistence", () => {
     );
     const { resolveInitialLastVisitedAt } = await importThreadVisitedPersistence(storage);
 
-    expect(resolveInitialLastVisitedAt("thread-visited", "2026-09-30T09:00:00.000Z")).toBe(
-      "2026-09-30T07:00:00.000Z",
-    );
+    expect(
+      resolveInitialLastVisitedAt({ id: "thread-visited", updatedAt: "2026-09-30T09:00:00.000Z" }),
+    ).toBe("2026-09-30T07:00:00.000Z");
     // Finished while the app was closed: unread from the last save onward.
     expect(
-      resolveInitialLastVisitedAt("thread-new", "2026-09-30T09:00:00.000Z", {
-        restoringSession: true,
-      }),
+      resolveInitialLastVisitedAt(
+        { id: "thread-new", updatedAt: "2026-09-30T09:00:00.000Z" },
+        {
+          restoringSession: true,
+        },
+      ),
     ).toBe("2026-09-30T08:00:00.000Z");
     // A thread that first appears through a live event is new as it happens.
-    expect(resolveInitialLastVisitedAt("thread-new", "2026-09-30T09:00:00.000Z")).toBe(
-      "2026-09-30T09:00:00.000Z",
-    );
-    expect(resolveInitialLastVisitedAt("thread-bad", "2026-09-30T07:30:00.000Z")).toBe(
-      "2026-09-30T07:30:00.000Z",
-    );
+    expect(
+      resolveInitialLastVisitedAt({ id: "thread-new", updatedAt: "2026-09-30T09:00:00.000Z" }),
+    ).toBe("2026-09-30T09:00:00.000Z");
+    expect(
+      resolveInitialLastVisitedAt({ id: "thread-bad", updatedAt: "2026-09-30T07:30:00.000Z" }),
+    ).toBe("2026-09-30T07:30:00.000Z");
   });
 
   it("saves unread threads and a server-time watermark, and skips unchanged writes", async () => {
@@ -129,6 +132,32 @@ describe("threadVisitedPersistence", () => {
     const saved = JSON.parse(storage.get(THREAD_VISITED_STORAGE_KEY) ?? "{}");
     expect(Object.keys(saved.byThreadId)).toHaveLength(MAX_PERSISTED_VISITED_THREADS);
     expect(saved.byThreadId["thread-0"]).toBeUndefined();
+  });
+
+  it("counts a thread as seen up to its latest completion when that is newer", async () => {
+    const storage = new Map<string, string>();
+    storage.set(
+      THREAD_VISITED_STORAGE_KEY,
+      JSON.stringify({ watermarkAt: "2026-09-30T10:00:00.000Z", byThreadId: {} }),
+    );
+    const { resolveInitialLastVisitedAt } = await importThreadVisitedPersistence(storage);
+    const thread = {
+      id: "thread-read",
+      updatedAt: "2026-09-30T09:00:00.000Z",
+      latestTurn: { completedAt: "2026-09-30T09:30:00.000Z" },
+    };
+
+    // Read before the last save: seen through its completion, so it stays read.
+    expect(resolveInitialLastVisitedAt(thread, { restoringSession: true })).toBe(
+      "2026-09-30T09:30:00.000Z",
+    );
+    // Completed after the last save: unseen from the watermark on.
+    expect(
+      resolveInitialLastVisitedAt(
+        { ...thread, latestTurn: { completedAt: "2026-09-30T11:00:00.000Z" } },
+        { restoringSession: true },
+      ),
+    ).toBe("2026-09-30T10:00:00.000Z");
   });
 
   it("never moves the watermark back when the newest thread goes away", async () => {
