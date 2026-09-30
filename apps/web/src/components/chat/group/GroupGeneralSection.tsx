@@ -7,7 +7,6 @@ import { cn } from "~/lib/utils";
 
 import { CharacterCountTextarea } from "./CharacterCountTextarea";
 import { COORDINATOR_COLOR_OPTIONS, COORDINATOR_ICON_OPTIONS } from "./coordinatorAppearance";
-import { GroupIconPicker } from "./GroupIconPicker";
 import { GroupEffortRow, GroupModelRow } from "./GroupModelEffortRow";
 import {
   GROUP_GOAL_MAX_CHARS,
@@ -15,6 +14,20 @@ import {
   type GroupSettingsDraft,
 } from "./groupSettingsDialog.logic";
 
+// One option tile for the icon and colour grids: quiet until hovered, with a
+// hairline ring and a soft fill when selected.
+function appearanceOptionClassName(selected: boolean): string {
+  return cn(
+    "grid size-8 place-items-center rounded-lg border transition-colors motion-reduce:transition-none",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+    selected
+      ? "border-foreground/40 bg-[var(--color-background-elevated-secondary)]"
+      : "border-transparent hover:bg-[var(--color-background-elevated-secondary)]",
+  );
+}
+
+// The group's icon is the coordinator glyph and colour that the sidebar row and
+// the chat header show, so it is picked once, here, next to the name.
 export function GroupGeneralSection(props: {
   readonly draft: GroupSettingsDraft;
   readonly defaultModelSelection: ModelSelection | null;
@@ -22,6 +35,9 @@ export function GroupGeneralSection(props: {
   readonly onChange: (patch: Partial<GroupSettingsDraft>) => void;
 }) {
   const { draft, onChange } = props;
+  const selectedColorClassName =
+    COORDINATOR_COLOR_OPTIONS.find((option) => option.key === draft.coordinatorColor)
+      ?.iconClassName ?? "";
   return (
     <div className="space-y-6">
       <SettingsSectionShell title="Group">
@@ -37,8 +53,63 @@ export function GroupGeneralSection(props: {
             />
           </div>
           <div className="space-y-1.5 px-4 py-3">
-            <p className={cn(dialogFieldLabelClassName)}>Icon</p>
-            <GroupIconPicker value={draft.icon} onValueChange={(icon) => onChange({ icon })} />
+            <div className="flex items-center justify-between gap-2">
+              <p className={cn(dialogFieldLabelClassName)}>Icon</p>
+              <button
+                type="button"
+                aria-label="Use the default group icon"
+                className={cn(
+                  "cursor-pointer rounded-sm text-ui-sm text-muted-foreground transition-colors hover:text-foreground",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                )}
+                onClick={() => onChange({ coordinatorIcon: "", coordinatorColor: "" })}
+              >
+                Use default
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Group icon">
+              {COORDINATOR_ICON_OPTIONS.map(({ key, label, Icon }) => {
+                const selected = draft.coordinatorIcon === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    title={label}
+                    aria-label={`Group icon ${label}`}
+                    aria-pressed={selected}
+                    className={appearanceOptionClassName(selected)}
+                    onClick={() => onChange({ coordinatorIcon: selected ? "" : key })}
+                  >
+                    <Icon className={cn("size-4", selectedColorClassName)} />
+                  </button>
+                );
+              })}
+            </div>
+            <div
+              className="flex flex-wrap items-center gap-1 pt-1"
+              role="group"
+              aria-label="Group icon color"
+            >
+              {COORDINATOR_COLOR_OPTIONS.map((option) => {
+                const selected = draft.coordinatorColor === option.key;
+                return (
+                  <button
+                    key={option.key}
+                    type="button"
+                    title={option.label}
+                    aria-label={`Group icon color ${option.label}`}
+                    aria-pressed={selected}
+                    className={appearanceOptionClassName(selected)}
+                    onClick={() => onChange({ coordinatorColor: selected ? "" : option.key })}
+                  >
+                    <span
+                      className={cn("size-4 rounded-full", option.swatchClassName)}
+                      aria-hidden
+                    />
+                  </button>
+                );
+              })}
+            </div>
           </div>
           <div className="px-4 py-3">
             <p className={cn(dialogFieldLabelClassName, "mb-1.5")}>Goal</p>
@@ -50,86 +121,6 @@ export function GroupGeneralSection(props: {
               aria-label="Group goal"
               onChange={(event) => onChange({ goal: event.target.value })}
             />
-          </div>
-        </SettingsCard>
-      </SettingsSectionShell>
-
-      <SettingsSectionShell title="Coordinator">
-        <SettingsCard>
-          <div className="space-y-1.5 px-4 py-3">
-            <div className="flex items-center justify-between gap-2">
-              <p className={cn(dialogFieldLabelClassName)}>Appearance</p>
-              <button
-                type="button"
-                aria-label="Use default coordinator appearance"
-                className={cn(
-                  "cursor-pointer text-ui-sm text-muted-foreground transition-colors hover:text-foreground",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded-sm",
-                )}
-                onClick={() => onChange({ coordinatorIcon: "", coordinatorColor: "" })}
-              >
-                Use default
-              </button>
-            </div>
-            <div
-              className="flex flex-wrap items-center gap-1"
-              role="group"
-              aria-label="Coordinator icon"
-            >
-              {COORDINATOR_ICON_OPTIONS.map(({ key, label, Icon }) => {
-                const selected = draft.coordinatorIcon === key;
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    title={label}
-                    aria-label={`Coordinator icon ${label}`}
-                    aria-pressed={selected}
-                    className={cn(
-                      "relative grid size-8 place-items-center rounded-lg border-2 text-ui-lg transition-colors motion-reduce:transition-none",
-                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-                      selected
-                        ? "border-foreground"
-                        : "border-transparent hover:border-foreground/25",
-                    )}
-                    onClick={() => onChange({ coordinatorIcon: selected ? "" : key })}
-                  >
-                    <Icon className="size-4" />
-                  </button>
-                );
-              })}
-            </div>
-            <div
-              className="flex flex-wrap items-center gap-1 pt-1"
-              role="group"
-              aria-label="Coordinator color"
-            >
-              {COORDINATOR_COLOR_OPTIONS.map((option) => {
-                const selected = draft.coordinatorColor === option.key;
-                return (
-                  <button
-                    key={option.key}
-                    type="button"
-                    title={option.label}
-                    aria-label={`Coordinator color ${option.label}`}
-                    aria-pressed={selected}
-                    className={cn(
-                      "relative grid size-8 place-items-center rounded-lg border-2 transition-colors motion-reduce:transition-none",
-                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-                      selected
-                        ? "border-foreground"
-                        : "border-transparent hover:border-foreground/25",
-                    )}
-                    onClick={() => onChange({ coordinatorColor: selected ? "" : option.key })}
-                  >
-                    <span
-                      className={cn("size-4 rounded-full", option.swatchClassName)}
-                      aria-hidden
-                    />
-                  </button>
-                );
-              })}
-            </div>
           </div>
         </SettingsCard>
       </SettingsSectionShell>

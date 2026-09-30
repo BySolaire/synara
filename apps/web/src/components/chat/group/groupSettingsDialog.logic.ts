@@ -25,33 +25,6 @@ export const GROUP_NAME_MAX_CHARS = 160;
 export const GROUP_GOAL_MAX_CHARS = 8_000;
 export const GROUP_INSTRUCTIONS_MAX_CHARS = 16_000;
 
-export const GROUP_ICON_OPTIONS = [
-  "🐝",
-  "🌱",
-  "🌊",
-  "🌸",
-  "🍀",
-  "🔥",
-  "⚡",
-  "🌙",
-  "☀️",
-  "🪐",
-  "🧭",
-  "🛠️",
-  "📦",
-  "🧪",
-  "📚",
-  "🎨",
-  "🎧",
-  "🚀",
-  "🏗️",
-  "🧠",
-  "💎",
-  "🦉",
-  "🐙",
-  "🤖",
-] as const;
-
 export function isGroupSettingsSection(value: unknown): value is GroupSettingsSection {
   return (
     typeof value === "string" && (GROUP_SETTINGS_SECTIONS as ReadonlyArray<string>).includes(value)

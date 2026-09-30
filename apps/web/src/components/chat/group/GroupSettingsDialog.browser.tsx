@@ -202,11 +202,11 @@ describe("GroupSettingsDialog", () => {
   it("saves coordinator icon and color through configure", async () => {
     await renderDialog();
 
-    const brainButton = page.getByRole("button", { name: "Coordinator icon Brain" });
+    const brainButton = page.getByRole("button", { name: "Group icon Brain" });
     await brainButton.click();
     await expect.element(brainButton).toHaveAttribute("aria-pressed", "true");
 
-    const violetSwatch = page.getByRole("button", { name: "Coordinator color Violet" });
+    const violetSwatch = page.getByRole("button", { name: "Group icon color Violet" });
     await violetSwatch.click();
     await expect.element(violetSwatch).toHaveAttribute("aria-pressed", "true");
 
@@ -230,12 +230,12 @@ describe("GroupSettingsDialog", () => {
     await renderDialog();
 
     await expect
-      .element(page.getByRole("button", { name: "Coordinator icon Brain" }))
+      .element(page.getByRole("button", { name: "Group icon Brain" }))
       .toHaveAttribute("aria-pressed", "true");
 
-    await page.getByRole("button", { name: "Use default coordinator appearance" }).click();
+    await page.getByRole("button", { name: "Use the default group icon" }).click();
     await expect
-      .element(page.getByRole("button", { name: "Coordinator icon Brain" }))
+      .element(page.getByRole("button", { name: "Group icon Brain" }))
       .toHaveAttribute("aria-pressed", "false");
 
     await page.getByRole("button", { name: "Save", exact: true }).click();

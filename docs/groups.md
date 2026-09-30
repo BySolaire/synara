@@ -25,7 +25,7 @@ other non-code work.
 1. Open the **Groups** tab in the sidebar and choose **New group**.
 2. Type a **Group name** and choose **Create group**. Synara creates a folder for the group under
    `~/Documents/Synara/Groups/`.
-3. The **Set up your group** dialog opens. On **General**, set the goal, the coordinator's icon and
+3. The **Set up your group** dialog opens. On **General**, set the goal, the group's icon and
    color, and the coordinator and thread models.
 4. Optionally add **Group instructions** on **Memory** and link repositories on **Environment**.
 5. Choose **Create group**. Setup does not launch a model.
@@ -59,8 +59,8 @@ Each group is a single row: its coordinator. There is no separate folder row.
   in Finder**, and the other folder actions.
 - Archived groups are listed under **Archived groups**, each with an **Unarchive** button.
 
-To change the coordinator's icon or color, use group settings → **General** → **Coordinator** →
-**Appearance**.
+To change the group's icon or its color, use group settings → **General** → **Icon**. The same icon
+marks the group in the sidebar and in the chat header.
 
 ## Talk to the coordinator
 
@@ -222,7 +222,7 @@ can remember or forget notes the same way. Ask the coordinator to forget a note 
 The Library is a folder of files for the group, versioned as a Git repository. Every change is a
 commit. Open it with the **Library** button in the chat header.
 
-- **Add** uploads files. Right-click a folder for **Upload here**.
+- **+** (Add files) in the Library header uploads files. Right-click a folder for **Upload here**.
 - Search, filter by type (**All**, **Documents**, **Images**, **Code**, **Other**), sort by name or
   date modified, and switch between **List** and **Grid**.
 - Click a file to preview it in the panel.
@@ -299,7 +299,7 @@ like the composer.
 
 | Section         | Settings                                                                                                                                     |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| **General**     | Group (Name, Icon, Goal); Coordinator (Appearance: icon and color); Models (Coordinator and Thread model and effort); Lifecycle              |
+| **General**     | Group (Name, Icon and color, Goal); Models (Coordinator and Thread model and effort); Lifecycle                                              |
 | **Memory**      | Group instructions; Auto memory (Write memory notes, MEMORY.md); Memory files; Thread memory                                                 |
 | **Environment** | Linked repositories; Workspace (Group folder, Worker environment: Local or Worktree); Library hosting (Location, Git remote, Push on change) |
 | **Plugins**     | Plugins discovered from the group's folder                                                                                                   |

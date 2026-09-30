@@ -28,7 +28,7 @@ await a.orchestration.dispatchCommand({
 
 - Toggle = book icon, `aria-label="Toggle library panel"`, leftmost of the trailing
   chat-header toggles; its tooltip reads "Library".
-- "+ Add" opens a native macOS file dialog: Cmd+Shift+G, type the FULL file path
+- The "+" (Add files) button in the Library header opens a native macOS file dialog: Cmd+Shift+G, type the FULL file path
   (not just the folder — the folder alone leaves the column browser at home), Return,
   then click Open. Repeat per file; multi-select also works.
 - Row context menu is an in-page fallback (Rename/Delete/History) — right-click the row.

@@ -29,6 +29,13 @@ import {
 } from "~/components/ui/alert-dialog";
 import { IconButton } from "~/components/ui/icon-button";
 import { SearchInput } from "~/components/ui/search-input";
+import {
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
 import { SettingsSegmentedControl } from "~/components/settings/SettingControls";
 import { DisclosureChevron } from "~/components/ui/DisclosureChevron";
 import { Button } from "~/components/ui/button";
@@ -334,6 +341,15 @@ export function LibraryPanel({ open, variant, projectId, onClose }: LibraryPanel
         <div className="ml-auto flex items-center gap-0.5">
           <IconButton
             type="button"
+            label="Add files"
+            tooltip="Add files"
+            disabled={library.busy}
+            onClick={() => pickUploadDirectory(undefined)}
+          >
+            <AddPlusIcon className="size-3.5" />
+          </IconButton>
+          <IconButton
+            type="button"
             label="Library history"
             tooltip="History"
             onClick={() => void showLibraryHistory()}
@@ -368,38 +384,35 @@ export function LibraryPanel({ open, variant, projectId, onClose }: LibraryPanel
       </div>
 
       <div className="flex items-center gap-1.5 px-2 pb-1.5">
-        <label className="sr-only" htmlFor="library-type-filter">
-          Type
-        </label>
-        <select
-          id="library-type-filter"
-          aria-label="Type"
-          className="h-6 min-w-0 flex-1 rounded-md border border-[color:var(--color-border)] bg-transparent px-1.5 text-ui-sm text-foreground"
+        {/* Ghost select, like the panel's other pickers: the filter reads as a
+            label until it is used, instead of a boxed native control. */}
+        <Select
           value={typeFilter}
-          onChange={(event) => setTypeFilter(event.target.value as LibraryTypeFilter)}
+          onValueChange={(next) => {
+            if (next !== null) setTypeFilter(next as LibraryTypeFilter);
+          }}
         >
-          {TYPE_FILTER_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-        <SettingsSegmentedControl
-          value={viewMode}
-          onValueChange={setViewMode}
-          options={VIEW_MODE_OPTIONS}
-          ariaLabel="View mode"
-        />
-        <Button
-          type="button"
-          size="sm"
-          variant="default"
-          className="shrink-0"
-          disabled={library.busy}
-          onClick={() => pickUploadDirectory(undefined)}
-        >
-          <AddPlusIcon className="size-3.5" /> Add
-        </Button>
+          <SelectTrigger variant="ghost" size="xs" className="w-auto min-w-0" aria-label="Type">
+            <SelectValue>
+              {TYPE_FILTER_OPTIONS.find((option) => option.value === typeFilter)?.label}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup surface="composer">
+            {TYPE_FILTER_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+        <div className="ml-auto">
+          <SettingsSegmentedControl
+            value={viewMode}
+            onValueChange={setViewMode}
+            options={VIEW_MODE_OPTIONS}
+            ariaLabel="View mode"
+          />
+        </div>
         <input
           ref={fileInputRef}
           type="file"
