@@ -43,7 +43,7 @@ import type {
   ProviderTurnStartResult,
   TurnId,
 } from "@synara/contracts";
-import type { Effect } from "effect";
+import type { Deferred, Effect } from "effect";
 import type { Stream } from "effect";
 
 export type ProviderSessionModelSwitchMode = "in-session" | "restart-session" | "unsupported";
@@ -65,6 +65,10 @@ export interface ProviderSteerSubagentPayload {
   readonly attachments?: ProviderSendTurnInput["attachments"];
   readonly skills?: ProviderSendTurnInput["skills"];
   readonly mentions?: ProviderSendTurnInput["mentions"];
+}
+/** Local preparation controls; never serialized into provider input or persisted history. */
+export interface ProviderTurnDispatchOptions {
+  readonly claudeCompactionCancellation?: Deferred.Deferred<void>;
 }
 export type ProviderConversationRollbackMode = "native" | "restart-session";
 
@@ -98,6 +102,13 @@ export interface ProviderThreadSnapshot {
   readonly threadId: ThreadId;
   readonly turns: ReadonlyArray<ProviderThreadTurnSnapshot>;
   readonly cwd?: string | null;
+  /**
+   * The model and thinking level the provider session last ran with, when the
+   * persisted session store records them (OMP JSONL `model_change` /
+   * `thinking_level_change` rows). Lets an imported thread keep running the
+   * model the source session actually used.
+   */
+  readonly lastUsedModel?: { readonly model: string; readonly thinkingLevel?: string };
 }
 
 export interface ProviderAdapterShape<TError> {
@@ -129,6 +140,7 @@ export interface ProviderAdapterShape<TError> {
    */
   readonly sendTurn: (
     input: ProviderSendTurnInput,
+    options?: ProviderTurnDispatchOptions,
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
 
   /**
@@ -136,6 +148,7 @@ export interface ProviderAdapterShape<TError> {
    */
   readonly steerTurn?: (
     input: ProviderSteerTurnInput,
+    options?: ProviderTurnDispatchOptions,
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
 
   /**
@@ -254,7 +267,12 @@ export interface ProviderAdapterShape<TError> {
   readonly startClaudeCompaction?: (input: {
     readonly threadId: ThreadId;
     readonly turnId: TurnId;
+    /** Request-owned cancellation remains valid before adapter discovery is registered. */
+    readonly cancellation?: Deferred.Deferred<void>;
   }) => Effect.Effect<ProviderTurnStartResult, TError>;
+
+  /** Cancel active local compaction preparation before prompt dispatch. */
+  readonly cancelClaudeCompactionDiscovery?: (threadId: ThreadId) => Effect.Effect<void>;
 
   /** Read bounded native/local cache evidence without delivering a model prompt. */
   readonly getClaudeCacheObservation?: (

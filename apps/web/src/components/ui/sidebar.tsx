@@ -21,8 +21,6 @@ import { useIsMobile } from "~/hooks/useMediaQuery";
 import { getLocalStorageItem, setLocalStorageItem } from "~/hooks/useLocalStorage";
 import { Schema } from "effect";
 
-const SIDEBAR_COOKIE_NAME = "sidebar_state";
-const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 const SIDEBAR_WIDTH = "16rem";
 const SIDEBAR_WIDTH_MOBILE = "calc(100vw - var(--spacing(3)))";
 const SIDEBAR_WIDTH_ICON = "3rem";
@@ -123,21 +121,13 @@ function SidebarProvider({
   const [_open, _setOpen] = React.useState(defaultOpen);
   const open = openProp ?? _open;
   const setOpen = React.useCallback(
-    async (value: boolean | ((value: boolean) => boolean)) => {
+    (value: boolean | ((value: boolean) => boolean)) => {
       const openState = typeof value === "function" ? value(open) : value;
       if (setOpenProp) {
         setOpenProp(openState);
       } else {
         _setOpen(openState);
       }
-
-      // This sets the cookie to keep the sidebar state.
-      await cookieStore.set({
-        expires: Date.now() + SIDEBAR_COOKIE_MAX_AGE * 1000,
-        name: SIDEBAR_COOKIE_NAME,
-        path: "/",
-        value: String(openState),
-      });
     },
     [setOpenProp, open],
   );
@@ -976,39 +966,6 @@ function SidebarMenuButton({
   );
 }
 
-function SidebarMenuAction({
-  className,
-  showOnHover: showOnHoverProp,
-  render,
-  ...props
-}: useRender.ComponentProps<"button"> & {
-  showOnHover?: boolean;
-}) {
-  const showOnHover = showOnHoverProp ?? false;
-  const defaultProps = {
-    className: cn(
-      "sidebar-icon-button absolute top-1.5 right-1 flex aspect-square w-5 cursor-pointer p-0 text-sidebar-foreground outline-hidden ring-ring/60 transition-transform [&>svg:not([class*='size-'])]:size-4 [&>svg]:shrink-0",
-      // Increases the hit area of the button on mobile.
-      "after:-inset-2 after:absolute md:after:hidden",
-      "peer-data-[size=sm]/menu-button:top-1",
-      "peer-data-[size=default]/menu-button:top-1.5",
-      "peer-data-[size=lg]/menu-button:top-2.5",
-      "group-data-[collapsible=icon]:hidden",
-      showOnHover &&
-        "group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 data-[state=open]:opacity-100 peer-data-[active=true]/menu-button:text-[var(--sidebar-accent-foreground)] md:opacity-0",
-      className,
-    ),
-    "data-sidebar": "menu-action",
-    "data-slot": "sidebar-menu-action",
-  };
-
-  return useRender({
-    defaultTagName: "button",
-    props: mergeProps<"button">(defaultProps, props),
-    render,
-  });
-}
-
 function SidebarMenuBadge({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
@@ -1135,7 +1092,6 @@ export {
   SidebarInstanceProvider,
   SidebarInset,
   SidebarMenu,
-  SidebarMenuAction,
   SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,

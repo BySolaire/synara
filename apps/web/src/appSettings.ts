@@ -31,6 +31,7 @@ import {
   APP_SNAP_SHORTCUT_MODIFIERS,
   DEFAULT_APP_SNAP_SHORTCUT,
 } from "@synara/shared/appSnapShortcut";
+import type { SynaraDesktopFlavor } from "@synara/shared/desktopIdentity";
 import { useLocalStorage } from "./hooks/useLocalStorage";
 import { EnvMode } from "./components/BranchToolbar.logic";
 import { normalizeCursorModelVariantBaseId } from "./cursorModelVariants";
@@ -46,6 +47,12 @@ import {
   normalizeSidebarNavOrder,
   SIDEBAR_NAV_ITEM_IDS,
 } from "./sidebarNavOrdering";
+import {
+  DEFAULT_HIDDEN_RAIL_ITEMS,
+  normalizeHiddenRailItems,
+  normalizeRailItemOrder,
+  RAIL_ORDERABLE_ITEM_IDS,
+} from "./appRail.logic";
 import { ensureNativeApi } from "./nativeApi";
 import { providerDiscoveryQueryKeys } from "./lib/providerDiscoveryReactQuery";
 import {
@@ -111,6 +118,11 @@ export type AgentCursorColorMode = typeof AgentCursorColorMode.Type;
 export const DEFAULT_AGENT_CURSOR_COLOR_MODE: AgentCursorColorMode = "stock";
 
 const SidebarNavItemId = Schema.Literals([...SIDEBAR_NAV_ITEM_IDS]);
+const RailOrderableItemId = Schema.Literals([...RAIL_ORDERABLE_ITEM_IDS]);
+/** Classic: one sidebar column. Rail: fixed icon tabs plus a panel (Beta-only, see useSidebarLayout). */
+export const SidebarLayout = Schema.Literals(["classic", "rail"]);
+export type SidebarLayout = typeof SidebarLayout.Type;
+export const DEFAULT_SIDEBAR_LAYOUT: SidebarLayout = "classic";
 export type SidebarThreadSortOrder = typeof SidebarThreadSortOrder.Type;
 export const DEFAULT_SIDEBAR_THREAD_SORT_ORDER: SidebarThreadSortOrder = "updated_at";
 export const FollowUpBehavior = Schema.Literals(["queue", "steer"]);
@@ -145,7 +157,8 @@ type CustomModelSettingsKey =
   | "customDroidModels"
   | "customDevinModels"
   | "customOpenCodeModels"
-  | "customPiModels";
+  | "customPiModels"
+  | "customOmpModels";
 export type ProviderCustomModelConfig = {
   provider: ProviderKind;
   settingsKey: CustomModelSettingsKey;
@@ -166,6 +179,7 @@ const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>
   droid: new Set(getModelOptions("droid").map((option) => option.slug)),
   opencode: new Set(getModelOptions("opencode").map((option) => option.slug)),
   pi: new Set(getModelOptions("pi").map((option) => option.slug)),
+  omp: new Set(getModelOptions("omp").map((option) => option.slug)),
 };
 
 const withDefaults =
@@ -193,6 +207,7 @@ const PersistedProviderKind = Schema.Literals([
   "kilo",
   "opencode",
   "pi",
+  "omp",
 ]).pipe(
   Schema.decodeTo(
     ProviderKind,
@@ -284,6 +299,8 @@ export const AppSettingsSchema = Schema.Struct({
   openCodeBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
   piBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
   piAgentDir: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
+  ompBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
+  ompAgentDir: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
   openCodeServerUrl: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
   openCodeServerPassword: Schema.String.check(Schema.isMaxLength(4096)).pipe(
     withDefaults(() => ""),
@@ -292,6 +309,8 @@ export const AppSettingsSchema = Schema.Struct({
   openCodeExperimentalWebSockets: Schema.Boolean.pipe(withDefaults(() => false)),
   defaultThreadEnvMode: EnvMode.pipe(withDefaults(() => "local" as const satisfies EnvMode)),
   confirmThreadDelete: Schema.Boolean.pipe(withDefaults(() => true)),
+  // Opt-in: archiving a task also releases its worktree when nothing else uses it.
+  archiveDeletesOrphanedWorktree: Schema.Boolean.pipe(withDefaults(() => false)),
   // Desktop quit dialog: remember interrupted chats and continue them on the next launch.
   resumeChatsAfterQuit: Schema.Boolean.pipe(withDefaults(() => true)),
   confirmThreadArchive: Schema.Boolean.pipe(withDefaults(() => false)),
@@ -315,6 +334,23 @@ export const AppSettingsSchema = Schema.Struct({
     withDefaults(() => [...DEFAULT_SIDEBAR_NAV_ORDER]),
   ),
   hiddenSidebarNavItems: Schema.Array(SidebarNavItemId).pipe(withDefaults(() => [])),
+  // Local-only shell layout, available in Stable and Beta. useSidebarLayout keeps
+  // mobile on classic even when the stored preference is "rail".
+  sidebarLayout: SidebarLayout.pipe(withDefaults(() => DEFAULT_SIDEBAR_LAYOUT)),
+  // Rail layout shortcuts the user added from the rail's "…" menu, in rail order:
+  // "space:<id>" (the Void key for unfiled) or "project:<id>" (see appRail.logic).
+  railShortcuts: Schema.Array(Schema.String.check(Schema.isMaxLength(512))).pipe(
+    withDefaults(() => []),
+  ),
+  // Rail layout's own Customize state (the classic nav block keeps `sidebarNavOrder`):
+  // the order of the rail's top items and the ones the user hid. Home never hides, and an
+  // active hidden item stays visible (see appRail.logic).
+  railItemOrder: Schema.Array(RailOrderableItemId).pipe(
+    withDefaults(() => [...RAIL_ORDERABLE_ITEM_IDS]),
+  ),
+  hiddenRailItems: Schema.Array(RailOrderableItemId).pipe(
+    withDefaults(() => [...DEFAULT_HIDDEN_RAIL_ITEMS]),
+  ),
   // Whether the per-run threads standalone automations create appear in the sidebar
   // (and the surfaces derived from it: Kanban, Activity, project picker). Runs stay
   // listed on the automation's page and findable via search either way.
@@ -396,6 +432,7 @@ export const AppSettingsSchema = Schema.Struct({
   customDroidModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
   customOpenCodeModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
   customPiModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
+  customOmpModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
   textGenerationProvider: PersistedProviderKind.pipe(withDefaults(() => "codex" as const)),
   textGenerationModel: Schema.optional(TrimmedNonEmptyString),
   uiFontFamily: Schema.String.check(Schema.isMaxLength(256)).pipe(withDefaults(() => "")),
@@ -414,6 +451,17 @@ export const AppSettingsSchema = Schema.Struct({
   hiddenModels: PersistedHiddenModels.pipe(withDefaults(() => [])),
 });
 export type AppSettings = typeof AppSettingsSchema.Type;
+
+/**
+ * First-launch icon default per desktop flavor. The schema keeps "default" so
+ * persisted renderer state stays stable; the native side owns first-launch
+ * defaulting via getAppIcon, and the Appearance reset uses this for its target.
+ */
+export function defaultDesktopAppIconForFlavor(
+  flavor: SynaraDesktopFlavor | "unknown",
+): DesktopAppIcon {
+  return flavor === "beta" ? "beta" : "default";
+}
 
 /** The settings values and mutation used by a mounted settings panel.
  * The route owns the subscription so extracted workflow panels do not create
@@ -526,6 +574,15 @@ const PROVIDER_CUSTOM_MODEL_CONFIG: Record<ProviderKind, ProviderCustomModelConf
     defaultSettingsKey: "customPiModels",
     title: "Pi",
     description: "Save additional Pi model slugs for the picker and provider runtime.",
+    placeholder: "provider/model",
+    example: "anthropic/claude-sonnet-4-5",
+  },
+  omp: {
+    provider: "omp",
+    settingsKey: "customOmpModels",
+    defaultSettingsKey: "customOmpModels",
+    title: "Oh My Pi",
+    description: "Save additional Oh My Pi model slugs for the picker and provider runtime.",
     placeholder: "provider/model",
     example: "anthropic/claude-sonnet-4-5",
   },
@@ -693,6 +750,7 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
       settings.openCodeBinaryPath,
     ),
     piBinaryPath: normalizeProviderBinaryPathOverride("pi", settings.piBinaryPath),
+    ompBinaryPath: normalizeProviderBinaryPathOverride("omp", settings.ompBinaryPath),
     uiDensity: normalizeUiDensityValue(settings.uiDensity),
     chatWidth: normalizeChatWidthModeValue(settings.chatWidth),
     agentCursorFillColor: normalizeCursorHexColor(settings.agentCursorFillColor),
@@ -712,11 +770,14 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
     customDroidModels: normalizeCustomModelSlugs(settings.customDroidModels, "droid"),
     customOpenCodeModels: normalizeCustomModelSlugs(settings.customOpenCodeModels, "opencode"),
     customPiModels: normalizeCustomModelSlugs(settings.customPiModels, "pi"),
+    customOmpModels: normalizeCustomModelSlugs(settings.customOmpModels, "omp"),
     hiddenProviders: normalizeHiddenProviders(settings.hiddenProviders),
     disabledProviders: normalizeHiddenProviders(settings.disabledProviders),
     providerOrder: normalizeProviderOrder(settings.providerOrder),
     sidebarNavOrder: normalizeSidebarNavOrder(settings.sidebarNavOrder),
     hiddenSidebarNavItems: normalizeHiddenSidebarNavItems(settings.hiddenSidebarNavItems),
+    railItemOrder: normalizeRailItemOrder(settings.railItemOrder),
+    hiddenRailItems: normalizeHiddenRailItems(settings.hiddenRailItems),
     hiddenModels: [],
   };
 }
@@ -771,6 +832,8 @@ function serverSettingsToAppSettings(settings: ServerSettingsView): Partial<AppS
     openCodeServerUrl: settings.providers.opencode.serverUrl,
     piAgentDir: settings.providers.pi.agentDir,
     piBinaryPath: settings.providers.pi.binaryPath,
+    ompAgentDir: settings.providers.omp.agentDir,
+    ompBinaryPath: settings.providers.omp.binaryPath,
     customCodexModels: settings.providers.codex.customModels,
     customClaudeModels: settings.providers.claudeAgent.customModels,
     customCursorModels: settings.providers.cursor.customModels,
@@ -780,6 +843,7 @@ function serverSettingsToAppSettings(settings: ServerSettingsView): Partial<AppS
     customDroidModels: settings.providers.droid.customModels,
     customOpenCodeModels: settings.providers.opencode.customModels,
     customPiModels: settings.providers.pi.customModels,
+    customOmpModels: settings.providers.omp.customModels,
     disabledProviders: getServerDisabledProviders(settings),
     textGenerationProvider: settings.textGenerationModelSelection.provider,
     textGenerationModel: settings.textGenerationModelSelection.model,
@@ -811,6 +875,8 @@ function touchesProviderDiscoverySettings(patch: Partial<AppSettings>): boolean 
     hasOwn(patch, "openCodeServerPassword") ||
     hasOwn(patch, "openCodeServerUrl") ||
     hasOwn(patch, "piAgentDir") ||
+    hasOwn(patch, "ompBinaryPath") ||
+    hasOwn(patch, "ompAgentDir") ||
     hasOwn(patch, "disabledProviders")
   );
 }
@@ -1002,6 +1068,17 @@ export function appSettingsPatchToServerSettingsPatch(
   if (currentSettings) {
     pruneProviderPatchAgainstCurrentSettings(providers, currentSettings);
   }
+  if (
+    hasOwn(patch, "ompAgentDir") ||
+    hasOwn(patch, "ompBinaryPath") ||
+    hasOwn(patch, "customOmpModels")
+  ) {
+    providers.omp = {
+      ...(hasOwn(patch, "ompAgentDir") ? { agentDir: patch.ompAgentDir ?? "" } : {}),
+      ...(hasOwn(patch, "ompBinaryPath") ? { binaryPath: patch.ompBinaryPath ?? "" } : {}),
+      ...(hasOwn(patch, "customOmpModels") ? { customModels: patch.customOmpModels ?? [] } : {}),
+    };
+  }
 
   if (Object.keys(providers).length > 0) {
     serverPatch.providers = providers;
@@ -1038,6 +1115,8 @@ function buildInitialServerSettingsMigrationPatch(settings: AppSettings): Server
     "openCodeServerUrl",
     "piAgentDir",
     "piBinaryPath",
+    "ompAgentDir",
+    "ompBinaryPath",
     "textGenerationModel",
     "textGenerationProvider",
   ] as const) {
@@ -1062,6 +1141,7 @@ function buildInitialServerSettingsMigrationPatch(settings: AppSettings): Server
     "customDroidModels",
     "customOpenCodeModels",
     "customPiModels",
+    "customOmpModels",
   ] as const) {
     if (normalizedSettings[key].length > 0) {
       patch[key] = normalizedSettings[key] as never;
@@ -1130,6 +1210,7 @@ export function getCustomModelsByProvider(
     droid: getCustomModelsForProvider(settings, "droid"),
     opencode: getCustomModelsForProvider(settings, "opencode"),
     pi: getCustomModelsForProvider(settings, "pi"),
+    omp: getCustomModelsForProvider(settings, "omp"),
   };
 }
 
@@ -1250,23 +1331,6 @@ export function resolveAppModelSelection(
   );
 }
 
-export function getCustomModelOptionsByProvider(
-  settings: Pick<AppSettings, CustomModelSettingsKey>,
-): Record<ProviderKind, ReadonlyArray<ProviderModelOption>> {
-  const customModelsByProvider = getCustomModelsByProvider(settings);
-  return {
-    codex: getAppModelOptions("codex", customModelsByProvider.codex),
-    claudeAgent: getAppModelOptions("claudeAgent", customModelsByProvider.claudeAgent),
-    cursor: getAppModelOptions("cursor", customModelsByProvider.cursor),
-    devin: getAppModelOptions("devin", customModelsByProvider.devin),
-    antigravity: getAppModelOptions("antigravity", customModelsByProvider.antigravity),
-    grok: getAppModelOptions("grok", customModelsByProvider.grok),
-    droid: getAppModelOptions("droid", customModelsByProvider.droid),
-    opencode: getAppModelOptions("opencode", customModelsByProvider.opencode),
-    pi: getAppModelOptions("pi", customModelsByProvider.pi),
-  };
-}
-
 export function getProviderStartOptions(
   settings: Pick<
     AppSettings,
@@ -1284,6 +1348,8 @@ export function getProviderStartOptions(
     | "openCodeServerUrl"
     | "piAgentDir"
     | "piBinaryPath"
+    | "ompAgentDir"
+    | "ompBinaryPath"
   >,
 ): ProviderStartOptions | undefined {
   const claudeBinaryPath = normalizeProviderBinaryPathOverride(
@@ -1304,6 +1370,7 @@ export function getProviderStartOptions(
     settings.openCodeBinaryPath,
   );
   const piBinaryPath = normalizeProviderBinaryPathOverride("pi", settings.piBinaryPath);
+  const ompBinaryPath = normalizeProviderBinaryPathOverride("omp", settings.ompBinaryPath);
   const hasOpenCodeStartOptions = Boolean(
     openCodeBinaryPath || settings.openCodeExperimentalWebSockets || settings.openCodeServerUrl,
   );
@@ -1373,6 +1440,14 @@ export function getProviderStartOptions(
           pi: {
             ...(piBinaryPath ? { binaryPath: piBinaryPath } : {}),
             ...(settings.piAgentDir ? { agentDir: settings.piAgentDir } : {}),
+          },
+        }
+      : {}),
+    ...(ompBinaryPath || settings.ompAgentDir
+      ? {
+          omp: {
+            ...(ompBinaryPath ? { binaryPath: ompBinaryPath } : {}),
+            ...(settings.ompAgentDir ? { agentDir: settings.ompAgentDir } : {}),
           },
         }
       : {}),
@@ -1468,6 +1543,7 @@ export function getCustomBinaryPathForProvider(
     | "droidBinaryPath"
     | "openCodeBinaryPath"
     | "piBinaryPath"
+    | "ompBinaryPath"
   >,
   provider: ProviderKind,
 ): string {
@@ -1490,6 +1566,8 @@ export function getCustomBinaryPathForProvider(
       return normalizeProviderBinaryPathOverride(provider, settings.openCodeBinaryPath);
     case "pi":
       return normalizeProviderBinaryPathOverride(provider, settings.piBinaryPath);
+    case "omp":
+      return normalizeProviderBinaryPathOverride(provider, settings.ompBinaryPath);
   }
 }
 

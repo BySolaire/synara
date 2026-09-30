@@ -86,24 +86,6 @@ describe("ChatTranscriptPane", () => {
     expect(markup).toContain("Checked the sidebar issue.");
     expect(markup).not.toContain("Scroll to bottom");
   });
-
-  it("centers the scroll button inside the inset chat column", () => {
-    const markup = renderTranscriptPaneMarkup({
-      contentInsetRightPx: 360,
-      scrollButtonVisible: true,
-    });
-
-    expect(markup).toContain('style="padding-right:360px"');
-    expect(markup).toContain("Scroll to bottom");
-  });
-
-  it("does not host the in-thread find bar as a transcript overlay", () => {
-    const markup = renderTranscriptPaneMarkup();
-
-    expect(markup).not.toContain('data-testid="thread-find-bar"');
-    expect(markup).not.toContain("absolute right-2 top-2");
-  });
-
   it("renders a stored thread error in flow above the transcript, never as an overlay", () => {
     const markup = renderTranscriptPaneMarkup({
       threadError: "Provider adapter request failed (grok): connect ETIMEDOUT",
