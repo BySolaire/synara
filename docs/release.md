@@ -324,6 +324,11 @@ with the resolved release version before packaging; do not use a permanent broad
 opt-out. Packaging, source provenance, startup smoke, and artifact upload must
 still pass. Missing Azure credentials are expected for this unsigned path.
 
+Signing, provenance, and startup smoke do not establish Microsoft Defender
+acceptance. For a reported antivirus block, collect the exact artifact hash,
+engine/definition versions, and detected component before changing packaging;
+see [Windows Defender investigation and qualification](windows-defender-1376.md).
+
 Without the matching exception, published Windows installers must be signed with
 Azure Trusted Signing, and the workflow fails closed when a required signing
 value is absent. A requested signed release requires all of the following secrets:
