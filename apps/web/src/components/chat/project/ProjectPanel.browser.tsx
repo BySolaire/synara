@@ -343,10 +343,18 @@ describe("ProjectPanel polished sections", () => {
     expect(contextRow.textContent).toMatch(/^Context\d+$/);
     expect(document.querySelector("[data-environment-panel-variant] span.absolute")).toBeNull();
     expect(contextRow.getAttribute("aria-expanded")).toBe("false");
-    const tileFill = getComputedStyle(contextRow.parentElement!).backgroundColor;
+    const tileFill = getComputedStyle(contextRow.parentElement!.parentElement!).backgroundColor;
     await page.getByRole("button", { name: /^Context/ }).hover();
-    expect(getComputedStyle(contextRow).backgroundColor).not.toBe(tileFill);
-    expect(getComputedStyle(contextRow).backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+    await expect
+      .poll(() => {
+        const rowFill = getComputedStyle(contextRow).backgroundColor;
+        return (
+          contextRow.getAnimations().length === 0 &&
+          rowFill !== "rgba(0, 0, 0, 0)" &&
+          rowFill !== tileFill
+        );
+      })
+      .toBe(true);
 
     await page.getByRole("button", { name: /^Context/ }).click();
     expect(contextRow.getAttribute("aria-expanded")).toBe("true");
