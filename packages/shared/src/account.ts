@@ -55,8 +55,6 @@ import {
   type LinkStartRequest,
   type LinkStartResponse,
   LinkStartResponse as LinkStartResponseSchema,
-  type RelayTicketResponse,
-  RelayTicketResponse as RelayTicketResponseSchema,
   type RegisterDeviceResponse,
   RegisterDeviceResponse as RegisterDeviceResponseSchema,
   type UpdateHostRequest,
@@ -280,7 +278,6 @@ export interface AccountClient {
     signal?: AbortSignal,
   ): Promise<RemoteTunnelResponse>;
   disableRemoteTunnel(hostProof: string, hostId: string, tunnelId?: string): Promise<void>;
-  requestRelayTicket(hostProof: string, hostId: string): Promise<RelayTicketResponse>;
   getHostAuthorization(
     hostProof: string,
     hostId: string,
@@ -744,13 +741,6 @@ export function createAccountClient(options: CreateAccountClientOptions): Accoun
         headers: { ...hostProofHeaders(hostProof), "content-type": "application/json" },
         body: JSON.stringify(tunnelId ? { tunnelId } : {}),
       });
-    },
-    async requestRelayTicket(hostProof, hostId) {
-      return requestJson(
-        `/api/v1/hosts/${encodeURIComponent(hostId)}/relay-ticket`,
-        { method: "POST", headers: hostProofHeaders(hostProof) },
-        RelayTicketResponseSchema,
-      );
     },
 
     async acknowledgeDeviceRevocations(hostProof, hostId, deviceJkts, signal) {

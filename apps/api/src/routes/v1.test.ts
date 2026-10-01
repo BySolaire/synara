@@ -20,7 +20,6 @@ import { createHostGrantIssuer } from "../identity/grantIssuer";
 import { createHostKeyRegistry } from "../identity/hostKeyRegistry";
 import { createHostSecretStore } from "../identity/hostSecretStore";
 import { clearOrgCache } from "../identity/orgProvisioning";
-import { createRevocationLog } from "../identity/revocationLog";
 import { createApiSigningService, type ApiSigningService } from "../identity/signing";
 import { createWorkosIdentityProvider } from "../identity/workos";
 import type { AvatarStorage } from "../avatarStorage";
@@ -140,7 +139,6 @@ describe.skipIf(!TEST_DATABASE_URL)("createV1Routes", () => {
       hostGrants: createHostGrantIssuer(testSigning),
       hostSecrets: createHostSecretStore(db),
       accountBaseUrl: forConfig.baseUrl,
-      ...(forConfig.relayServiceToken ? { relayServiceToken: forConfig.relayServiceToken } : {}),
       db,
       trustedProxyHops: options.trustedProxyHops ?? 1,
       ...(options.avatarStorage !== undefined ? { avatarStorage: options.avatarStorage } : {}),
@@ -2460,7 +2458,6 @@ describe.skipIf(!TEST_DATABASE_URL)("createV1Routes", () => {
           hostGrants: createHostGrantIssuer(testSigning),
           hostSecrets: createHostSecretStore(db),
           accountBaseUrl: config.baseUrl,
-          ...(config.relayServiceToken ? { relayServiceToken: config.relayServiceToken } : {}),
           db,
         }),
       );

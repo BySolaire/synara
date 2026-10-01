@@ -171,22 +171,6 @@ describe("useHosts", () => {
     ).rejects.toThrow("host_not_found");
   });
 
-  it("records the consent answer as a discoverability write", async () => {
-    const queryClient = new QueryClient();
-    hostsApiMock.updateHost.mockResolvedValue(makeHost({ discoverable: false }));
-
-    const remote = renderHook(queryClient, () => useHosts({ enabled: true }));
-    await remote.answerDiscoverabilityPrompt.mutateAsync({
-      hostId: "host_1",
-      discoverable: false,
-    });
-
-    expect(hostsApiMock.updateHost).toHaveBeenCalledWith({
-      hostId: "host_1",
-      discoverable: false,
-    });
-  });
-
   it("unlinks the local host without arguments", async () => {
     const queryClient = new QueryClient();
     hostsApiMock.unlinkLocalHost.mockResolvedValue(undefined);
@@ -195,16 +179,6 @@ describe("useHosts", () => {
     await remote.unlinkLocalHost.mutateAsync();
 
     expect(hostsApiMock.unlinkLocalHost).toHaveBeenCalledTimes(1);
-  });
-
-  it("deletes a host by id", async () => {
-    const queryClient = new QueryClient();
-    hostsApiMock.deleteHost.mockResolvedValue(undefined);
-
-    const remote = renderHook(queryClient, () => useHosts({ enabled: true }));
-    await remote.deleteHost.mutateAsync({ hostId: "host_1" });
-
-    expect(hostsApiMock.deleteHost).toHaveBeenCalledWith({ hostId: "host_1" });
   });
 });
 

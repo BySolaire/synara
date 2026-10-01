@@ -443,6 +443,6 @@ sharing that test database must run sequentially.
 
 ## Managed remote access
 
-The current app uses [managed Cloudflare tunnels](../../docs/cloudflare-remote.md). No relay secret is required for WorkOS startup or normal remote access. Configure the four Cloudflare variables together and explicit remote test users. Tunnel allocation and code rendezvous migrations are additive; admin tokens remain in the account service. Legacy relay-ticket/internal routes are retained only in directly injected protocol fixtures and are unavailable in the deployed app.
+The current app uses [managed Cloudflare tunnels](../../docs/cloudflare-remote.md). No relay secret is required for WorkOS startup or normal remote access. Configure the four Cloudflare variables together and explicit remote test users. Tunnel allocation and code rendezvous migrations are additive; admin tokens remain in the account service. The retired relay-ticket endpoint returns 410 and the internal revocation endpoint returns 401. Ticket issuance and the relay polling feed have been removed; hosts use authenticated authorization snapshots and acknowledge durable device revocations.
 
 The [remote MVP handoff](../../docs/implementation/cloudflare-remote/READINESS.md) lists the service configuration, client settings and live acceptance checks in dependency order.

@@ -14,6 +14,22 @@ The owner creates a ten-minute, single-use code in Settings. The same-account co
 
 The controller persists desired connections. Each renderer attachment gets a new RPC stream, including after reload. Renewal prepares a replacement stream; requests are never generically replayed. Discovery/connection completions are fenced against stop, disconnect and account changes. HTTP resources use an independent pool of at most two TLS transports per host generation, bounded queues, streaming backpressure, Range and cancellation. Typed references choose allowlisted host routes; controller cookies and bearer credentials are not forwarded. Remote attachment ownership is stable across short-lived session leases.
 
+## Capacity and setup
+
+Connections are directional: pairing a MacBook to a Mini does not automatically authorize the
+Mini to control the MacBook. Each execution host needs its own eligible Synara runtime, account
+registration, reachable endpoint and explicit device approval. The tested setup uses managed
+Cloudflare tunnels. `--ssh-forward-port` exposes a loopback entry point for manually arranged
+SSH forwarding; there is no complete SSH machine/key setup flow or automatic SSH route discovery.
+
+The controller allows eight pending/open RPC streams per destination and 32 overall, including
+renderer, renewal and agent-tool streams. These are stream budgets, not a supported computer count.
+The supervisor restores only the first 32 desired hosts and runs at most two background dials
+concurrently. Each execution host also defaults to 32 outer TLS connections, shared with resource
+transports and other controllers. Each connected workspace keeps its own application frame and
+caches, so memory grows with connected computers. Large-host-count qualification remains pending;
+raising a single limit would not establish support for unlimited connections.
+
 ## Headless owner pairing
 
 Run on the execution host, against its existing verified loopback server, using its configured home directory and Node 24. These commands use the same owner RPC and capability gate as Settings; they do not edit trust databases directly.
@@ -49,7 +65,7 @@ Two physical Macs, authenticated providers, Linux headless behavior, Windows pac
 
 ## Historical local qualification before the Cloudflare migration (28 September 2026)
 
-The paragraphs below record the prior relay implementation. Current migration evidence lives in [STATUS.md](implementation/cloudflare-remote/STATUS.md); do not reuse the old counts or Docker commands for the new transport.
+The paragraphs below record the prior relay implementation. Its source and control protocol have since been removed; their regressions remain in Git history. Current migration evidence lives in [STATUS.md](implementation/cloudflare-remote/STATUS.md); do not reuse the old counts or Docker commands for the new transport. The current harness exercises the host gateway through the Cloudflare boundary fixture.
 
 The migrated `apps/e2e` harness uses the production relay application in a Bun child process, the real Node/Effect host gateway, TLS and explicit exact-key owner approval, against isolated PostgreSQL and fake WorkOS. It covers relay/direct bytes, grant replay, account/relay outages, owner-only admission, backpressure and targeted session closure/expiry. It does not launch a paid agent. The inactive Host Secrets cryptographic core retains its tests; server admission for that feature stays disabled.
 
@@ -128,10 +144,19 @@ Subagent families preserve their owning host and the existing parent/reveal rule
 local; an identically named or numbered remote Space does not implicitly acquire local membership.
 
 Every merged row uses an environment-qualified identity. Activity's synthetic IDs are presentation
-keys only; opening a remote row uses its original environment and thread ID. Local context actions,
-selection, dragging, and bulk mark-as-read are not applied to remote Activity rows. The outer remote sidebar rows currently expose navigation and project chat creation; rename,
-archive, and pin mutations are not exposed there yet. Same-named folders
-are not automatically grouped as one logical project.
+keys only; opening a remote row uses its original environment and thread ID. Local selection,
+dragging, and bulk mark-as-read are not applied to remote Activity rows. Remote chat menus reuse
+rename, pin and archive actions on the owning runtime, including its archive confirmation and undo.
+Classic and Activity rows share these controls. A captured menu or dialog cannot mutate a
+disconnected or replaced workspace. Same-named folders are not automatically grouped as one logical
+project.
+
+The outer search palette includes connected-computer project and chat metadata, with computer
+labels and disabled results when their host is unavailable. Remote message bodies are not copied
+into search. Project/thread IDs remain qualified by environment when choosing a result.
+Next/previous and numbered chat shortcuts follow the merged visible rows, including paging and
+collapse state; local detail prefetches remain local. Sidebar shortcuts originating in a remote
+frame reach the outer sidebar while terminal and model-picker shortcut ownership stays intact.
 
 ## Agent tools across computers
 

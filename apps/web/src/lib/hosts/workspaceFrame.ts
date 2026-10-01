@@ -2,7 +2,10 @@ import type {
   ExecutionEnvironmentDescriptor,
   FilesystemBrowseInput,
   FilesystemBrowseResult,
+  ProjectId,
+  ThreadId,
 } from "@synara/contracts";
+import type { ShortcutMatchContext } from "../../keybindings";
 import type { WorkspaceSession } from "./workspaceSessions";
 import type { ActiveHost } from "./activeHost";
 import type { ThreadStatusPill } from "../../components/Sidebar.logic";
@@ -10,7 +13,7 @@ import type { Project, SidebarThreadSummary } from "../../types";
 import type { SidebarContextProps } from "../../components/ui/sidebar";
 import type { WsTransportState } from "../../wsTransportEvents";
 
-/** Only navigation metadata crosses this boundary; RPC clients and stores stay with their host. */
+/** Metadata and bounded owner actions cross this boundary; RPC clients and stores stay with their host. */
 export interface WorkspaceSummary {
   readonly projects: readonly (Pick<
     Project,
@@ -26,6 +29,7 @@ export interface WorkspaceSummary {
 }
 
 export interface WorkspaceNavigation {
+  readonly sidebar?: WorkspaceSidebarActions;
   navigate(path: string): void;
   newChat(projectId?: string): Promise<string>;
   browseFolders(input: FilesystemBrowseInput): Promise<FilesystemBrowseResult>;
@@ -36,6 +40,20 @@ export interface WorkspaceNavigation {
   }): Promise<string>;
   openProject(projectId: string): Promise<string>;
   recover(): void;
+}
+
+/** Sidebar operations execute through the existing controller in the owning frame. */
+export interface WorkspaceSidebarActions {
+  renameThread(threadId: ThreadId, title: string): Promise<void>;
+  setThreadPinned(threadId: ThreadId, isPinned: boolean): Promise<void>;
+  archiveThread(threadId: ThreadId, isAvailable?: () => boolean): Promise<void>;
+  renameProject(projectId: ProjectId, name: string): Promise<void> | void;
+  setProjectPinned(projectId: ProjectId, isPinned: boolean): Promise<void>;
+}
+
+/** The controlling sidebar resolves the chord with the focused frame's terminal scope. */
+export interface WorkspaceSidebarKeyboardEvent extends KeyboardEvent {
+  readonly workspaceShortcutContext?: ShortcutMatchContext;
 }
 
 export interface WorkspaceFrameBinding {
@@ -51,6 +69,12 @@ export interface WorkspaceFrameBinding {
     newChat(): Promise<string>;
     createProject(): void;
     navigate(path: string): void;
+    sidebarKeydown(
+      event: KeyboardEvent,
+      context: ShortcutMatchContext,
+      modelPickerActive: boolean,
+    ): boolean;
+    sidebarKeyup(event: KeyboardEvent, context: ShortcutMatchContext): void;
   };
   /** Captured in memory, never placed in the frame URL, DOM attributes, or persistence. */
   readonly controllerWsUrl: string;

@@ -172,7 +172,9 @@ describe("SidebarActivityView", () => {
     await page.getByRole("menuitem", { name: "Mark all as read" }).click();
     expect(onMarkThreadRead).toHaveBeenCalledOnce();
     expect(onMarkThreadRead).toHaveBeenCalledWith(local.id, local.latestTurn?.completedAt);
-    await vi.waitFor(() => expect(onVisibleThreadIdsChange).toHaveBeenLastCalledWith([local.id]));
+    await vi.waitFor(() =>
+      expect(onVisibleThreadIdsChange).toHaveBeenLastCalledWith([remote.id, local.id]),
+    );
     await mounted.unmount();
   });
 

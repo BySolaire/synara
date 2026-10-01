@@ -48,7 +48,7 @@ export function HostDiscoverabilityPrompt() {
     async (discoverable: boolean) => {
       if (!host) return;
       try {
-        await remote.answerDiscoverabilityPrompt.mutateAsync({ hostId: host.id, discoverable });
+        await remote.setDiscoverable.mutateAsync({ hostId: host.id, discoverable });
         setDismissed(true);
         toastManager.add({
           type: "success",
@@ -65,13 +65,13 @@ export function HostDiscoverabilityPrompt() {
         });
       }
     },
-    [host, organizationName, remote.answerDiscoverabilityPrompt],
+    [host, organizationName, remote.setDiscoverable],
   );
 
   const open = decision.prompt && !dismissed && host !== null;
   if (!host) return null;
 
-  const pending = remote.answerDiscoverabilityPrompt.isPending;
+  const pending = remote.setDiscoverable.isPending;
 
   return (
     // No close button: both answers are choices that must be recorded, and an

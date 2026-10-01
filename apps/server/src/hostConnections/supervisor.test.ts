@@ -1,3 +1,5 @@
+import { once } from "node:events";
+import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, expect, it, vi } from "vitest";
 import { HostConnectionRegistry } from "./registry";
 import { superviseHostConnections } from "./supervisor";
@@ -75,12 +77,39 @@ it("bounds restoration to two dials and never resumes after stop during pending 
   expect(registry.list()).toEqual([]);
 });
 
-it("does not retry a missing trust relationship until intent changes", async () => {
+it("waits for trust repair, then recovers from a transient failure even between supervisor ticks", async () => {
   vi.useFakeTimers();
   const registry = new HostConnectionRegistry();
+  const host = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(host, "listening");
+  const address = host.address();
+  if (!address || typeof address === "string") throw new Error("No listening address");
   let desired = true;
+  let failure: Error | undefined = new RemoteHostTrustError("Pair on the host again");
   const connect = vi.fn(async () => {
-    throw new RemoteHostTrustError("Pair on the host again");
+    if (failure) throw failure;
+    registry.setConnector("mini", "Mini", async () => {
+      if (failure) throw failure;
+      const socket = new WebSocket(`ws://127.0.0.1:${address.port}`);
+      await once(socket, "open");
+      return {
+        socket,
+        environmentId: "mini",
+        credential: "test-only",
+        credentialExpiresAtSeconds: Date.now() / 1000 + 3600,
+        transport: "lan",
+        race: { outcome: "unreachable", attempts: [] },
+        compatibility: {
+          protocolEpoch: 1,
+          negotiatedRevision: 1,
+          serverBuild: "test",
+          serverInstanceId: "mini",
+          capabilities: [],
+        },
+      };
+    });
+    await registry.probe("mini", controllerProtocol);
+    return registry.get("mini")!;
   });
   const port: HostConnectionsPort = {
     connect,
@@ -99,7 +128,19 @@ it("does not retry a missing trust relationship until intent changes", async () 
     desired = true;
     await vi.advanceTimersByTimeAsync(1000);
     expect(connect).toHaveBeenCalledTimes(2);
+    failure = undefined;
+    await port.connect({ hostId: "mini" });
+    expect(registry.status("mini").state).toBe("idle");
+    // The next renderer can fail before the supervisor ever observes idle/connected.
+    failure = new HostDialError("Route temporarily unavailable", { stage: "no-route" });
+    await expect(registry.probe("mini", controllerProtocol)).rejects.toBe(failure);
+    failure = undefined;
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(connect).toHaveBeenCalledTimes(4);
+    await vi.waitFor(() => expect(registry.status("mini").state).toBe("idle"));
   } finally {
     stop();
+    for (const socket of host.clients) socket.terminate();
+    host.close();
   }
 });

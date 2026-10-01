@@ -35,6 +35,11 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         },
       }),
     );
+    // The viewing computer owns sidebar shortcuts even when the host uses different bindings.
+    await fs.writeFile(
+      path.join(fixture.baseDir, "userdata/keybindings.json"),
+      JSON.stringify([{ key: "cmd+shift+p", command: "sidebar.search" }]),
+    );
     await fs.mkdir(path.join(controllerDir, "userdata"), { recursive: true });
     await fs.writeFile(
       path.join(controllerDir, "userdata/settings.json"),
@@ -87,10 +92,11 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
       });
     }
     await using initialRemote = await workspaceRpc(host.origin);
+    const remoteNavigationThreadId = randomUUID();
     await initialRemote.request("orchestration.dispatchCommand", {
       type: "thread.create",
       commandId: randomUUID(),
-      threadId: randomUUID(),
+      threadId: remoteNavigationThreadId,
       projectId,
       title: "Remote navigation fixture",
       modelSelection: { provider: "codex", model: "gpt-6-astra" },
@@ -346,6 +352,81 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         branch: null,
         worktreePath: null,
         createdAt: new Date().toISOString(),
+      });
+      // Search and row actions must preserve the owner even when both servers use the same IDs.
+      await page.getByText("Local continuity fixture", { exact: true }).first().click();
+      await page.keyboard.press("Meta+k");
+      await page.getByPlaceholder("Search chats or run a command").fill("continuity");
+      await page.getByRole("option", { name: /Local continuity fixture/ }).waitFor();
+      const remoteSearchResult = page.getByRole("option", { name: /Remote continuity fixture/ });
+      await remoteSearchResult.waitFor();
+      expect(await remoteSearchResult.innerText()).toContain("E2E host");
+      if (process.env.SYNARA_E2E_EVIDENCE)
+        await page.screenshot({
+          path: path.join(process.env.SYNARA_E2E_EVIDENCE, "workspace-remote-search.png"),
+        });
+      await remoteSearchResult.click();
+      await expect
+        .poll(() => new URL(page.url()).searchParams.get("environment"))
+        .toBe(linked.row.environmentId);
+      await remotePage.locator('[contenteditable="true"]').first().focus();
+      await page.keyboard.press("Meta+k");
+      // A shortcut originating inside the remote frame still opens the unified outer palette.
+      await page.getByPlaceholder("Search chats or run a command").fill("continuity");
+      await page.getByRole("option", { name: /Local continuity fixture/ }).click();
+      await expect.poll(() => new URL(page.url()).pathname).toBe(`/${threadId}`);
+      await page.keyboard.press("Meta+k");
+      await page.getByPlaceholder("Search chats or run a command").fill("REMOTE checkout");
+      await page.getByRole("option", { name: /^REMOTE checkout/ }).click();
+      await expect
+        .poll(() => new URL(page.url()).searchParams.get("environment"))
+        .toBe(linked.row.environmentId);
+      const remoteThread = () =>
+        page.getByRole("button", { name: /^Remote continuity fixture, E2E host/ }).first();
+      await remoteThread().click();
+      await remotePage.locator('[contenteditable="true"]').first().focus();
+      for (let index = 0; index < 10 && new URL(page.url()).pathname !== `/${threadId}`; index++) {
+        const before = page.url();
+        await page.keyboard.press("Meta+Shift+]");
+        await expect.poll(() => page.url()).not.toBe(before);
+      }
+      expect(new URL(page.url()).pathname).toBe(`/${threadId}`);
+      await remoteThread().click();
+      await remoteThread().click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Rename chat", exact: true }).click();
+      await page
+        .getByRole("textbox", { name: "Rename chat", exact: true })
+        .fill("Remote renamed safely");
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+      const readThread = async (rpc: typeof remoteRpc) =>
+        (
+          await rpc.request<OrchestrationThreadDetailSnapshot>(
+            "orchestration.getThreadDetailSnapshot",
+            { threadId },
+          )
+        ).thread;
+      await expect
+        .poll(async () => (await readThread(remoteRpc)).title)
+        .toBe("Remote renamed safely");
+      expect((await readThread(localRpc)).title).toBe("Local continuity fixture");
+      await page
+        .getByRole("button", { name: /^Remote renamed safely, E2E host/ })
+        .first()
+        .click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Pin thread", exact: true }).click();
+      await expect.poll(async () => (await readThread(remoteRpc)).isPinned).toBe(true);
+      expect((await readThread(localRpc)).isPinned).toBe(false);
+      await page
+        .getByRole("button", { name: /^Remote renamed safely, E2E host/ })
+        .first()
+        .click({ button: "right" });
+      await page.getByRole("menuitem", { name: "Unpin thread", exact: true }).click();
+      await expect.poll(async () => (await readThread(remoteRpc)).isPinned).toBe(false);
+      await remoteRpc.request("orchestration.dispatchCommand", {
+        type: "thread.meta.update",
+        commandId: randomUUID(),
+        threadId,
+        title: "Remote continuity fixture",
       });
       await remoteRpc.request("terminal.open", { threadId, terminalId: "fixture", cwd: roots[0] });
       await remoteRpc.request("terminal.write", {
@@ -607,6 +688,26 @@ it.skipIf(process.env.SYNARA_E2E_WORKSPACE !== "1")(
         await fs.mkdir(evidenceDir, { recursive: true });
         await page.screenshot({ path: path.join(evidenceDir, "workspace-remote.png") });
       }
+      // Activity requires a started chat. Archive its inactive remote row while local is open.
+      await page
+        .getByRole("button", { name: /^Remote navigation fixture, E2E host/ })
+        .first()
+        .click();
+      await page.getByText("Local continuity fixture", { exact: true }).first().click();
+      await page.getByRole("button", { name: "Switch to activity view", exact: true }).click();
+      await remoteThread().click({ button: "right" });
+      if (evidenceDir)
+        await page.screenshot({ path: path.join(evidenceDir, "workspace-remote-menu.png") });
+      await page.getByRole("menuitem", { name: "Archive", exact: true }).click();
+      await expect.poll(async () => (await readThread(recoveredRemote)).archivedAt).not.toBeNull();
+      expect((await readThread(recoveredLocal)).archivedAt).toBeNull();
+      await expect
+        .poll(() => new URL(page.url()).searchParams.get("path"))
+        .toBe(`/${remoteNavigationThreadId}`);
+      await remotePage.getByRole("button", { name: "Undo", exact: true }).click();
+      await expect.poll(async () => (await readThread(recoveredRemote)).archivedAt).toBeNull();
+      await page.getByRole("button", { name: "Switch to classic view", exact: true }).click();
+      await remoteThread().click();
       await requestLocalRemoteAccess(host.baseDir, {
         operation: "revoke-device",
         deviceJkt: device.deviceJkt,

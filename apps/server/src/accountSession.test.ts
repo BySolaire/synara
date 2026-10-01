@@ -64,7 +64,6 @@ function makeClient(overrides: Partial<AccountClient>): AccountClient {
     exchangeDeviceHostLink: unimplemented("exchangeDeviceHostLink"),
     getApiJwks: unimplemented("getApiJwks"),
     replaceHostEndpoints: unimplemented("replaceHostEndpoints"),
-    requestRelayTicket: unimplemented("requestRelayTicket"),
     getHostAuthorization: unimplemented("getHostAuthorization"),
     unlinkHost: unimplemented("unlinkHost"),
     updateHost: unimplemented("updateHost"),

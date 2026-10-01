@@ -9,7 +9,7 @@ import {
   type RemoteAgentCall,
   type OrchestrationThreadShell,
 } from "@synara/contracts";
-import { makeRemoteAwareTools, qualifyGatewayResult, receiveRemoteTool } from "./remoteTools";
+import { makeRemoteAwareTools, receiveRemoteTool } from "./remoteTools";
 import { GatewayToolError, type ToolContext, type ToolEntry } from "./toolRuntime";
 import { mcpToolResultJson, type McpToolCallResult } from "./protocol";
 
@@ -204,22 +204,19 @@ describe("remote Synara agent tools", () => {
     expect(result.isError).toBe(true);
     expect(aborted).toBe(true);
   });
-  it("qualifies follow-up reads from waits", () => {
-    expect(
-      payload(
-        qualifyGatewayResult(
-          mcpToolResultJson({
-            threads: [
-              {
-                threadId: "same-id",
-                readThread: { tool: "synara_read_thread", arguments: { threadId: "same-id" } },
-              },
-            ],
-          }),
-          "mini",
-        ),
-      ),
-    ).toMatchObject({
+  it("qualifies follow-up reads from waits", async () => {
+    const { run, connections } = setup(tool("synara_wait_for_threads"));
+    connections.call.mockResolvedValueOnce(
+      mcpToolResultJson({
+        threads: [
+          {
+            threadId: "same-id",
+            readThread: { tool: "synara_read_thread", arguments: { threadId: "same-id" } },
+          },
+        ],
+      }),
+    );
+    expect(payload(await run({ environmentId: "mini", threadIds: ["same-id"] }))).toMatchObject({
       environmentId: "mini",
       threads: [
         {
@@ -252,7 +249,7 @@ describe("remote Synara agent tools", () => {
     ["nested hop", { call: { ...call, arguments: { environmentId: "third" } } }],
     ["computer tool", { call: { ...call, tool: "computer_click" } }],
   ])("denies %s", async (_name, override) => {
-    const entry = tool();
+    const entry = tool("call" in override ? override.call.tool : call.tool);
     const result = await Effect.runPromise(
       receiveRemoteTool({
         call,

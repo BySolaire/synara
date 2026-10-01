@@ -85,12 +85,6 @@ export function createRemoteResourceGateway(
           expectedHtm: route.method,
           replayCache: replays,
         });
-        if (
-          ingress?.expectedPeer &&
-          (peer.userId !== ingress.expectedPeer.userId ||
-            peer.deviceJkt !== ingress.expectedPeer.deviceJkt)
-        )
-          throw new Error("Resource identity does not match relay splice");
         await options.authorizeDevice(peer.userId, peer.deviceJkt, peer.trustGeneration);
         if (closed) return;
         release = options.sessions.add({

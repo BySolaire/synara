@@ -5,7 +5,7 @@ import WebSocket from "ws";
 import { describe, expect, it, vi } from "vitest";
 
 import type { SessionCredentialServiceShape } from "../auth/Services/SessionCredentialService";
-import type { RelaySocket } from "../relayDial";
+import type { RelaySocket } from "../relaySocket";
 import { bridgeRemoteSocketToLocalRpc, normalizeRelayFrame } from "./localRpcBridge";
 
 interface FakeInternalSocket extends EventEmitter {

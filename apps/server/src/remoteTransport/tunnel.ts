@@ -59,7 +59,6 @@ function ciphertextStream(outer: WebSocket): Duplex {
 
 export interface RemoteIngressContext {
   readonly via: "direct" | "relay" | "cloudflare" | "ssh-forward";
-  readonly expectedPeer?: { readonly userId: string; readonly deviceJkt: string };
 }
 const DIRECT_INGRESS: RemoteIngressContext = { via: "direct" };
 
@@ -79,7 +78,7 @@ export interface RemoteTlsServerOptions {
   readonly maxConnections?: number;
 }
 
-/** Shared by direct ingress and relay splice; neither accepts plaintext RPC. */
+/** Shared by direct, Cloudflare and SSH ingress; none accepts plaintext RPC. */
 export class RemoteTlsServer {
   readonly #http = http.createServer();
   readonly #ws = new WebSocketServer({

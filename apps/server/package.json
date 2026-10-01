@@ -37,7 +37,6 @@
     "@opencode-ai/sdk": "1.18.31",
     "@peculiar/x509": "2.1.0",
     "@pierre/diffs": "^1.2.12",
-    "@synara/relay-protocol": "workspace:*",
     "@xterm/headless": "^6.0.0",
     "effect": "catalog:",
     "jose": "^6.1.0",

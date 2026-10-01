@@ -37,29 +37,13 @@ export function useHosts(input: { enabled: boolean }) {
    * host, on means the whole workspace can see AND use it. Owner-only, and
    * checked here as well as server-side — an org member's toggle would 403,
    * and a control that visibly moves before failing is worse than one that
-   * was never offered.
+   * was never offered. Writing either value also records the owner's consent
+   * answer, so declining the sharing prompt uses the same mutation.
    */
   const setDiscoverable = useMutation({
     mutationFn: async (variables: { hostId: string; discoverable: boolean }) => {
       const hosts = ensureHostsApi();
       return hosts.updateHost({ hostId: variables.hostId, discoverable: variables.discoverable });
-    },
-    onSettled: () => invalidateRemoteHosts(queryClient),
-  });
-
-  const renameHost = useMutation({
-    mutationFn: async (variables: { hostId: string; name: string }) => {
-      const hosts = ensureHostsApi();
-      return hosts.updateHost({ hostId: variables.hostId, name: variables.name });
-    },
-    onSettled: () => invalidateRemoteHosts(queryClient),
-  });
-
-  /** Irreversible: the row and the host's stored secrets both go. */
-  const deleteHost = useMutation({
-    mutationFn: async (variables: { hostId: string }) => {
-      const hosts = ensureHostsApi();
-      await hosts.deleteHost({ hostId: variables.hostId });
     },
     onSettled: () => invalidateRemoteHosts(queryClient),
   });
@@ -77,19 +61,6 @@ export function useHosts(input: { enabled: boolean }) {
     onSettled: () => invalidateRemoteHosts(queryClient),
   });
 
-  /**
-   * Records the owner's answer to the multi-member-org consent prompt. Writing
-   * discoverability is what acknowledges it — there is no separate flag, so
-   * declining (`false`) is as much an answer as accepting.
-   */
-  const answerDiscoverabilityPrompt = useMutation({
-    mutationFn: async (variables: { hostId: string; discoverable: boolean }) => {
-      const hosts = ensureHostsApi();
-      return hosts.updateHost({ hostId: variables.hostId, discoverable: variables.discoverable });
-    },
-    onSettled: () => invalidateRemoteHosts(queryClient),
-  });
-
   return {
     hostsQuery,
     enrollmentQuery,
@@ -97,10 +68,7 @@ export function useHosts(input: { enabled: boolean }) {
     enrollment: enrollmentQuery.data ?? null,
     canManageHost,
     setDiscoverable,
-    renameHost,
-    deleteHost,
     unlinkLocalHost,
-    answerDiscoverabilityPrompt,
   } as const;
 }
 

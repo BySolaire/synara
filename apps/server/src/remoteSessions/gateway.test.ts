@@ -16,7 +16,6 @@ import {
   SYNARA_SESSION_AUDIENCE,
   type ApiJwks,
 } from "@synara/contracts";
-import { HOST_SESSION_CLOSE_AUTH_FAILED } from "@synara/relay-protocol";
 import {
   calculateJwkThumbprint,
   exportJWK,
@@ -30,7 +29,7 @@ import WebSocket, { type RawData } from "ws";
 
 import { HostMintService } from "../hostAuth";
 import { generateAndPersistHostIdentity, type HostIdentity } from "../hostIdentity";
-import type { RelaySocket } from "../relayDial";
+import type { RelaySocket } from "../relaySocket";
 import { RemoteConnectionGateway } from "./gateway";
 import { RemoteSessionRegistry } from "./sessionRegistry";
 
@@ -139,13 +138,6 @@ async function mintFixture(identity: HostIdentity, environmentId: string, userId
     // Owner path: no account API round trip, so the fixture stays offline.
     ownerUserId: userId,
     getApiJwks: async () => jwks,
-    getAuthorization: async () => ({
-      discoverable: true,
-      ownerUserId: userId,
-      orgId: "org_1",
-      revokedDeviceJkts: [],
-      ownerInOrg: true,
-    }),
   });
   // Each call carries a fresh grant jti so a second request is not rejected by
   // the mint service's own replay cache — the gateway's state machine, not the
@@ -209,71 +201,6 @@ describe("RemoteConnectionGateway", () => {
     });
     await vi.waitFor(() => expect(socket.closes).toHaveLength(1));
 
-    expect(sessions.size).toBe(0);
-    expect(bridgeToLocal).not.toHaveBeenCalled();
-  });
-
-  it("refuses a mint whose identity differs from the one the relay spliced", async () => {
-    // The relay attests WHO it spliced. A peer that mints under a different
-    // identity on that socket breaks the attestation, so the credential must
-    // never reach it.
-    const identity = await hostIdentity("mint-splice");
-    const environmentId = "gateway-mint-splice-environment";
-    const fixture = await mintFixture(identity, environmentId, "minted-user");
-    const sessions = new RemoteSessionRegistry();
-    const gateway = new RemoteConnectionGateway({
-      authorizeDevice: async () => {},
-      mintService: fixture.mintService,
-      identity,
-      environmentId,
-      keyGeneration: 1,
-      sessions,
-      bridgeToLocal: vi.fn(async () => {}),
-    });
-    const socket = new TestSocket();
-    await gateway.accept(socket, { userId: "expected-user", deviceJkt: "expected-jkt" }, "relay");
-
-    socket.receive({ v: 1, type: "mint_request", request: await fixture.mintRequest() });
-    await vi.waitFor(() => expect(socket.closes).toHaveLength(1));
-
-    expect(HOST_SESSION_CLOSE_AUTH_FAILED).toBe(4501);
-    expect(socket.closes[0]?.code).toBe(4501);
-    expect(socket.closes[0]?.reason).toMatch(/does not match relay splice identity/);
-    expect(socket.frames("session_credential")).toHaveLength(0);
-  });
-
-  it("refuses a credential whose identity differs from the one the relay spliced", async () => {
-    // The twin of the mint check, and the more dangerous one: it is the last
-    // gate before the session is registered and bridged to local RPC.
-    const identity = await hostIdentity("authorize-splice");
-    const environmentId = "gateway-authorize-splice-environment";
-    const peer = await devicePeer(identity, environmentId, "user-a");
-    const sessions = new RemoteSessionRegistry();
-    const bridgeToLocal = vi.fn(async () => {});
-    const gateway = new RemoteConnectionGateway({
-      authorizeDevice: async () => {},
-      mintService: {} as HostMintService,
-      identity,
-      environmentId,
-      keyGeneration: 1,
-      sessions,
-      bridgeToLocal,
-    });
-    const socket = new TestSocket();
-    await gateway.accept(socket, { userId: "user-b", deviceJkt: "jkt-b" }, "relay");
-
-    socket.receive({
-      v: 1,
-      type: "session_authorize",
-      client: controllerProtocol,
-      credential: peer.credential,
-      dpop: await peer.dpop(),
-    });
-    await vi.waitFor(() => expect(socket.closes).toHaveLength(1));
-
-    expect(HOST_SESSION_CLOSE_AUTH_FAILED).toBe(4501);
-    expect(socket.closes[0]?.code).toBe(4501);
-    expect(socket.closes[0]?.reason).toMatch(/does not match relay splice identity/);
     expect(sessions.size).toBe(0);
     expect(bridgeToLocal).not.toHaveBeenCalled();
   });

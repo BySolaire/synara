@@ -23,8 +23,6 @@ import type {
   LinkDeviceTokenResponse,
   LinkStartRequest,
   LinkStartResponse,
-  RevocationEvent,
-  RevocationKind,
   StoredHostSecret,
   SyncKeyWrap,
 } from "@synara/contracts";
@@ -385,12 +383,6 @@ export type DeviceRegistry = {
 
 export type HostGrantIssuer = {
   issueGrant(input: { userId: string; host: HostRecord; deviceJkt: string }): Promise<string>;
-  issueRelayTicket(host: HostRecord): Promise<string>;
-};
-
-export type RevocationLog = {
-  record(hostId: string, kind: RevocationKind, subject?: string): Promise<void>;
-  read(after: number): Promise<{ events: RevocationEvent[]; watermark: number }>;
 };
 
 /**
@@ -471,7 +463,6 @@ export type IdentityAdapters = {
   hostKeys: HostKeyRegistry;
   devices: DeviceRegistry;
   hostGrants: HostGrantIssuer;
-  revocations: RevocationLog;
   hostSecrets: HostSecretStore;
   close(): Promise<void>;
 };

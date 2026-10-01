@@ -134,13 +134,6 @@ describe("HostMintService", () => {
       keyGeneration: 4,
       ownerUserId: USER_ID,
       getApiJwks: async () => jwks,
-      getAuthorization: async () => ({
-        discoverable: true,
-        ownerUserId: "owner_1",
-        orgId: "org_1",
-        revokedDeviceJkts: [],
-        ownerInOrg: true,
-      }),
       nowSeconds: () => NOW,
       ...overrides,
     });
@@ -305,33 +298,10 @@ describe("HostMintService", () => {
     });
   });
 
-  it("mints for the link-time owner without consulting the account API", async () => {
-    // ADR 0011: the owner's own access must survive an API outage, and a
-    // compromised API must not be able to nominate itself as owner. Both
-    // follow from deciding the owner path off the link-time record.
-    let authorizationCalls = 0;
-    const minted = await service({
-      ownerUserId: USER_ID,
-      getAuthorization: async () => {
-        authorizationCalls += 1;
-        throw new Error("account API is unreachable");
-      },
-    }).mint(await mintRequest(await grant()));
-    expect(minted.userId).toBe(USER_ID);
-    expect(authorizationCalls).toBe(0);
-  });
-
-  it("refuses a non-owner even when the cloud reports org membership", async () => {
+  it("refuses a cloud-signed grant from a non-owner", async () => {
     await expect(
       service({
         ownerUserId: "owner_1",
-        getAuthorization: async () => ({
-          discoverable: true,
-          ownerUserId: "owner_1",
-          orgId: "org_1",
-          revokedDeviceJkts: [],
-          ownerInOrg: true,
-        }),
       }).mint(await mintRequest(await grant())),
     ).rejects.toMatchObject({ code: "not_authorized" });
   });
@@ -344,18 +314,5 @@ describe("HostMintService", () => {
         },
       }).mint(await mintRequest(await grant())),
     ).rejects.toMatchObject({ code: "not_authorized" });
-  });
-
-  it("still refuses a non-owner when the account API is unreachable", async () => {
-    // The org-member path is cloud-governed policy, so it must fail CLOSED
-    // rather than inherit the owner's offline tolerance.
-    await expect(
-      service({
-        ownerUserId: "someone_else",
-        getAuthorization: async () => {
-          throw new Error("account API is unreachable");
-        },
-      }).mint(await mintRequest(await grant())),
-    ).rejects.toThrow();
   });
 });

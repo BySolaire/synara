@@ -1,4 +1,4 @@
-import { HOST_SESSION_CLOSE_AUTH_FAILED, HOST_SESSION_CLOSE_REVOKED } from "@synara/relay-protocol";
+import { HOST_SESSION_CLOSE_AUTH_FAILED, HOST_SESSION_CLOSE_REVOKED } from "@synara/contracts";
 import { WsCompatibilityError, type HostConnectionState } from "@synara/contracts";
 import { AccountApiError } from "@synara/shared/account";
 import { Schema } from "effect";

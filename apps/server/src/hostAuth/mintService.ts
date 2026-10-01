@@ -17,7 +17,6 @@ import {
   type ApiJwks,
   type DevicePublicKeyJwk,
   type GrantClaims as GrantClaimsType,
-  type HostAuthorizationSnapshot,
 } from "@synara/contracts";
 import { Schema } from "effect";
 import {
@@ -105,7 +104,6 @@ export interface HostMintServiceOptions {
   readonly getApiJwks: () => Promise<ApiJwks>;
   /** Forced refetch when a grant names a kid we do not hold (key rotation). */
   readonly refreshApiJwksForUnknownKid?: () => Promise<ApiJwks | undefined>;
-  readonly getAuthorization: () => Promise<HostAuthorizationSnapshot>;
   readonly replayCache?: JwtReplayCache;
   readonly nowSeconds?: () => number;
 }

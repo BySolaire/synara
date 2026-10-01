@@ -101,7 +101,6 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice E host secrets API", () => {
         hostGrants: createHostGrantIssuer(signing),
         hostSecrets: createHostSecretStore(db),
         accountBaseUrl: config.baseUrl,
-        ...(config.relayServiceToken ? { relayServiceToken: config.relayServiceToken } : {}),
         db,
         trustedProxyHops: 1,
       }),

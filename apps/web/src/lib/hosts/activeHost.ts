@@ -72,7 +72,3 @@ export function deactivateHost(): void {
 export function clearLegacyActiveHost(): void {
   storage()?.removeItem(ACTIVE_HOST_STORAGE_KEY);
 }
-
-export function readActiveHostSocketPrefix(): string | null {
-  return readActiveHost()?.wsPath.replace(/\/+$/, "") ?? null;
-}

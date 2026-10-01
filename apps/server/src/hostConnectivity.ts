@@ -26,7 +26,7 @@ import {
   REMOTE_INNER_PAIRING_PATH,
 } from "./remoteTransport/tunnel";
 
-import { EnvironmentId, type HostAuthorizationSnapshot } from "@synara/contracts";
+import { EnvironmentId } from "@synara/contracts";
 import {
   accountApiIssuer,
   readAccountFile,
@@ -107,18 +107,8 @@ export async function startHostConnectivity(
       hostId: credentials.hostId!,
       keyGeneration: credentials.hostKeyGeneration!,
     });
-  // Fail-closed placeholder until the first successful refresh: nobody but
-  // the link-time owner (checked separately, without this snapshot) gets in
-  // on a host that has not yet heard from the account API.
-  let authorization: HostAuthorizationSnapshot = {
-    discoverable: false,
-    ownerUserId: credentials.hostOwnerUserId,
-    orgId: credentials.organizationId ?? "unknown",
-    ownerInOrg: false,
-    revokedDeviceJkts: [],
-  };
   const refreshAuthorization = async () => {
-    authorization = await client.getHostAuthorization(
+    const authorization = await client.getHostAuthorization(
       await hostProof(),
       credentials.hostId!,
       controller.signal,
@@ -132,8 +122,8 @@ export async function startHostConnectivity(
     }
     const pending = authorization.pendingRevocationDeviceJkts ?? [];
     if (pending.length) {
-      // Acknowledgement follows the durable local tombstone, never receipt of
-      // the relay frame. Failed delivery remains pending in the account service.
+      // Acknowledgement follows the durable local tombstone. Failed delivery
+      // remains pending in the account service.
       await client
         .acknowledgeDeviceRevocations(
           await hostProof(),
@@ -157,7 +147,6 @@ export async function startHostConnectivity(
     authorizeDevice,
     getApiJwks: () => apiJwks.get(),
     refreshApiJwksForUnknownKid: () => apiJwks.refreshForUnknownKid(),
-    getAuthorization: refreshAuthorization,
   });
   const gateway = new RemoteConnectionGateway({
     mintService,
@@ -234,7 +223,7 @@ export async function startHostConnectivity(
           socket.close(1008, "Pairing unavailable");
           return;
         }
-        return gateway.accept(socket, ingress.expectedPeer, ingress.via);
+        return gateway.accept(socket, ingress.via);
       },
     });
     stops.push(() => tunnel.close());

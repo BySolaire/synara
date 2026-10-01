@@ -6,19 +6,17 @@ import { randomUUID } from "node:crypto";
 import {
   HOST_SESSION_CLOSE_AUTH_FAILED,
   HOST_SESSION_CLOSE_PROTOCOL_ERROR,
-} from "@synara/relay-protocol";
+} from "@synara/contracts";
 import WebSocket, { type RawData } from "ws";
 
 import type { HostMintService } from "../hostAuth";
 import { JwtReplayCache, verifySessionCredential } from "../hostAuth";
 import type { HostIdentity } from "../hostIdentity";
-import type { RelaySocket } from "../relayDial";
+import type { RelaySocket } from "../relaySocket";
 import { RemoteSessionRegistry } from "./sessionRegistry";
 
 const REMOTE_PROTOCOL_ERROR = HOST_SESSION_CLOSE_PROTOCOL_ERROR;
 const REMOTE_AUTH_ERROR = HOST_SESSION_CLOSE_AUTH_FAILED;
-
-type ExpectedPeer = { readonly userId: string; readonly deviceJkt: string };
 
 export interface RemoteConnectionGatewayOptions {
   readonly mintService: HostMintService;
@@ -60,7 +58,6 @@ export class RemoteConnectionGateway {
 
   async accept(
     socket: RelaySocket,
-    expected?: ExpectedPeer,
     via: "direct" | "relay" | "cloudflare" | "ssh-forward" = "direct",
   ): Promise<void> {
     let state: "mint" | "authorize" | "bridged" = "mint";
@@ -113,12 +110,6 @@ export class RemoteConnectionGateway {
             typeof frame.request === "string"
           ) {
             const minted = await this.options.mintService.mint(frame.request);
-            if (
-              expected &&
-              (minted.userId !== expected.userId || minted.deviceJkt !== expected.deviceJkt)
-            ) {
-              throw new Error("mint request does not match relay splice identity");
-            }
             socket.send(
               JSON.stringify({
                 v: 1,
@@ -152,12 +143,6 @@ export class RemoteConnectionGateway {
             expectedHtm: "CONNECT",
             replayCache: this.#dpopReplays,
           });
-          if (
-            expected &&
-            (peer.userId !== expected.userId || peer.deviceJkt !== expected.deviceJkt)
-          ) {
-            throw new Error("session credential does not match relay splice identity");
-          }
           await this.options.authorizeDevice(peer.userId, peer.deviceJkt, peer.trustGeneration);
           if (socketClosed || socket.readyState !== WebSocket.OPEN) return;
           state = "bridged";

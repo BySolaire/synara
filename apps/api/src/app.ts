@@ -11,7 +11,7 @@ import type { ApiConfig } from "./config";
 import { createDb } from "./db";
 import { createIdentityAdapters } from "./identity";
 import type { IdentityAdapters } from "./identity/interfaces";
-import { AVATAR_MAX_BYTES, createInternalRoutes, createV1Routes } from "./routes/v1";
+import { AVATAR_MAX_BYTES, createV1Routes } from "./routes/v1";
 
 /**
  * The largest request body any JSON /api/v1 route accepts. Every JSON payload
@@ -92,11 +92,12 @@ export async function createApp(
       ...(config.profileProxySecret ? { profileProxySecret: config.profileProxySecret } : {}),
     }),
   );
-  app.route(
-    "/internal",
-    createInternalRoutes({
-      revocations: identity.revocations,
-    }),
+  // Older relay clients fail closed; there is no internal revocation feed.
+  app.get("/internal/revocations", (c) =>
+    c.json(
+      { error: "unauthorized", message: "Relay service token invalid" } satisfies AccountErrorBody,
+      401,
+    ),
   );
 
   /**

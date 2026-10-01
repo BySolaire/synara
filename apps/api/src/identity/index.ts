@@ -16,7 +16,6 @@ import type { EnvironmentGrantIssuer } from "./interfaces";
 import { createHostKeyRegistry } from "./hostKeyRegistry";
 import { createHostSecretStore } from "./hostSecretStore";
 import type { IdentityAdapters } from "./interfaces";
-import { createRevocationLog } from "./revocationLog";
 import { createApiSigningService } from "./signing";
 import { createWorkosIdentityProvider } from "./workos";
 
@@ -39,7 +38,6 @@ export async function createIdentityAdapters(
   });
   const devices = createDeviceRegistry(db, config.apiPublicUrl);
   const hostGrants = createHostGrantIssuer(signing);
-  const revocations = createRevocationLog(db);
   const hostSecrets = createHostSecretStore(db);
 
   if (config.identityProvider === "dev") {
@@ -52,7 +50,6 @@ export async function createIdentityAdapters(
       hostKeys,
       devices,
       hostGrants,
-      revocations,
       hostSecrets,
       close,
     };
@@ -67,7 +64,6 @@ export async function createIdentityAdapters(
     hostKeys,
     devices,
     hostGrants,
-    revocations,
     hostSecrets,
     close: async () => {},
   };

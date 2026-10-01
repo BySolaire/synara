@@ -44,10 +44,7 @@ const REMOTE_TOOLS = new Set([
 ]);
 
 /** Qualify only gateway-owned metadata, never text, diagnostics or arbitrary user objects. */
-export function qualifyGatewayResult(
-  result: McpToolCallResult,
-  environmentId: string,
-): McpToolCallResult {
+function qualifyGatewayResult(result: McpToolCallResult, environmentId: string): McpToolCallResult {
   if (result.isError || result.content.length !== 1 || result.content[0]?.type !== "text")
     return result;
   const value = JSON.parse(result.content[0].text);

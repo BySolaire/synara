@@ -40,6 +40,25 @@ describe.skipIf(!TEST_DATABASE_URL)("createApp", () => {
     expect(body.version).toBeTruthy();
   });
 
+  it.each([
+    { path: "/api/v1/hosts/retired/relay-ticket", method: "POST", status: 410 },
+    { path: "/internal/revocations?after=0", method: "GET", status: 401 },
+  ])("keeps the retired relay endpoint $path disabled", async ({ path, method, status }) => {
+    const built = await createApp(baseConfig);
+    try {
+      const response = await built.app.request(path, {
+        method,
+        headers: { authorization: "Bearer retired-relay-credential" },
+      });
+      expect(response.status).toBe(status);
+      expect(await response.json()).toMatchObject({
+        error: status === 410 ? "validation_failed" : "unauthorized",
+      });
+    } finally {
+      await built.pool.end();
+    }
+  });
+
   it("returns a JSON AccountErrorBody for unknown API routes", async () => {
     const built = await createApp(baseConfig);
     pool = built.pool;

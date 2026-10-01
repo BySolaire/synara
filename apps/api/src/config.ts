@@ -33,12 +33,10 @@ export type ApiConfigBase = {
   baseUrl: string;
   /** Exact JWT issuer and public origin for API-facing host auth. */
   apiPublicUrl: string;
-  /** Base64url 32-byte Ed25519 seed used for API-signed grants and tickets. */
+  /** Base64url 32-byte Ed25519 seed used for API-signed grants. */
   apiSigningKey: string;
   /** Previous seed served through JWKS during rotation, verification-only. */
   apiSigningKeyPrevious?: string;
-  /** Shared credential for relay-only internal routes. */
-  relayServiceToken?: string;
   port: number;
   /**
    * S3-compatible avatar storage, or undefined when the deployment has none
@@ -73,7 +71,6 @@ export type ApiConfigBase = {
  */
 export type WorkosApiConfig = ApiConfigBase & {
   identityProvider: "workos";
-  relayServiceToken?: string;
   workosApiKey: string;
   workosClientId: string;
   /** WorkOS API origin, no trailing slash. Overridable so tests can point at a local server. */

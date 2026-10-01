@@ -146,6 +146,18 @@ export function reconcileWorkspaceAccount(status: AccountStatus): void {
 export function readWorkspaceSessions(): readonly WorkspaceSession[] {
   return sessions;
 }
+
+/** A captured row/dialog can only act through the same connected owner and frame generation. */
+export function readAvailableWorkspaceNavigation(
+  session: WorkspaceSession,
+): WorkspaceNavigation | undefined {
+  const current = sessions.find((entry) => entry.host === session.host);
+  return current?.navigation === session.navigation &&
+    current?.summary?.state === "open" &&
+    !current.error
+    ? current.navigation
+    : undefined;
+}
 export function subscribeWorkspaceSessions(listener: () => void): () => void {
   listeners.add(listener);
   return () => {

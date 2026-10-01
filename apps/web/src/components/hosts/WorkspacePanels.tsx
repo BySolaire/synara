@@ -1,4 +1,8 @@
-import { resolveThreadStatusPill, runExclusiveProjectAddition } from "../Sidebar.logic";
+import {
+  derivePinnedProjectIdsForSidebar,
+  resolveThreadStatusPill,
+  runExclusiveProjectAddition,
+} from "../Sidebar.logic";
 import {
   useCallback,
   useEffect,
@@ -8,8 +12,15 @@ import {
   useSyncExternalStore,
   useLayoutEffect,
 } from "react";
-import { useLocation } from "@tanstack/react-router";
-import { ProjectId, ThreadId } from "@synara/contracts";
+import { useQuery } from "@tanstack/react-query";
+import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
+import {
+  resolveShortcutCommand,
+  spaceJumpIndexFromCommand,
+  threadJumpIndexFromCommand,
+} from "../../keybindings";
+import { useLocation, useParams } from "@tanstack/react-router";
+import { MAX_PINNED_PROJECTS, ProjectId, ThreadId } from "@synara/contracts";
 import { appHistory } from "../../appNavigation";
 import { useHandleNewChat } from "../../hooks/useHandleNewChat";
 import { useAppSettings } from "../../appSettings";
@@ -17,6 +28,16 @@ import { ensureNativeApi } from "../../nativeApi";
 import { createOrRecoverProjectFromPath } from "../../lib/projectCreation";
 import { readExecutionContext } from "../../lib/hosts/executionContext";
 import { useHandleNewThread } from "../../hooks/useHandleNewThread";
+import { useSidebarThreadActions } from "../../hooks/useSidebarThreadActions";
+import { useDiffRouteSearch } from "../../hooks/useDiffRouteSearch";
+import {
+  createSidebarThreadSummariesSelector,
+  createSidebarTreeThreadsSelector,
+} from "../../storeSelectors";
+import { useSplitViewStore, selectSplitView } from "../../splitViewStore";
+import { usePinnedProjectsStore } from "../../pinnedProjectsStore";
+import { dispatchThreadRename } from "../../lib/threadRename";
+import { newCommandId } from "../../lib/utils";
 import { useStore } from "../../store";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { rawSocketUrl } from "../../wsTransport";
@@ -27,9 +48,12 @@ import {
   readWorkspaceFrame,
   workspaceRoute,
   type WorkspaceFrameElement,
+  type WorkspaceNavigation,
+  type WorkspaceSidebarActions,
 } from "../../lib/hosts/workspaceFrame";
 import {
   readWorkspaceSessions,
+  readAvailableWorkspaceNavigation,
   subscribeWorkspaceSessions,
   removeWorkspaceSession,
   updateWorkspaceSession,
@@ -42,6 +66,7 @@ import { isStudioContainerProject } from "../../lib/studioProjects";
 import { useWorkspacePathsStore } from "../../workspacePathsStore";
 import { useTerminalStateStore } from "../../terminalStateStore";
 import { useSidebar } from "../ui/sidebar";
+import { modelPickerShortcutRowIndex } from "../chat/ComposerModelPicker.logic";
 
 function selection(
   href = appHistory.location.href,
@@ -54,7 +79,9 @@ function selection(
   return environmentId && isWorkspacePath(path) ? { environmentId, path } : null;
 }
 
-export function openWorkspacePath(environmentId: string, path: string): void {
+export function openWorkspacePath(owner: string | WorkspaceSession, path: string): void {
+  if (typeof owner !== "string" && !readAvailableWorkspaceNavigation(owner)) return;
+  const environmentId = typeof owner === "string" ? owner : owner.host.executionScope.environmentId;
   appHistory.push(workspaceRoute(environmentId, path));
 }
 
@@ -71,6 +98,12 @@ function WorkspacePanel({
 }) {
   const environmentId = session.host.executionScope.environmentId;
   const host = session.host;
+  const keybindingsQuery = useQuery({
+    ...serverConfigQueryOptions(),
+    select: (config) => config.keybindings,
+  });
+  const keybindingsRef = useRef(keybindingsQuery.data);
+  keybindingsRef.current = keybindingsQuery.data;
   const sidebar = useSidebar();
   const sidebarRef = useRef(sidebar);
   const sidebarListeners = useRef(new Set<() => void>());
@@ -109,6 +142,55 @@ function WorkspacePanel({
           createProject: () => window.dispatchEvent(new Event(OPEN_CREATE_PROJECT_EVENT)),
           navigate: (path) => {
             if (isWorkspacePath(path)) appHistory.push(path);
+          },
+          sidebarKeydown: (event, context, modelPickerActive) => {
+            if (
+              frameRef.current !== frame ||
+              selection()?.environmentId !== environmentId ||
+              !readWorkspaceSessions().some((entry) => entry.host === host)
+            )
+              return false;
+            const keybindings = keybindingsRef.current;
+            if (!keybindings) return false;
+            const command = resolveShortcutCommand(event, keybindings, { context });
+            if (
+              modelPickerActive &&
+              (modelPickerShortcutRowIndex(event) !== null ||
+                threadJumpIndexFromCommand(command ?? "") !== null)
+            )
+              return false;
+            const isSidebarNavigationCommand =
+              command === "sidebar.search" ||
+              command === "sidebar.importThread" ||
+              command === "sidebar.activity" ||
+              command === "sidebar.addProject" ||
+              command === "settings.usage" ||
+              command === "space.previous" ||
+              command === "space.next" ||
+              spaceJumpIndexFromCommand(command ?? "") !== null ||
+              command === "chat.visible.next" ||
+              command === "chat.visible.previous" ||
+              threadJumpIndexFromCommand(command ?? "") !== null;
+            if (
+              !isSidebarNavigationCommand &&
+              (modelPickerActive || !["Meta", "Control", "Alt", "Shift"].includes(event.key))
+            )
+              return false;
+            const forwarded = new KeyboardEvent("keydown", event);
+            Object.defineProperty(forwarded, "workspaceShortcutContext", { value: context });
+            window.dispatchEvent(forwarded);
+            return forwarded.defaultPrevented;
+          },
+          sidebarKeyup: (event, context) => {
+            if (
+              frameRef.current !== frame ||
+              selection()?.environmentId !== environmentId ||
+              !readWorkspaceSessions().some((entry) => entry.host === host)
+            )
+              return;
+            const forwarded = new KeyboardEvent("keyup", event);
+            Object.defineProperty(forwarded, "workspaceShortcutContext", { value: context });
+            window.dispatchEvent(forwarded);
           },
         },
         controllerWsUrl: rawSocketUrl(null),
@@ -233,6 +315,63 @@ export function WorkspaceFrameNavigation() {
   const { handleNewThread: newChat } = useHandleNewThread();
   const { handleNewChat } = useHandleNewChat();
   const { settings } = useAppSettings();
+  const routeThreadId = useParams({
+    strict: false,
+    select: (params) => (params.threadId ? ThreadId.makeUnsafe(params.threadId) : null),
+  });
+  const routeSearch = useDiffRouteSearch();
+  const activeSplitView = useSplitViewStore(
+    useMemo(() => selectSplitView(routeSearch.splitViewId ?? null), [routeSearch.splitViewId]),
+  );
+  const clearTerminalState = useTerminalStateStore((store) => store.clearTerminalState);
+  const sidebarThreads = useStore(useMemo(() => createSidebarThreadSummariesSelector(), []));
+  const sidebarTreeThreads = useStore(
+    useMemo(
+      () =>
+        createSidebarTreeThreadsSelector({
+          hideAutomationRunThreads: !settings.showAutomationRunThreads,
+        }),
+      [settings.showAutomationRunThreads],
+    ),
+  );
+  const projectById = useMemo(
+    () => new Map(projects.map((project) => [project.id, project] as const)),
+    [projects],
+  );
+  const threadActions = useSidebarThreadActions({
+    activeSplitView,
+    appSettings: settings,
+    clearTerminalState,
+    handleNewChat,
+    projectById,
+    routeSplitViewId: routeSearch.splitViewId ?? null,
+    routeThreadId,
+    sidebarThreads,
+    sidebarTreeThreads,
+    sidebarThreadSummaryById: shell,
+    threadsHydrated: hydrated,
+  });
+  const threadActionsRef = useRef(threadActions);
+  threadActionsRef.current = threadActions;
+  const projectPinPending = useRef(new Map<ProjectId, boolean>());
+  const persistedProjectPins = usePinnedProjectsStore((store) => store.pinnedProjectIds);
+  const pinnedProjectIds = useMemo(
+    () =>
+      derivePinnedProjectIdsForSidebar({
+        projects: projects.filter((project) => project.kind === "project"),
+        persistedPinnedProjectIds: persistedProjectPins,
+        optimisticPinnedStateByProjectId: new Map<ProjectId, boolean>(),
+      }),
+    [projects, persistedProjectPins],
+  );
+  useEffect(() => {
+    if (hydrated)
+      usePinnedProjectsStore
+        .getState()
+        .prunePinnedProjects(
+          projects.filter((project) => project.kind === "project").map((project) => project.id),
+        );
+  }, [hydrated, projects]);
   const homeChatRef = useRef(handleNewChat);
   homeChatRef.current = handleNewChat;
   const settingsRef = useRef(settings);
@@ -241,10 +380,97 @@ export function WorkspaceFrameNavigation() {
   newChatRef.current = newChat;
   const projectAdditionLockRef = useRef(false);
   const [state, setState] = useState<WsTransportState>("connecting");
+  const stateRef = useRef(state);
+  stateRef.current = state;
   useEffect(() => addWsTransportStateListener(setState, { replayCurrent: true }), []);
   useEffect(() => {
     if (!frame || !hydrated) return;
-    frame.ready({
+    const available = () =>
+      readWorkspaceFrame() === frame &&
+      stateRef.current === "open" &&
+      frame.controller
+        .sessions()
+        .some(
+          (session) =>
+            session.host === frame.host &&
+            session.navigation === navigation &&
+            !session.error &&
+            session.summary?.state === "open",
+        );
+    const actions = () => {
+      if (!available())
+        throw new Error("This computer is no longer available. Reconnect before making changes.");
+      const owner: WorkspaceSidebarActions = {
+        renameThread: async (threadId, title) => {
+          const thread = useStore.getState().sidebarThreadSummaryById[threadId];
+          if (!thread || thread.archivedAt) throw new Error("This chat is no longer available.");
+          await dispatchThreadRename({
+            threadId,
+            newTitle: title,
+            unchangedTitles: [thread.title],
+          });
+        },
+        setThreadPinned: threadActionsRef.current.setThreadPinned,
+        archiveThread: threadActionsRef.current.confirmAndArchiveThread,
+        renameProject: (projectId, name) =>
+          useStore.getState().renameProjectLocally(projectId, name.trim() || null),
+        setProjectPinned: async (projectId, isPinned) => {
+          if (projectPinPending.current.has(projectId))
+            throw new Error("This project's pin is still updating. Try again.");
+          const pins = usePinnedProjectsStore.getState();
+          const pinnedIds = derivePinnedProjectIdsForSidebar({
+            projects: useStore.getState().projects.filter((project) => project.kind === "project"),
+            persistedPinnedProjectIds: pins.pinnedProjectIds,
+            optimisticPinnedStateByProjectId: projectPinPending.current,
+          });
+          if (isPinned && !pinnedIds.includes(projectId) && pinnedIds.length >= MAX_PINNED_PROJECTS)
+            throw new Error(`You can pin up to ${MAX_PINNED_PROJECTS} projects.`);
+          if (isPinned && !pins.pinProject(projectId))
+            throw new Error(`You can pin up to ${MAX_PINNED_PROJECTS} projects.`);
+          if (!isPinned) pins.unpinProject(projectId);
+          projectPinPending.current.set(projectId, isPinned);
+          try {
+            await ensureNativeApi().orchestration.dispatchCommand({
+              type: "project.meta.update",
+              commandId: newCommandId(),
+              projectId,
+              isPinned,
+            });
+          } catch (error) {
+            if (
+              useStore.getState().projects.find((project) => project.id === projectId)?.isPinned ===
+              true
+            )
+              pins.pinProject(projectId);
+            else pins.unpinProject(projectId);
+            throw error;
+          } finally {
+            projectPinPending.current.delete(projectId);
+          }
+        },
+      };
+      return owner;
+    };
+    const threadExists = (threadId: ThreadId) => {
+      if (!useStore.getState().sidebarThreadSummaryById[threadId])
+        throw new Error("This chat is no longer available on this computer.");
+      return actions();
+    };
+    const projectExists = (projectId: ProjectId) => {
+      if (!useStore.getState().projects.some((project) => project.id === projectId))
+        throw new Error("This project is no longer available on this computer.");
+      return actions();
+    };
+    const navigation: WorkspaceNavigation = {
+      sidebar: {
+        renameThread: (threadId, title) => threadExists(threadId).renameThread(threadId, title),
+        setThreadPinned: (threadId, isPinned) =>
+          threadExists(threadId).setThreadPinned(threadId, isPinned),
+        archiveThread: (threadId) => threadExists(threadId).archiveThread(threadId, available),
+        renameProject: (projectId, name) => projectExists(projectId).renameProject(projectId, name),
+        setProjectPinned: (projectId, isPinned) =>
+          projectExists(projectId).setProjectPinned(projectId, isPinned),
+      },
       navigate: (next) => {
         if (isWorkspacePath(next) && next !== appHistory.location.href) appHistory.replace(next);
       },
@@ -297,15 +523,18 @@ export function WorkspaceFrameNavigation() {
         return `/${id}`;
       },
       recover: recoverBeforeLocalEscape,
-    });
+    };
+    frame.ready(navigation);
     return () => frame.ready(null);
   }, [frame, hydrated]);
   useEffect(() => {
     if (!frame || !hydrated) return;
     const threads = Object.values(shell ?? {})
       .filter((thread) => !thread.archivedAt)
+      // oxlint-disable-next-line no-map-spread -- Preserve the owner store's immutable summaries.
       .map((thread) => ({
         ...thread,
+        isPinned: threadActions.pinnedThreadIdSet.has(thread.id),
         terminalEntryPoint: terminalStates[thread.id]?.entryPoint === "terminal",
         status: resolveThreadStatusPill({
           thread,
@@ -327,7 +556,7 @@ export function WorkspaceFrameNavigation() {
         ...(project.appearance !== undefined ? { appearance: project.appearance } : {}),
         createdAt: project.createdAt,
         updatedAt: project.updatedAt,
-        ...(project.isPinned !== undefined ? { isPinned: project.isPinned } : {}),
+        isPinned: pinnedProjectIds.includes(project.id),
         section: isHomeChatContainerProject(project, paths)
           ? "chats"
           : isStudioContainerProject(project, paths)
@@ -339,6 +568,18 @@ export function WorkspaceFrameNavigation() {
       path,
       state,
     });
-  }, [drafts, frame, hydrated, path, paths, projects, shell, state, terminalStates]);
+  }, [
+    drafts,
+    frame,
+    hydrated,
+    path,
+    paths,
+    projects,
+    pinnedProjectIds,
+    shell,
+    state,
+    terminalStates,
+    threadActions.pinnedThreadIdSet,
+  ]);
   return null;
 }

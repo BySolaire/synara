@@ -141,9 +141,10 @@ export function CreateProjectDialog(props: {
     openedRef.current = props.open;
     if (!props.open) return;
     dialogGeneration.current += 1;
-    const requestedComputer = new URLSearchParams(appHistory.location.href.split("?")[1]).get(
-      "environment",
-    );
+    const requestedComputer =
+      appHistory.location.pathname === "/remote"
+        ? new URLSearchParams(appHistory.location.search).get("environment")
+        : null;
     setComputerId(requestedComputer ?? localId);
     setName("");
     setNameEdited(false);

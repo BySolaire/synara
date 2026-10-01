@@ -3,6 +3,8 @@ import {
   buildProjectThreadTree,
   getProjectSortTimestamp,
   getUnpinnedThreadsForSidebar,
+  getVisibleSidebarEntriesForPreview,
+  resolveSidebarThreadListPaging,
   sortThreadsForSidebar,
 } from "../../components/Sidebar.logic";
 import type { Project, SidebarThreadSummary } from "../../types";
@@ -24,6 +26,43 @@ export interface WorkspaceThreadEntry {
   readonly rootKey?: string;
   readonly thread: WorkspaceSummary["threads"][number];
   readonly session: WorkspaceSession | null;
+}
+
+export function workspaceThreadKey(environmentId: string, threadId: string): string {
+  return JSON.stringify([environmentId, threadId]);
+}
+
+/** Shared paging keeps remote project rows and keyboard destinations in the same order. */
+export function deriveWorkspaceProjectThreadRows(input: {
+  entry: WorkspaceProjectEntry;
+  sortOrder: SidebarThreadSortOrder;
+  activeThreadId?: ThreadId | undefined;
+  extraPages: number;
+}) {
+  const threads = getUnpinnedThreadsForSidebar(
+    input.entry.threads,
+    input.entry.threads.filter((thread) => thread.isPinned).map((thread) => thread.id),
+  );
+  const rows = buildProjectThreadTree({
+    threads: sortThreadsForSidebar(threads, input.sortOrder),
+    forceVisibleThreadId: input.activeThreadId,
+  });
+  const paging = resolveSidebarThreadListPaging({
+    totalCount: rows.length,
+    baseLimit: 5,
+    pageSize: 5,
+    requestedExtraPages: input.extraPages,
+  });
+  const { visibleEntries } = getVisibleSidebarEntriesForPreview({
+    entries: rows.map((row) => ({ rowId: row.thread.id, rootRowId: row.rootThreadId, row })),
+    activeEntryId: input.activeThreadId,
+    previewLimit: paging.previewLimit,
+  });
+  return {
+    visibleEntries,
+    paging,
+    canShowMore: paging.canShowMore && visibleEntries.length < rows.length,
+  };
 }
 
 export function remoteSidebarProjects(
@@ -136,8 +175,8 @@ export function mergeSidebarChats(input: {
         roots.push({ ...row.thread, rows: family });
       }
       family.push({
-        key: JSON.stringify([environmentId, row.thread.id]),
-        rootKey: JSON.stringify([environmentId, row.rootThreadId]),
+        key: workspaceThreadKey(environmentId, row.thread.id),
+        rootKey: workspaceThreadKey(environmentId, row.rootThreadId),
         depth: row.depth,
         thread: row.thread,
         session,

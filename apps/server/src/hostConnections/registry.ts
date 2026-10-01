@@ -11,8 +11,7 @@ import type {
 } from "@synara/contracts";
 import { Effect, Layer, ServiceMap } from "effect";
 import WebSocket, { type RawData } from "ws";
-import type { RelaySocket } from "../relayDial";
-import { sendBoundedRelayFrame } from "../relaySocket";
+import { sendBoundedRelayFrame, type RelaySocket } from "../relaySocket";
 import type { DialedSession } from "./dialer";
 
 export const HOST_CONNECTION_WS_PATH_PREFIX = "/ws/remote/";

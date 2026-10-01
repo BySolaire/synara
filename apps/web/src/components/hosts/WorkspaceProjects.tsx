@@ -1,21 +1,34 @@
-import { useState, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useLocation } from "@tanstack/react-router";
 import type { useSortable } from "@dnd-kit/sortable";
 import type { SidebarThreadSortOrder } from "../../appSettings";
 import { CentralIcon } from "../../lib/central-icons";
-import { NewThreadIcon } from "../../lib/icons";
-import { DEFAULT_PROJECT_ICON, projectColorValue } from "../../lib/projectAppearance";
-import type { WorkspaceProjectEntry, WorkspaceThreadEntry } from "../../lib/hosts/workspaceSidebar";
-import { readWorkspaceSessions } from "../../lib/hosts/workspaceSessions";
-import { openWorkspacePath } from "./WorkspacePanels";
 import {
-  buildProjectThreadTree,
-  getUnpinnedThreadsForSidebar,
-  getVisibleSidebarEntriesForPreview,
-  resolveProjectStatusIndicator,
-  resolveSidebarThreadListPaging,
-  sortThreadsForSidebar,
-} from "../Sidebar.logic";
+  ArchiveIcon,
+  EllipsisIcon,
+  GlobeIcon,
+  NewThreadIcon,
+  PencilIcon,
+  PinIcon,
+  type LucideIcon,
+} from "../../lib/icons";
+import { createClientPointMenuAnchor } from "../../lib/clientPointMenuAnchor";
+import { pinActionLabel } from "../../lib/pin";
+import { DEFAULT_PROJECT_ICON, projectColorValue } from "../../lib/projectAppearance";
+import {
+  deriveWorkspaceProjectThreadRows,
+  workspaceThreadKey,
+  type WorkspaceProjectEntry,
+  type WorkspaceThreadEntry,
+} from "../../lib/hosts/workspaceSidebar";
+import {
+  readAvailableWorkspaceNavigation,
+  readWorkspaceSessions,
+  type WorkspaceSession,
+} from "../../lib/hosts/workspaceSessions";
+import type { WorkspaceSidebarActions } from "../../lib/hosts/workspaceFrame";
+import { openWorkspacePath } from "./WorkspacePanels";
+import { resolveProjectStatusIndicator } from "../Sidebar.logic";
 import { FolderClosed, FolderOpen } from "../FolderClosed";
 import { ProjectEmojiGlyph } from "../ProjectSidebarIcon";
 import { SidebarIconButton } from "../SidebarIconButton";
@@ -23,6 +36,21 @@ import { SidebarProjectRowContent } from "../SidebarProjectRowContent";
 import { SidebarSectionToolbar } from "../SidebarSectionToolbar";
 import { SidebarStatusTrailingGlyph } from "../SidebarStatusTrailingGlyph";
 import { SidebarThreadRowContent } from "../SidebarThreadRowContent";
+import { SidebarRowHoverActions } from "../SidebarRowHoverActions";
+import {
+  createSidebarThreadRowGestures,
+  type SidebarThreadRowGestureProps,
+} from "../sidebarThreadRowGestures";
+import { RenameThreadDialog } from "../RenameThreadDialog";
+import { RenameDialog } from "../RenameDialog";
+import { Menu, MenuItem, MenuSeparator } from "../ui/menu";
+import { ComposerPickerMenuPopup } from "../chat/ComposerPickerMenuPopup";
+import { Kbd } from "../ui/kbd";
+import {
+  SIDEBAR_CONTEXT_MENU_PANEL_CLASS_NAME,
+  SIDEBAR_CONTEXT_MENU_ITEM_CLASS_NAME,
+  SidebarContextMenuIcon,
+} from "../sidebarContextMenuStyles";
 import {
   SidebarMenuButton,
   SidebarMenuSub,
@@ -49,6 +77,74 @@ type SortableProjectHandleProps = Pick<
   ReturnType<typeof useSortable>,
   "attributes" | "listeners" | "setActivatorNodeRef"
 >;
+
+type WorkspaceMenuState = { position: { x: number; y: number }; session: WorkspaceSession };
+
+function WorkspaceRowMenu({
+  menu,
+  onClose,
+  items,
+}: {
+  menu: WorkspaceMenuState | null;
+  onClose: () => void;
+  items: readonly { label: string; icon: LucideIcon; onClick: () => void; separator?: boolean }[];
+}) {
+  const anchor = useMemo(() => (menu ? createClientPointMenuAnchor(menu.position) : null), [menu]);
+  if (!menu || !anchor) return null;
+  const available = Boolean(readAvailableWorkspaceNavigation(menu.session)?.sidebar);
+  return (
+    <Menu
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <ComposerPickerMenuPopup
+        anchor={anchor}
+        align="start"
+        side="bottom"
+        sideOffset={0}
+        className={SIDEBAR_CONTEXT_MENU_PANEL_CLASS_NAME}
+      >
+        {items.map((item) => (
+          <span key={item.label}>
+            {item.separator ? <MenuSeparator /> : null}
+            <MenuItem
+              disabled={!available}
+              className={SIDEBAR_CONTEXT_MENU_ITEM_CLASS_NAME}
+              onClick={() => {
+                onClose();
+                item.onClick();
+              }}
+            >
+              <SidebarContextMenuIcon icon={item.icon} />
+              <span>{item.label}</span>
+            </MenuItem>
+          </span>
+        ))}
+      </ComposerPickerMenuPopup>
+    </Menu>
+  );
+}
+
+async function runWorkspaceSidebarAction(
+  session: WorkspaceSession,
+  action: (actions: WorkspaceSidebarActions) => Promise<void> | void,
+): Promise<void> {
+  try {
+    const actions = readAvailableWorkspaceNavigation(session)?.sidebar;
+    if (!actions)
+      throw new Error("This computer is no longer available. Reconnect before making changes.");
+    await action(actions);
+  } catch (error) {
+    toastManager.add({
+      type: "error",
+      title: "Could not update workspace",
+      description: error instanceof Error ? error.message : "Try again.",
+    });
+    throw error;
+  }
+}
 
 function WorkspaceProjectIcon({
   entry,
@@ -79,14 +175,115 @@ function selectedThreadPath(href: string, environmentId: string, threadId: strin
   );
 }
 
+/** Shared remote gestures, menu and rename dialog for classic and Activity rows. */
+export function WorkspaceThreadActions({
+  entry,
+  children,
+}: {
+  entry: WorkspaceThreadEntry;
+  children: (controls: {
+    rowEvents: SidebarThreadRowGestureProps;
+    menuButton: ReactNode;
+  }) => ReactNode;
+}) {
+  const { session, thread } = entry;
+  const [menu, setMenu] = useState<WorkspaceMenuState | null>(null);
+  const [renameSession, setRenameSession] = useState<WorkspaceSession | null>(null);
+  if (!session) return null;
+  const online = Boolean(readAvailableWorkspaceNavigation(session)?.sidebar);
+  const openMenu = (position: { x: number; y: number }) => setMenu({ position, session });
+  const actionSession = menu?.session ?? session;
+  const runAction = (action: (actions: WorkspaceSidebarActions) => Promise<void> | void) => {
+    void runWorkspaceSidebarAction(actionSession, action).catch(() => undefined);
+  };
+  const rowEvents = createSidebarThreadRowGestures({
+    threadId: thread.id,
+    onRename: () => {
+      if (online) setRenameSession(session);
+    },
+    onRenamePointerUp: () => undefined,
+    onContextMenu: (_threadId, position) => openMenu(position),
+  });
+  const menuButton = (
+    <SidebarIconButton
+      icon={EllipsisIcon}
+      label={`Chat actions for ${thread.title} on ${session.host.hostName}`}
+      disabled={!online}
+      className="pointer-events-auto"
+      onDoubleClick={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = event.currentTarget.getBoundingClientRect();
+        openMenu({ x: rect.left, y: rect.bottom });
+      }}
+    />
+  );
+  return (
+    <>
+      {children({ rowEvents, menuButton })}
+      <WorkspaceRowMenu
+        menu={menu}
+        onClose={() => setMenu(null)}
+        items={[
+          {
+            label: "Rename chat",
+            icon: PencilIcon,
+            onClick: () => setRenameSession(actionSession),
+          },
+          {
+            label: pinActionLabel("thread", thread.isPinned === true),
+            icon: PinIcon,
+            onClick: () =>
+              runAction((actions) => actions.setThreadPinned(thread.id, thread.isPinned !== true)),
+          },
+          ...(!thread.parentThreadId
+            ? [
+                {
+                  label: "Archive",
+                  icon: ArchiveIcon,
+                  separator: true,
+                  onClick: () => {
+                    const currentPath =
+                      readWorkspaceSessions().find((current) => current.host === actionSession.host)
+                        ?.summary?.path ?? "/";
+                    openWorkspacePath(actionSession, currentPath);
+                    runAction((actions: WorkspaceSidebarActions) =>
+                      actions.archiveThread(thread.id),
+                    );
+                  },
+                },
+              ]
+            : []),
+        ]}
+      />
+      <RenameThreadDialog
+        open={renameSession !== null}
+        currentTitle={thread.title}
+        onOpenChange={(open) => {
+          if (!open) setRenameSession(null);
+        }}
+        onSave={(title) => {
+          if (!renameSession) return;
+          return runWorkspaceSidebarAction(renameSession, (actions) =>
+            actions.renameThread(thread.id, title),
+          );
+        }}
+      />
+    </>
+  );
+}
+
 export function WorkspaceThreadRow({
   entry,
   topLevel: topLevelProp,
   depth: depthProp,
+  threadJumpLabel,
 }: {
   entry: WorkspaceThreadEntry;
   topLevel?: boolean;
   depth?: number | undefined;
+  threadJumpLabel?: string | null;
 }) {
   const topLevel = topLevelProp ?? false;
   const depth = depthProp ?? 0;
@@ -111,42 +308,62 @@ export function WorkspaceThreadRow({
       suffix={
         <>
           {topLevel ? (
-            <span className="max-w-[40%] shrink-0 truncate text-ui-xs text-muted-foreground">
-              {hostName}
-            </span>
+            <>
+              <GlobeIcon className="size-3 shrink-0 text-sky-600 dark:text-sky-400" aria-hidden />
+              <span className="max-w-[40%] shrink-0 truncate text-ui-xs text-muted-foreground">
+                {hostName}
+              </span>
+            </>
           ) : null}
-          {status ? <SidebarStatusTrailingGlyph status={status} /> : null}
+          <span className={sidebarHoverRevealHideClassName("thread-row")}>
+            {threadJumpLabel ? (
+              <Kbd>{threadJumpLabel}</Kbd>
+            ) : status ? (
+              <SidebarStatusTrailingGlyph status={status} />
+            ) : null}
+          </span>
         </>
       }
     />
   );
   const label = `${thread.title}, ${hostName}${status ? `, ${status.label}` : ""}`;
-  const open = () => openWorkspacePath(environmentId, `/${thread.id}`);
-  return topLevel ? (
-    <SidebarMenuButton
-      size="sm"
-      isActive={active}
-      aria-label={label}
-      className={cn(
-        SIDEBAR_HEADER_ROW_CLASS_NAME,
-        "gap-1.5",
-        active ? SIDEBAR_ROW_ACTIVE_CLASS_NAME : SIDEBAR_ROW_HOVER_CLASS_NAME,
+  const open = () => openWorkspacePath(session, `/${thread.id}`);
+  return (
+    <WorkspaceThreadActions entry={entry}>
+      {({ rowEvents, menuButton }) => (
+        <div className="group/thread-row relative w-full" {...rowEvents}>
+          {topLevel ? (
+            <SidebarMenuButton
+              size="sm"
+              isActive={active}
+              aria-label={label}
+              className={cn(
+                SIDEBAR_HEADER_ROW_CLASS_NAME,
+                "gap-1.5 pr-7",
+                active ? SIDEBAR_ROW_ACTIVE_CLASS_NAME : SIDEBAR_ROW_HOVER_CLASS_NAME,
+              )}
+              onClick={open}
+            >
+              {content}
+            </SidebarMenuButton>
+          ) : (
+            <SidebarMenuSubButton
+              render={<button type="button" />}
+              size="sm"
+              isActive={active}
+              aria-label={label}
+              className={cn(SIDEBAR_THREAD_ROW_BASE_CLASS_NAME, "pr-7")}
+              onClick={open}
+            >
+              {content}
+            </SidebarMenuSubButton>
+          )}
+          <SidebarRowHoverActions threadId={entry.key}>
+            <span className="mr-1.5">{menuButton}</span>
+          </SidebarRowHoverActions>
+        </div>
       )}
-      onClick={open}
-    >
-      {content}
-    </SidebarMenuButton>
-  ) : (
-    <SidebarMenuSubButton
-      render={<button type="button" />}
-      size="sm"
-      isActive={active}
-      aria-label={label}
-      className={SIDEBAR_THREAD_ROW_BASE_CLASS_NAME}
-      onClick={open}
-    >
-      {content}
-    </SidebarMenuSubButton>
+    </WorkspaceThreadActions>
   );
 }
 
@@ -157,6 +374,9 @@ export function WorkspaceProjectItem({
   threadSortOrder,
   dragHandleProps,
   manualSorting: manualSortingProp,
+  extraPages: extraPagesProp,
+  onExtraPagesChange,
+  threadJumpLabels,
 }: {
   entry: WorkspaceProjectEntry;
   expanded: boolean;
@@ -164,54 +384,41 @@ export function WorkspaceProjectItem({
   threadSortOrder: SidebarThreadSortOrder;
   dragHandleProps?: SortableProjectHandleProps | null;
   manualSorting?: boolean;
+  extraPages?: number;
+  onExtraPagesChange?: (pages: number) => void;
+  threadJumpLabels?: ReadonlyMap<string, string>;
 }) {
   const manualSorting = manualSortingProp ?? false;
-  const [extraPages, setExtraPages] = useState(0);
+  const [localExtraPages, setLocalExtraPages] = useState(0);
+  const extraPages = extraPagesProp ?? localExtraPages;
+  const setExtraPages = onExtraPagesChange ?? setLocalExtraPages;
+  const [menu, setMenu] = useState<WorkspaceMenuState | null>(null);
+  const [renameSession, setRenameSession] = useState<WorkspaceSession | null>(null);
   const href = useLocation({ select: (location) => location.href });
   const { project, session } = entry;
   if (!session) return null;
   const hostName = session.host.hostName;
   const environmentId = session.host.executionScope.environmentId;
-  const online = session.summary?.state === "open" && Boolean(session.navigation);
+  const online = Boolean(readAvailableWorkspaceNavigation(session));
   const status = expanded
     ? null
     : resolveProjectStatusIndicator(entry.threads.map((thread) => thread.status));
-  const projectThreads = getUnpinnedThreadsForSidebar(
-    entry.threads,
-    entry.threads.filter((thread) => thread.isPinned).map((thread) => thread.id),
-  );
-  const activeThreadId = projectThreads.find((thread) =>
+  const activeThreadId = entry.threads.find((thread) =>
     selectedThreadPath(href, environmentId, thread.id),
   )?.id;
-  const rows = buildProjectThreadTree({
-    threads: sortThreadsForSidebar(projectThreads, threadSortOrder),
-    forceVisibleThreadId: activeThreadId,
+  const { visibleEntries, paging, canShowMore } = deriveWorkspaceProjectThreadRows({
+    entry,
+    sortOrder: threadSortOrder,
+    activeThreadId,
+    extraPages,
   });
-  const paging = resolveSidebarThreadListPaging({
-    totalCount: rows.length,
-    baseLimit: 5,
-    pageSize: 5,
-    requestedExtraPages: extraPages,
-  });
-  const { visibleEntries } = getVisibleSidebarEntriesForPreview({
-    entries: rows.map((row) => ({ rowId: row.thread.id, rootRowId: row.rootThreadId, row })),
-    activeEntryId: activeThreadId,
-    previewLimit: paging.previewLimit,
-  });
-  const canShowMore = paging.canShowMore && visibleEntries.length < rows.length;
   const startChat = () => {
-    const navigation = session.navigation;
+    const navigation = readAvailableWorkspaceNavigation(session);
     if (!online || !navigation) return;
     void navigation
       .newChat(project.id)
       .then((path) => {
-        // A disconnected or replaced host cannot route the result into another execution.
-        if (
-          readWorkspaceSessions().some(
-            (current) => current.host === session.host && current.navigation === navigation,
-          )
-        )
-          openWorkspacePath(environmentId, path);
+        openWorkspacePath(session, path);
       })
       .catch((error: unknown) =>
         toastManager.add({
@@ -221,6 +428,8 @@ export function WorkspaceProjectItem({
         }),
       );
   };
+  const actionSession = menu?.session ?? session;
+  const openMenu = (position: { x: number; y: number }) => setMenu({ position, session });
 
   return (
     <div className="group/collapsible">
@@ -239,12 +448,29 @@ export function WorkspaceProjectItem({
           aria-label={`${project.name}, ${hostName}${status ? `, ${status.label}` : ""}`}
           title={`${project.cwd}\n${hostName}`}
           onClick={onToggle}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            openMenu({ x: event.clientX, y: event.clientY });
+          }}
+          onDoubleClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (online) setRenameSession(session);
+          }}
         >
           <SidebarProjectRowContent
-            icon={<WorkspaceProjectIcon entry={entry} expanded={expanded} />}
+            icon={
+              <span className="relative inline-flex size-4 shrink-0">
+                <WorkspaceProjectIcon entry={entry} expanded={expanded} />
+                <span className="absolute -right-1 -bottom-0.5 inline-flex rounded-full bg-sidebar">
+                  <GlobeIcon className="size-2.5 text-sky-600 dark:text-sky-400" aria-hidden />
+                </span>
+              </span>
+            }
             label={project.name}
             hostName={hostName}
-            reserveClassName="group-hover/project-header:pr-7 group-has-[:focus-visible]/project-header:pr-7"
+            reserveClassName="group-hover/project-header:pr-12 group-has-[:focus-visible]/project-header:pr-12"
             trailing={
               status ? (
                 <span
@@ -262,6 +488,17 @@ export function WorkspaceProjectItem({
           />
         </SidebarMenuButton>
         <SidebarSectionToolbar placement="overlay" revealOnHover>
+          <SidebarIconButton
+            icon={EllipsisIcon}
+            label={`Project actions for ${project.name} on ${hostName}`}
+            disabled={!online || !session.navigation?.sidebar}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              const rect = event.currentTarget.getBoundingClientRect();
+              openMenu({ x: rect.left, y: rect.bottom });
+            }}
+          />
           <SidebarIconButton
             icon={NewThreadIcon}
             label={`New chat in ${project.name} on ${hostName}`}
@@ -282,6 +519,9 @@ export function WorkspaceProjectItem({
                 <WorkspaceThreadRow
                   entry={{ key: `${entry.key}:${row.thread.id}`, thread: row.thread, session }}
                   depth={row.depth}
+                  threadJumpLabel={
+                    threadJumpLabels?.get(workspaceThreadKey(environmentId, row.thread.id)) ?? null
+                  }
                 />
               </SidebarMenuSubItem>
             ))}
@@ -319,6 +559,42 @@ export function WorkspaceProjectItem({
           </SidebarMenuSub>
         </div>
       </div>
+      <WorkspaceRowMenu
+        menu={menu}
+        onClose={() => setMenu(null)}
+        items={[
+          {
+            label: "Rename project",
+            icon: PencilIcon,
+            onClick: () => setRenameSession(actionSession),
+          },
+          {
+            label: pinActionLabel("project", project.isPinned === true),
+            icon: PinIcon,
+            onClick: () => {
+              void runWorkspaceSidebarAction(actionSession, (actions) =>
+                actions.setProjectPinned(project.id, project.isPinned !== true),
+              ).catch(() => undefined);
+            },
+          },
+        ]}
+      />
+      <RenameDialog
+        open={renameSession !== null}
+        title="Rename project"
+        description="Choose a recognizable name for this checkout."
+        initialValue={project.name}
+        allowEmpty
+        onOpenChange={(open) => {
+          if (!open) setRenameSession(null);
+        }}
+        onSave={(name) => {
+          if (!renameSession) return;
+          return runWorkspaceSidebarAction(renameSession, (actions) =>
+            actions.renameProject(project.id, name),
+          );
+        }}
+      />
     </div>
   );
 }

@@ -122,9 +122,6 @@ describe("verifySessionCredential", () => {
       keyGeneration: KEY_GENERATION,
       ownerUserId: USER_ID,
       getApiJwks: async () => jwks,
-      getAuthorization: async () => {
-        throw new Error("owner path must not consult the account API");
-      },
       nowSeconds: () => NOW,
     }).mint(await mintRequest(await grant()));
   }

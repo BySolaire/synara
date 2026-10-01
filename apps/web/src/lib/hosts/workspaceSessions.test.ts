@@ -40,6 +40,39 @@ async function registry() {
 }
 
 describe("workspace ownership", () => {
+  it.each(["offline", "removed", "frame replaced", "host replaced"])(
+    "rejects captured sidebar actions after the owner is %s",
+    async (change) => {
+      const api = await registry();
+      api.addWorkspaceSession(host("one"));
+      const navigation = {
+        browseFolders: vi.fn(),
+        createProject: vi.fn(),
+        newChat: vi.fn(),
+        openProject: vi.fn(),
+        navigate: vi.fn(),
+        recover: vi.fn(),
+      };
+      const summary = { state: "open" as const, path: "/", projects: [], threads: [] };
+      api.updateWorkspaceSession("one", { navigation, summary });
+      const captured = api.readWorkspaceSessions()[0]!;
+      expect(api.readAvailableWorkspaceNavigation(captured)).toBe(navigation);
+      if (change === "offline")
+        api.updateWorkspaceSession("one", { summary: { ...summary, state: "closed" } });
+      if (change === "removed" || change === "host replaced")
+        api.removeWorkspaceSession("host-one");
+      if (change === "host replaced") {
+        api.addWorkspaceSession(host("one"));
+        api.updateWorkspaceSession("one", { navigation, summary });
+      }
+      if (change === "frame replaced")
+        api.updateWorkspaceSession("one", { navigation: { ...navigation } });
+      expect(api.readAvailableWorkspaceNavigation(captured)).toBeUndefined();
+      if (change !== "removed" && change !== "offline")
+        expect(api.readAvailableWorkspaceNavigation(api.readWorkspaceSessions()[0]!)).toBeDefined();
+    },
+  );
+
   it("keeps navigation bound to its owner and ignores late updates from a removed host", async () => {
     const api = await registry();
     api.addWorkspaceSession(host("one"));

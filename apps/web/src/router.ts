@@ -1,10 +1,6 @@
 import { windowQueryNamespace } from "./lib/hosts/controlQueryScope";
 import { registerExecutionSwitchGuard } from "./lib/hosts/executionSwitch";
-import {
-  flushWorkspaceEditors,
-  recoverWorkspaceEditors,
-  readWorkspaceEditorDrafts,
-} from "./lib/workspaceEditorSession";
+import { recoverWorkspaceEditors, readWorkspaceEditorDrafts } from "./lib/workspaceEditorSession";
 import { flushDeferredStorage } from "./lib/storage";
 import { createElement } from "react";
 import { QueryClient, QueryClientProvider, hashKey } from "@tanstack/react-query";
@@ -26,11 +22,6 @@ export function getRouter(history: RouterHistory) {
   // server). Lives as long as the QueryClient, so never unsubscribed.
   watchAccountIdentityChanges(queryClient);
   registerExecutionSwitchGuard({
-    flush: async () => {
-      const saved = await flushWorkspaceEditors(queryClient);
-      if (saved) flushDeferredStorage();
-      return saved;
-    },
     recover: () => {
       recoverWorkspaceEditors(queryClient);
       flushDeferredStorage();

@@ -62,9 +62,6 @@ export async function createRemoteDialFixture(
         { kty: "OKP", crv: "Ed25519", x: publicApi.x!, kid: "fixture", alg: "EdDSA", use: "sig" },
       ],
     }),
-    getAuthorization: async () => {
-      throw new Error("Cloud cannot authorize devices");
-    },
   });
   const sessions = new RemoteSessionRegistry();
   const gateway = new RemoteConnectionGateway({

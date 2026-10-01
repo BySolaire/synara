@@ -5,7 +5,7 @@ import {
 } from "../../server/src/remoteTransport/certificates";
 import { randomBytes } from "node:crypto";
 
-import { HOST_SESSION_CLOSE_REVOKED } from "@synara/relay-protocol";
+import { HOST_SESSION_CLOSE_REVOKED } from "@synara/contracts";
 import { AccountApiError, createAccountClient } from "@synara/shared/account";
 import { generateSyncKey, openHostSecret, sealHostSecret } from "@synara/shared/hostSecrets";
 import { decodeJwt } from "jose";

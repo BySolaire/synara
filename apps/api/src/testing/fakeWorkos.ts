@@ -669,7 +669,6 @@ export async function startFakeWorkos(options: StartFakeWorkosOptions = {}): Pro
         baseUrl: "http://localhost:8788",
         apiPublicUrl: "http://localhost:8788/api/v1",
         apiSigningKey: Buffer.alloc(32, 1).toString("base64url"),
-        relayServiceToken: "relay-test-secret",
         port: 8788,
         trustedProxyHops: 1,
         workosApiKey: apiKey,

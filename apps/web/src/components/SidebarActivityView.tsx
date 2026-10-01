@@ -22,6 +22,7 @@ import {
   AddPlusIcon,
   CircleCheckIcon,
   GitBranchIcon,
+  GlobeIcon,
   NewThreadIcon,
   SortIcon,
   Undo2Icon,
@@ -39,6 +40,8 @@ import {
 } from "../sidebarRowStyles";
 import { resolveThreadPullRequestFallback } from "../hooks/useThreadPullRequests";
 import type { Project, SidebarThreadSummary } from "../types";
+import type { WorkspaceThreadEntry } from "../lib/hosts/workspaceSidebar";
+import { WorkspaceThreadActions } from "./hosts/WorkspaceProjects";
 import { ComposerPickerMenuPopup } from "./chat/ComposerPickerMenuPopup";
 import { FolderClosed } from "./FolderClosed";
 import { ProviderIcon } from "./ProviderIcon";
@@ -94,6 +97,13 @@ const ACTIVITY_LIST_BASE_LIMIT = 20;
 const ACTIVITY_LIST_PAGE_SIZE = 20;
 const EMPTY_PROJECT_GROUPS: ActivityProjectGroup[] = [];
 
+interface ExternalActivityRow {
+  hostName: string;
+  onOpen: () => void;
+  status: ThreadStatusPill | null;
+  entry?: WorkspaceThreadEntry;
+}
+
 /** Keeps a row action (pin, archive, done) from also opening the thread. */
 function stopRowActivation(event: MouseEvent) {
   event.preventDefault();
@@ -121,7 +131,7 @@ function ActivityThreadRow({
 }: {
   thread: SidebarThreadSummary;
   project: Project | undefined;
-  external?: { hostName: string; onOpen: () => void; status: ThreadStatusPill | null } | undefined;
+  external?: ExternalActivityRow | undefined;
   isActive: boolean;
   isSettled: boolean;
   isPinned: boolean;
@@ -209,6 +219,9 @@ function ActivityThreadRow({
           >
             {thread.title}
           </span>
+          {external ? (
+            <GlobeIcon className="size-3 shrink-0 text-sky-600 dark:text-sky-400" aria-hidden />
+          ) : null}
         </span>
         <span className="flex min-w-0 items-center gap-1.5">
           <ProjectGlyph
@@ -291,6 +304,19 @@ function ActivityThreadRow({
     </>
   );
   if (external) {
+    if (external.entry)
+      return (
+        <WorkspaceThreadActions entry={external.entry}>
+          {({ rowEvents, menuButton }) => (
+            <div className="group/activity-row relative" data-thread-item {...rowEvents}>
+              {rowContent}
+              <span className="absolute top-1 right-1 inline-flex opacity-0 transition-opacity group-hover/activity-row:opacity-100 group-focus-within/activity-row:opacity-100">
+                {menuButton}
+              </span>
+            </div>
+          )}
+        </WorkspaceThreadActions>
+      );
     return (
       <div className="group/activity-row relative" data-thread-item>
         {rowContent}
@@ -585,12 +611,7 @@ export function SidebarActivityView({
 }: {
   threads: readonly SidebarThreadSummary[];
   projectById: ReadonlyMap<ProjectId, Project>;
-  externalRows?:
-    | ReadonlyMap<
-        ThreadId,
-        { hostName: string; onOpen: () => void; status: ThreadStatusPill | null }
-      >
-    | undefined;
+  externalRows?: ReadonlyMap<ThreadId, ExternalActivityRow> | undefined;
   activeThreadId: ThreadId | null;
   pinnedThreadIdSet: ReadonlySet<ThreadId>;
   settledOverrideByThreadId: ReadonlyMap<ThreadId, boolean>;
@@ -750,7 +771,7 @@ export function SidebarActivityView({
   const visibleThreadIdsRef = useRef(visibleThreadIds);
   visibleThreadIdsRef.current = visibleThreadIds;
   useEffect(() => {
-    onVisibleThreadIdsChange(visibleThreadIdsRef.current.filter((id) => !externalRows?.has(id)));
+    onVisibleThreadIdsChange(visibleThreadIdsRef.current);
   }, [externalRows, onVisibleThreadIdsChange, visibleThreadIdsFingerprint]);
   useEffect(
     () => () => {

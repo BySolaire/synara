@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { Effect } from "effect";
 import { CloseEvent } from "effect/unstable/socket/Socket";
-import type { RelaySocket } from "./relayDial";
+import type { RelaySocket } from "./relaySocket";
 
 /** One bounded writer and one terminal notification for both Effect WS bridges. */
 export class EffectRelaySocket extends EventEmitter implements RelaySocket {

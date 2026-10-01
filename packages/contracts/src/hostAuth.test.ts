@@ -25,10 +25,6 @@ import {
   MINT_REQUEST_JWT_TYP,
   MINT_REQUEST_MAX_AGE_SECONDS,
   RegisterDeviceRequest,
-  RELAY_CONTROL_SCOPE,
-  RELAY_TICKET_JWT_TYP,
-  RELAY_TICKET_MAX_AGE_SECONDS,
-  RevocationEventsResponse,
   SESSION_CREDENTIAL_JWT_TYP,
   SESSION_CREDENTIAL_MAX_AGE_SECONDS,
   SYNARA_DEVICE_ISSUER,
@@ -69,23 +65,6 @@ describe("host auth contracts", () => {
     ).toThrow();
   });
 
-  it("decodes revocation feed watermarks and events", () => {
-    expect(
-      Schema.decodeUnknownSync(RevocationEventsResponse)({
-        events: [
-          {
-            id: 4,
-            hostId: "550e8400-e29b-41d4-a716-446655440000",
-            kind: "device_revoked",
-            subject: "jkt",
-            createdAt: "2026-08-13T00:00:00.000Z",
-          },
-        ],
-        watermark: 3,
-      }).watermark,
-    ).toBe(3);
-  });
-
   it("requires complete ownership and key state on a link response", () => {
     const host = {
       id: "550e8400-e29b-41d4-a716-446655440000",
@@ -114,7 +93,6 @@ describe("host auth contracts", () => {
   it("pins every token lifetime literal so widening the constant cannot slip past", () => {
     // These bound each token's blast radius; assert the literal, not the constant a mutation could widen alongside its own consumer.
     expect(GRANT_MAX_AGE_SECONDS).toBe(60);
-    expect(RELAY_TICKET_MAX_AGE_SECONDS).toBe(300);
     expect(MINT_REQUEST_MAX_AGE_SECONDS).toBe(120);
     expect(SESSION_CREDENTIAL_MAX_AGE_SECONDS).toBe(3600);
     expect(JWT_CLOCK_TOLERANCE_SECONDS).toBe(60);
@@ -123,10 +101,9 @@ describe("host auth contracts", () => {
     expect(HOST_LINK_MAX_AGE_SECONDS).toBe(300);
   });
 
-  it("pins scope, audience, issuer, and typ literals shared wire-to-wire with the relay and account API", () => {
+  it("pins scope, audience, issuer, and typ literals shared by the host and account API", () => {
     // A silent rename here desynchronizes this host from every peer that hardcodes the same literal.
     expect(HOST_CONNECT_SCOPE).toBe("host:connect");
-    expect(RELAY_CONTROL_SCOPE).toBe("relay:control");
     expect(SYNARA_RELAY_AUDIENCE).toBe("synara-relay");
     expect(SYNARA_SESSION_AUDIENCE).toBe("synara-session");
     expect(SYNARA_DEVICE_ISSUER).toBe("synara-device");
@@ -134,7 +111,6 @@ describe("host auth contracts", () => {
     expect(HOST_PROOF_JWT_TYP).toBe("synara-host-proof+jwt");
     expect(DEVICE_REGISTER_JWT_TYP).toBe("synara-device-register+jwt");
     expect(GRANT_JWT_TYP).toBe("synara-grant+jwt");
-    expect(RELAY_TICKET_JWT_TYP).toBe("synara-relay-ticket+jwt");
     expect(MINT_REQUEST_JWT_TYP).toBe("synara-mint-request+jwt");
     expect(SESSION_CREDENTIAL_JWT_TYP).toBe("synara-session-credential+jwt");
     expect(DPOP_JWT_TYP).toBe("dpop+jwt");

@@ -10,8 +10,7 @@ import { Duration, Effect } from "effect";
 import WebSocket, { type RawData } from "ws";
 
 import type { SessionCredentialServiceShape } from "../auth/Services/SessionCredentialService";
-import type { RelaySocket } from "../relayDial";
-import { sendBoundedRelayFrame } from "../relaySocket";
+import { sendBoundedRelayFrame, type RelaySocket } from "../relaySocket";
 import { makeCurrentWsFeatureCompatibilitySearchParams } from "../wsCompatibility";
 import serverPackageJson from "../../package.json" with { type: "json" };
 

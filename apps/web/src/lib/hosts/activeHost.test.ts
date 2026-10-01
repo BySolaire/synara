@@ -4,7 +4,7 @@
 // same way the storage-migration tests stub localStorage.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { readActiveHost, readLegacyActiveHost, readActiveHostSocketPrefix } from "./activeHost";
+import { readActiveHost, readLegacyActiveHost } from "./activeHost";
 
 const KEY = "synara:active-host:v1";
 
@@ -36,7 +36,6 @@ afterEach(() => {
 describe("activeHost", () => {
   it("is null when nothing is chosen", () => {
     expect(readActiveHost()).toBeNull();
-    expect(readActiveHostSocketPrefix()).toBeNull();
   });
 
   it("leaves a legacy remote selection for migration without changing local execution", () => {
@@ -50,7 +49,6 @@ describe("activeHost", () => {
       wsPath: "/ws/remote/host_1/",
     });
     expect(readActiveHost()).toBeNull();
-    expect(readActiveHostSocketPrefix()).toBeNull();
   });
 
   it("drops a corrupt or non-path value rather than pointing the transport at it", () => {

@@ -13,7 +13,6 @@
     "@effect/platform-node": "catalog:",
     "@hono/node-server": "^1.14.0",
     "@synara/contracts": "workspace:*",
-    "@synara/relay-protocol": "workspace:*",
     "@synara/shared": "workspace:*",
     "effect": "catalog:",
     "hono": "^4.7.0",

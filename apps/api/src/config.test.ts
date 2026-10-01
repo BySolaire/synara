@@ -41,7 +41,7 @@ describe("loadApiConfig", () => {
     const { API_SIGNING_KEY: _signing, ...withoutSigning } = base;
     expect(() => loadApiConfig(withoutSigning)).toThrow(/API_SIGNING_KEY/);
     const { RELAY_SERVICE_TOKEN: _relay, ...withoutRelay } = base;
-    expect(loadApiConfig(withoutRelay).relayServiceToken).toBeUndefined();
+    expect(loadApiConfig(withoutRelay)).toMatchObject({ apiSigningKey: base.API_SIGNING_KEY });
   });
 
   it("reads the previous signing key for rotation", () => {

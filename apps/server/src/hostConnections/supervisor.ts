@@ -11,6 +11,13 @@ export function superviseHostConnections(
 ): () => void {
   const pending = new Set<string>();
   const failures = new Map<string, { count: number; retryAt: number }>();
+  // A successful explicit probe can return to idle and fail again between ticks.
+  const stopObserving = registry.onChange(() => {
+    for (const id of failures.keys()) {
+      const { state } = registry.status(id);
+      if (state === "connected" || state === "idle") failures.delete(id);
+    }
+  });
   let stopped = false;
   let reading = false;
   const reconcile = async () => {
@@ -22,12 +29,6 @@ export function superviseHostConnections(
       const desiredIds = new Set(desiredHosts.map((host) => host.hostId));
       for (const id of failures.keys()) if (!desiredIds.has(id)) failures.delete(id);
       for (const host of desiredHosts.slice(0, 32)) {
-        // An explicit Retry/pair can re-establish a previously terminal relationship.
-        if (
-          registry.hasConnector(host.hostId) &&
-          registry.status(host.hostId).state === "connected"
-        )
-          failures.delete(host.hostId);
         if (pending.size >= 2) break;
         if (pending.has(host.hostId) || (failures.get(host.hostId)?.retryAt ?? 0) > Date.now())
           continue;
@@ -71,6 +72,7 @@ export function superviseHostConnections(
   return () => {
     stopped = true;
     clearInterval(timer);
+    stopObserving();
     registry.closeAll();
   };
 }

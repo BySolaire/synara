@@ -6,6 +6,11 @@ import { Schema } from "effect";
 
 import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas";
 
+/** Close codes emitted by the encrypted host session, on every transport. */
+export const HOST_SESSION_CLOSE_PROTOCOL_ERROR = 4500 as const;
+export const HOST_SESSION_CLOSE_AUTH_FAILED = 4501 as const;
+export const HOST_SESSION_CLOSE_REVOKED = 4503 as const;
+
 export const HostSessionTransport = Schema.Literals([
   "direct",
   "relay",

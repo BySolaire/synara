@@ -542,7 +542,6 @@ describe("createAccountClient", () => {
       const fetchMock = vi
         .fn()
         .mockResolvedValueOnce(jsonResponse({ host }))
-        .mockResolvedValueOnce(jsonResponse({ ticket: "relay-ticket" }))
         .mockResolvedValueOnce(
           jsonResponse({
             discoverable: true,
@@ -556,7 +555,6 @@ describe("createAccountClient", () => {
       const client = createAccountClient({ baseUrl: BASE_URL, fetch: fetchMock });
 
       await client.replaceHostEndpoints("proof", host.id, []);
-      await client.requestRelayTicket("proof", host.id);
       await client.getHostAuthorization("proof", host.id);
       await client.unlinkHost("proof", host.id);
 

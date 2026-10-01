@@ -4,9 +4,6 @@ import {
   GRANT_MAX_AGE_SECONDS,
   GrantClaims,
   type HostPublicKeyJwk,
-  RELAY_TICKET_JWT_TYP,
-  RELAY_TICKET_MAX_AGE_SECONDS,
-  RelayTicketClaims,
 } from "@synara/contracts";
 import { and, eq, inArray } from "drizzle-orm";
 import { Schema } from "effect";
@@ -22,11 +19,10 @@ import { createHostGrantIssuer } from "../identity/grantIssuer";
 import { createHostKeyRegistry } from "../identity/hostKeyRegistry";
 import { createHostSecretStore } from "../identity/hostSecretStore";
 import { clearOrgCache } from "../identity/orgProvisioning";
-import { createRevocationLog, REVOCATION_RETENTION_MS } from "../identity/revocationLog";
 import { createApiSigningService, type ApiSigningService } from "../identity/signing";
 import { createWorkosIdentityProvider } from "../identity/workos";
 import { startFakeWorkos, type FakeWorkos } from "../testing/fakeWorkos";
-import { createInternalRoutes, createV1Routes, LINK_APPROVE_RATE_LIMIT_PER_MINUTE } from "./v1";
+import { createV1Routes, LINK_APPROVE_RATE_LIMIT_PER_MINUTE } from "./v1";
 
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 
@@ -80,7 +76,6 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
     const { db } = database;
     const { verifier, grants } = createWorkosIdentityProvider(config);
     const app = new Hono();
-    const revocations = createRevocationLog(db);
     app.route(
       "/api/v1",
       createV1Routes({
@@ -98,16 +93,8 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
         hostGrants: createHostGrantIssuer(signing),
         hostSecrets: createHostSecretStore(db),
         accountBaseUrl: config.baseUrl,
-        ...(config.relayServiceToken ? { relayServiceToken: config.relayServiceToken } : {}),
         db,
         trustedProxyHops: 1,
-      }),
-    );
-    app.route(
-      "/internal",
-      createInternalRoutes({
-        revocations,
-        ...(config.relayServiceToken ? { relayServiceToken: config.relayServiceToken } : {}),
       }),
     );
     return { app, db };
@@ -406,8 +393,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
       expect(second.host.keyGeneration).toBe(first.keyGeneration + 1);
       expect(
         (
-          await app.request(`/api/v1/hosts/${first.id}/relay-ticket`, {
-            method: "POST",
+          await app.request(`/api/v1/hosts/${first.id}/authorization`, {
             headers: { authorization: `HostProof ${oldProof}` },
           })
         ).status,
@@ -609,8 +595,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
           [0, 1].map(
             async () =>
               (
-                await app.request(`/api/v1/hosts/${host.id}/relay-ticket`, {
-                  method: "POST",
+                await app.request(`/api/v1/hosts/${host.id}/authorization`, {
                   headers: { authorization: `HostProof ${valid}` },
                 })
               ).status,
@@ -628,22 +613,6 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
           })
         ).status,
       ).toBe(200);
-      const ticketResponse = await app.request(`/api/v1/hosts/${host.id}/relay-ticket`, {
-        method: "POST",
-        headers: { authorization: `HostProof ${valid}` },
-      });
-      expect(ticketResponse.status).toBe(200);
-      const ticket = ((await ticketResponse.json()) as { ticket: string }).ticket;
-      const ticketPayload = await signing.verify(ticket, {
-        typ: RELAY_TICKET_JWT_TYP,
-        audience: "synara-relay",
-        maxAgeSeconds: RELAY_TICKET_MAX_AGE_SECONDS,
-      });
-      expect(Schema.decodeUnknownSync(RelayTicketClaims)(ticketPayload)).toMatchObject({
-        sub: host.id,
-        environmentId: host.environmentId,
-        keyGeneration: host.keyGeneration,
-      });
       const authorization = await app.request(`/api/v1/hosts/${host.id}/authorization`, {
         headers: { authorization: `HostProof ${valid}` },
       });
@@ -665,8 +634,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
         .sign(host.key.privateKey);
       expect(
         (
-          await app.request(`/api/v1/hosts/${host.id}/relay-ticket`, {
-            method: "POST",
+          await app.request(`/api/v1/hosts/${host.id}/authorization`, {
             headers: { authorization: `HostProof ${malformedSubject}` },
           })
         ).status,
@@ -679,8 +647,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
       ]) {
         expect(
           (
-            await app.request(`/api/v1/hosts/${host.id}/relay-ticket`, {
-              method: "POST",
+            await app.request(`/api/v1/hosts/${host.id}/authorization`, {
               headers: { authorization: `HostProof ${proof}` },
             })
           ).status,
@@ -689,8 +656,7 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
       await db.update(hosts).set({ publicKeyJwk: null }).where(eq(hosts.id, host.id));
       expect(
         (
-          await app.request(`/api/v1/hosts/${host.id}/relay-ticket`, {
-            method: "POST",
+          await app.request(`/api/v1/hosts/${host.id}/authorization`, {
             headers: { authorization: `HostProof ${valid}` },
           })
         ).status,
@@ -1213,150 +1179,6 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
     });
   });
 
-  describe("7. revocations feed", () => {
-    it("authenticates the relay and re-delivers an out-of-order commit inside the lag window", async () => {
-      const { app } = buildApp();
-      const baselineResult = await pool.query<{ id: string }>(
-        "SELECT COALESCE(MAX(id), 0)::text AS id FROM revocation_events",
-      );
-      const baseline = Number(baselineResult.rows[0]?.id ?? 0);
-      expect((await app.request("/internal/revocations?after=0")).status).toBe(401);
-      const lowerTransaction = await pool.connect();
-      let committed = false;
-      try {
-        await lowerTransaction.query("BEGIN");
-        const lower = await lowerTransaction.query<{ id: string }>(
-          `INSERT INTO revocation_events (host_id, kind)
-           VALUES ($1, 'host_unlinked') RETURNING id::text`,
-          [randomUUID()],
-        );
-        const lowerId = Number(lower.rows[0]?.id);
-        const higher = await pool.query<{ id: string }>(
-          `INSERT INTO revocation_events (host_id, kind)
-           VALUES ($1, 'device_revoked') RETURNING id::text`,
-          [randomUUID()],
-        );
-        const higherId = Number(higher.rows[0]?.id);
-        expect(lowerId).toBeLessThan(higherId);
-
-        const first = await app.request(`/internal/revocations?after=${baseline}`, {
-          headers: { authorization: `Bearer ${config.relayServiceToken}` },
-        });
-        expect(first.status).toBe(200);
-        const firstBody = (await first.json()) as {
-          events: Array<{ id: number }>;
-          watermark: number;
-        };
-        expect(firstBody.events.map((event) => event.id)).toContain(higherId);
-        expect(firstBody.events.map((event) => event.id)).not.toContain(lowerId);
-        // The watermark must not pass the uncommitted lower id. Asserting a
-        // bound rather than equality keeps this honest when another suite
-        // shares the database and writes its own events concurrently.
-        expect(firstBody.watermark).toBeLessThan(lowerId);
-        expect(firstBody.watermark).toBeGreaterThanOrEqual(baseline);
-
-        await lowerTransaction.query("COMMIT");
-        committed = true;
-        const trailing = await app.request(`/internal/revocations?after=${firstBody.watermark}`, {
-          headers: { authorization: `Bearer ${config.relayServiceToken}` },
-        });
-        const trailingBody = (await trailing.json()) as {
-          events: Array<{ id: number }>;
-          watermark: number;
-        };
-        expect(trailingBody.events.map((event) => event.id)).toEqual(
-          expect.arrayContaining([lowerId, higherId]),
-        );
-        // Once the straggler commits nothing can still land below higherId,
-        // so the watermark advances immediately — no wall-clock wait.
-        expect(trailingBody.watermark).toBe(higherId);
-      } finally {
-        if (!committed) await lowerTransaction.query("ROLLBACK");
-        lowerTransaction.release();
-      }
-    });
-
-    it("never skips an event whose writer transaction outlived any wall-clock window", async () => {
-      // created_at defaults to now() = transaction START time. A writer that
-      // blocks on a row lock for a minute inserts a row that is already
-      // "old" by wall clock the moment it becomes visible. An age-based
-      // watermark would have advanced past it while it was invisible and
-      // lost it forever; the xmin boundary must hold the line instead.
-      const { app } = buildApp();
-      const baselineResult = await pool.query<{ id: string }>(
-        "SELECT COALESCE(MAX(id), 0)::text AS id FROM revocation_events",
-      );
-      const baseline = Number(baselineResult.rows[0]?.id ?? 0);
-      const slowWriter = await pool.connect();
-      let committed = false;
-      try {
-        await slowWriter.query("BEGIN");
-        // Age the transaction clock well past any lag window before inserting.
-        await slowWriter.query("SELECT pg_sleep(0.05)");
-        const slow = await slowWriter.query<{ id: string }>(
-          `INSERT INTO revocation_events (host_id, kind, created_at)
-           VALUES ($1, 'host_unlinked', now() - interval '10 minutes') RETURNING id::text`,
-          [randomUUID()],
-        );
-        const slowId = Number(slow.rows[0]?.id);
-        const fast = await pool.query<{ id: string }>(
-          `INSERT INTO revocation_events (host_id, kind)
-           VALUES ($1, 'device_revoked') RETURNING id::text`,
-          [randomUUID()],
-        );
-        const fastId = Number(fast.rows[0]?.id);
-
-        const poll = await app.request(`/internal/revocations?after=${baseline}`, {
-          headers: { authorization: `Bearer ${config.relayServiceToken}` },
-        });
-        const body = (await poll.json()) as { events: Array<{ id: number }>; watermark: number };
-        expect(body.events.map((event) => event.id)).not.toContain(slowId);
-        // The decisive assertion: the visible fast row looks committed, but
-        // the invisible slow row holds a LOWER id, so the watermark must not
-        // pass it despite the slow row's ten-minute-old created_at.
-        expect(body.watermark).toBeLessThan(slowId);
-
-        await slowWriter.query("COMMIT");
-        committed = true;
-        const after = await app.request(`/internal/revocations?after=${body.watermark}`, {
-          headers: { authorization: `Bearer ${config.relayServiceToken}` },
-        });
-        const afterBody = (await after.json()) as {
-          events: Array<{ id: number }>;
-          watermark: number;
-        };
-        expect(afterBody.events.map((event) => event.id)).toEqual(
-          expect.arrayContaining([slowId, fastId]),
-        );
-        expect(afterBody.watermark).toBe(fastId);
-      } finally {
-        if (!committed) await slowWriter.query("ROLLBACK");
-        slowWriter.release();
-      }
-    });
-
-    it("cleans events older than 24 hours on read, never on write", async () => {
-      // Retention lives on the poll path: writers hold host row locks and
-      // must not pay (or serialize behind) a backlog sweep.
-      const { db } = buildApp();
-      const log = createRevocationLog(db);
-      const oldHost = randomUUID();
-      await db.insert(revocationEvents).values({
-        hostId: oldHost,
-        kind: "host_unlinked",
-        createdAt: new Date(Date.now() - REVOCATION_RETENTION_MS - 1),
-      });
-      await log.record(randomUUID(), "host_unlinked");
-      expect(
-        await db.select().from(revocationEvents).where(eq(revocationEvents.hostId, oldHost)),
-      ).toHaveLength(1);
-      await log.read(0);
-      expect(
-        await db.select().from(revocationEvents).where(eq(revocationEvents.hostId, oldHost)),
-      ).toHaveLength(0);
-    });
-  });
-
   describe("managed remote token isolation", () => {
     it("delivers connector credentials only to the current host proof and publishes only the URL", async () => {
       const provision = vi.fn(async () => ({
@@ -1469,7 +1291,6 @@ describe.skipIf(!TEST_DATABASE_URL)("Slice A host account API", () => {
           hostGrants: createHostGrantIssuer(rotated),
           hostSecrets: createHostSecretStore(db),
           accountBaseUrl: config.baseUrl,
-          ...(config.relayServiceToken ? { relayServiceToken: config.relayServiceToken } : {}),
           db,
         }),
       );

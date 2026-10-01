@@ -51,8 +51,6 @@ import {
   LinkStartRequest,
   type HostAuthorizationSnapshot,
   SESSION_CREDENTIAL_MAX_AGE_SECONDS,
-  type RelayTicketResponse,
-  type RevocationEventsResponse,
   RefreshTokenRequest,
   type RefreshTokenResponse,
   UpdateHostRequest,
@@ -100,7 +98,6 @@ import {
   type HostSecretStore,
   type IdentityUser,
   type OrganizationRef,
-  type RevocationLog,
 } from "../identity/interfaces";
 import type { ApiSigningService } from "../identity/signing";
 import { hostRecordFromRow, isHostProofAuthorization } from "../identity/hostKeyRegistry";
@@ -329,7 +326,6 @@ export function createV1Routes(deps: {
   hostSecrets: HostSecretStore;
   /** Browser/app approval surface, distinct from the API JWT issuer. */
   accountBaseUrl: string;
-  relayServiceToken?: string;
   db: NodePgDatabase<typeof schema>;
   /**
    * Object storage for uploaded avatars, injected like the identity adapters
@@ -1563,27 +1559,14 @@ export function createV1Routes(deps: {
     }
   });
 
-  v1.post("/hosts/:id/relay-ticket", async (c) => {
-    if (!deps.relayServiceToken)
-      return errorResponse(
-        c,
-        410,
-        "validation_failed",
-        "The relay transport has been retired; update Synara",
-      );
-    try {
-      const body: RelayTicketResponse = {
-        ticket: await hostKeys.withAuthenticatedHost(
-          c.req.header("authorization"),
-          c.req.param("id"),
-          (host) => hostGrants.issueRelayTicket(host),
-        ),
-      };
-      return c.json(body);
-    } catch (error) {
-      return hostDomainError(c, error);
-    }
-  });
+  v1.post("/hosts/:id/relay-ticket", (c) =>
+    errorResponse(
+      c,
+      410,
+      "validation_failed",
+      "The relay transport has been retired; update Synara",
+    ),
+  );
 
   v1.post("/hosts/:id/device-revocations/ack", async (c) => {
     try {
@@ -2851,31 +2834,4 @@ export function createV1Routes(deps: {
   });
 
   return v1;
-}
-
-/** Relay-only API kept outside the public `/api/v1` route namespace. */
-export function createInternalRoutes(deps: {
-  revocations: RevocationLog;
-  relayServiceToken?: string;
-}): Hono {
-  const internal = new Hono();
-  internal.get("/revocations", async (c) => {
-    const expected = deps.relayServiceToken;
-    const authorization = c.req.header("authorization");
-    const match = authorization ? /^Bearer\s+(.+)$/i.exec(authorization) : null;
-    if (!expected || !secretHeaderMatches(expected, match?.[1])) {
-      return errorResponse(c, 401, "unauthorized", "Relay service token invalid");
-    }
-    const rawAfter = c.req.query("after") ?? "0";
-    if (!/^\d+$/.test(rawAfter)) {
-      return errorResponse(c, 400, "validation_failed", "after must be a non-negative integer");
-    }
-    const after = Number(rawAfter);
-    if (!Number.isSafeInteger(after)) {
-      return errorResponse(c, 400, "validation_failed", "after is outside the supported range");
-    }
-    const body: RevocationEventsResponse = await deps.revocations.read(after);
-    return c.json(body);
-  });
-  return internal;
 }

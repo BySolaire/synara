@@ -22,7 +22,6 @@ export const HOST_LINK_JWT_TYP = "synara-host-link+jwt" as const;
 export const HOST_PROOF_JWT_TYP = "synara-host-proof+jwt" as const;
 export const DEVICE_REGISTER_JWT_TYP = "synara-device-register+jwt" as const;
 export const GRANT_JWT_TYP = "synara-grant+jwt" as const;
-export const RELAY_TICKET_JWT_TYP = "synara-relay-ticket+jwt" as const;
 export const MINT_REQUEST_JWT_TYP = "synara-mint-request+jwt" as const;
 export const SESSION_CREDENTIAL_JWT_TYP = "synara-session-credential+jwt" as const;
 export const DPOP_JWT_TYP = "dpop+jwt" as const;
@@ -35,13 +34,11 @@ export const HOST_LINK_MAX_AGE_SECONDS = 5 * 60;
 export const HOST_PROOF_MAX_AGE_SECONDS = 60;
 export const DEVICE_REGISTER_MAX_AGE_SECONDS = 60;
 export const GRANT_MAX_AGE_SECONDS = 60;
-export const RELAY_TICKET_MAX_AGE_SECONDS = 5 * 60;
 export const MINT_REQUEST_MAX_AGE_SECONDS = 2 * 60;
 export const SESSION_CREDENTIAL_MAX_AGE_SECONDS = 60 * 60;
 export const JWT_CLOCK_TOLERANCE_SECONDS = 60;
 
 export const HOST_CONNECT_SCOPE = "host:connect" as const;
-export const RELAY_CONTROL_SCOPE = "relay:control" as const;
 export const SYNARA_RELAY_AUDIENCE = "synara-relay" as const;
 export const SYNARA_SESSION_AUDIENCE = "synara-session" as const;
 export const SYNARA_DEVICE_ISSUER = "synara-device" as const;
@@ -140,15 +137,6 @@ export const GrantClaims = Schema.Struct({
   scope: Schema.Tuple([Schema.Literal(HOST_CONNECT_SCOPE)]),
 });
 export type GrantClaims = typeof GrantClaims.Type;
-
-export const RelayTicketClaims = Schema.Struct({
-  ...StandardJwtClaims,
-  sub: Uuid,
-  environmentId: EnvironmentId,
-  keyGeneration: NonNegativeInt,
-  scope: Schema.Tuple([Schema.Literal(RELAY_CONTROL_SCOPE)]),
-});
-export type RelayTicketClaims = typeof RelayTicketClaims.Type;
 
 export const MintRequestClaims = Schema.Struct({
   ...StandardJwtClaims,
@@ -281,9 +269,6 @@ export type GrantRequest = typeof GrantRequest.Type;
 export const GrantResponse = Schema.Struct({ grant: JwtString });
 export type GrantResponse = typeof GrantResponse.Type;
 
-export const RelayTicketResponse = Schema.Struct({ ticket: JwtString });
-export type RelayTicketResponse = typeof RelayTicketResponse.Type;
-
 export const HostAuthorizationSnapshot = Schema.Struct({
   discoverable: Schema.Boolean,
   ownerUserId: TrimmedNonEmptyString,
@@ -321,14 +306,3 @@ export const RevocationEvent = Schema.Struct({
   createdAt: IsoDateTime,
 });
 export type RevocationEvent = typeof RevocationEvent.Type;
-
-/**
- * Duplicate events are expected. Poll `id > cursor`, deliver every event,
- * and only advance to `watermark`; the five-second trailing window is read
- * again so a lower id that commits late is not skipped. De-duplicate by id.
- */
-export const RevocationEventsResponse = Schema.Struct({
-  events: Schema.Array(RevocationEvent),
-  watermark: NonNegativeInt,
-});
-export type RevocationEventsResponse = typeof RevocationEventsResponse.Type;

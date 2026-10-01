@@ -18,14 +18,23 @@ vi.mock("../nativeApi", () => {
   return { readNativeApi: () => api, ensureNativeApi: () => api };
 });
 
+vi.mock("../appNavigation", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../appNavigation")>();
+  const { createMemoryHistory } = await import("@tanstack/react-router");
+  return { ...original, appHistory: createMemoryHistory({ initialEntries: ["/"] }) };
+});
+
+import { appHistory } from "../appNavigation";
 import { CreateProjectDialog } from "./CreateProjectDialog";
 
 describe("CreateProjectDialog GitHub source", () => {
   afterEach(() => {
     nativeApi.onProvisionProgress.mockClear();
+    appHistory.replace("/");
   });
 
-  it("browses folders in a browser and preserves an explicit project name", async () => {
+  it("browses local folders after leaving a remote chat and preserves an explicit name", async () => {
+    appHistory.replace("/local-thread?environment=remote-computer&path=%2Fremote-thread");
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     await render(
       <CreateProjectDialog
@@ -38,6 +47,10 @@ describe("CreateProjectDialog GitHub source", () => {
         onSubmit={onSubmit}
       />,
     );
+    expect(
+      (page.getByRole("button", { name: "Add folder", exact: true }).element() as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
     await page.getByLabelText("Project name", { exact: true }).fill("My workspace");
     await page.getByRole("button", { name: "Add folder", exact: true }).click();
     await expect
