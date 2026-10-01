@@ -1,4 +1,9 @@
-import type { DevicePublicKeyJwk, HostPublicKeyJwk, SyncKeyWrap } from "@synara/contracts";
+import type {
+  DevicePublicKeyJwk,
+  HostPublicKeyJwk,
+  SyncKeyWrap,
+  SavedInboxRecap,
+} from "@synara/contracts";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -15,6 +20,32 @@ import {
 } from "drizzle-orm/pg-core";
 
 export type HostEndpoint = { url: string; transport: "lan" | "tailscale" | "cloudflare" };
+
+// Account-owned history survives host deletion; provenance is a snapshot, not a FK.
+export const inboxRecaps = pgTable(
+  "inbox_recaps",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: text("user_id").notNull(),
+    orgId: text("org_id").notNull(),
+    sourceHostId: uuid("source_host_id").notNull(),
+    sourceHostName: text("source_host_name").notNull(),
+    day: text("day").notNull(),
+    timezone: text("timezone").notNull(),
+    recap: jsonb("recap").$type<SavedInboxRecap["recap"]>().notNull(),
+    savedAt: timestamp("saved_at", { withTimezone: true, precision: 3 }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("inbox_recaps_source_day_unique").on(
+      table.userId,
+      table.orgId,
+      table.sourceHostId,
+      table.day,
+      table.timezone,
+    ),
+    index("inbox_recaps_history_idx").on(table.userId, table.orgId, table.savedAt, table.id),
+  ],
+).enableRLS();
 
 // Only the account API accesses these tables, as their database owner. WorkOS
 // authorization stays in API routes; default-deny RLS blocks non-owner roles

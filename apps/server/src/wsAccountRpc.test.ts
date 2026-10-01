@@ -2,7 +2,7 @@
 // reads included — because the machine account is owner state, and a paired
 // client-role session must neither read nor replace it. These tests iterate
 // the handler map, so a newly added account RPC is covered by construction.
-import { WS_METHODS } from "@synara/contracts";
+import { WS_METHODS, type SavedInboxRecap } from "@synara/contracts";
 import { Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
@@ -23,6 +23,9 @@ const SAMPLE_INPUTS: Record<string, unknown> = {
     avatarColor: "emerald",
   },
   [WS_METHODS.accountUsageSummary]: { utcOffsetMinutes: 0 },
+  [WS_METHODS.accountSaveInboxRecap]: {},
+  [WS_METHODS.accountListInboxRecaps]: {},
+  [WS_METHODS.accountDeleteInboxRecap]: { id: "saved" },
   [WS_METHODS.accountUploadAvatar]: { bytes: "aGVsbG8=", contentType: "image/webp" },
   [WS_METHODS.accountDeleteAvatar]: undefined,
   [WS_METHODS.accountSignOut]: undefined,
@@ -63,6 +66,9 @@ function spySession(): { session: AccountSession; calls: () => string[] } {
       skills: [],
       environments: [],
     }),
+    saveInboxRecap: record("saveInboxRecap", {} as SavedInboxRecap),
+    listInboxRecaps: record("listInboxRecaps", { recaps: [], nextCursor: null }),
+    deleteInboxRecap: record("deleteInboxRecap", undefined),
     updateProfile: record("updateProfile", {
       id: "user_1",
       name: "Ada",

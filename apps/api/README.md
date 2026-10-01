@@ -74,6 +74,34 @@ scoping, credential storage, refresh — is one code path.
 
 ## Hosts are account entities shared through organizations
 
+### Private saved Inbox recaps
+
+The Beta Inbox saves snapshots only when the user selects **Save privately**.
+`PUT /api/v1/inbox/recaps` accepts `{ sourceHostId, day, timezone, recap }`, where
+`recap` is `StatsGetRecapResult` and the window runs from 04:00 on `day` to the
+next 04:00 in the source IANA timezone. Project names are included in this
+explicit save; the account's public profile never exposes saved recaps.
+
+Every save, list, read, and delete requires a valid account session and live
+membership of its active workspace. Saving also requires an owned or discoverable
+source host in that workspace. The same user, workspace, source, day, and timezone
+updates one saved snapshot. The service supplies `id`, `sourceHostName`, and
+`savedAt`; request bodies retain the existing 64 KiB API limit.
+
+`GET /api/v1/inbox/recaps?limit=20&cursor=…` returns `{ recaps, nextCursor }` in
+descending save order, with limits from 1 to 50 and an opaque continuation cursor.
+`GET /api/v1/inbox/recaps/:id` reads a snapshot and
+`DELETE /api/v1/inbox/recaps/:id` deletes it with a 204 response.
+History is private to the user and workspace, served with `private, no-store`,
+and protected by default-deny RLS for non-owner database roles. The API's WorkOS
+authorization remains authoritative; Supabase client roles receive no policies.
+
+History persists independently of host or device registrations. Signing in to
+the same account and workspace restores saves after a phone reset and while all
+source computers are offline. There is no automatic recap upload, host deletion
+cascade, or dependency on local device caches. Migration `0016` is additive and
+must be applied by the operator before deploying this API version.
+
 Ownership is keyed on **`hosts.owner_user_id`**. Every user
 gets a personal organization the first time they use the service — provisioned
 lazily, named `Personal — <email>` — so there is no "personal account" concept

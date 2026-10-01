@@ -1,4 +1,14 @@
 import {
+  WsRpcError,
+  type AccountSaveInboxRecapInput,
+  type SavedInboxRecap,
+  type ListSavedInboxRecapsInput,
+  type ListSavedInboxRecapsResponse,
+  type SavedInboxRecapIdInput,
+} from "@synara/contracts";
+import { INBOX_BETA_FEATURE } from "@synara/shared/betaFeatures";
+import { isServerBetaFeatureEnabled } from "./betaFeatureGate";
+import {
   remoteConnectionsUnavailableReason,
   requireAccountProfileSync,
   requireHostSecretsSync,
@@ -90,6 +100,16 @@ import { deriveServerPaths } from "./config";
 import { HostSecretsCoordinator } from "./hostSecrets/coordinator";
 import { hostSecretsSyncKeyPath } from "./hostSecrets/syncKeyStore";
 
+function requireInboxRecaps(): void {
+  if (!isServerBetaFeatureEnabled(INBOX_BETA_FEATURE)) {
+    throw new WsRpcError({
+      message: "The Inbox is available in Synara Beta.",
+      code: "FEATURE_UNAVAILABLE",
+      retryable: false,
+    });
+  }
+}
+
 const SIGNED_OUT: AccountStatus = { state: "signed-out" };
 
 /**
@@ -179,6 +199,9 @@ export interface AccountSession {
   /** Abandons a pending SSO attempt, closing its loopback listener. */
   cancelSso(input: AccountCompleteSsoInput): Promise<void>;
   updateProfile(input: AccountUpdateProfileInput): Promise<AccountMe>;
+  saveInboxRecap(input: AccountSaveInboxRecapInput): Promise<SavedInboxRecap>;
+  listInboxRecaps(input: ListSavedInboxRecapsInput): Promise<ListSavedInboxRecapsResponse>;
+  deleteInboxRecap(input: SavedInboxRecapIdInput): Promise<void>;
   /**
    * Uploads a profile avatar: decodes the base64 the WS protocol carried and
    * forwards the raw bytes to the account service, which stores the image
@@ -756,6 +779,28 @@ export function createAccountSession(
      * answers with the same `/me` body, so whichever call ran last provides
      * the current answer.
      */
+    saveInboxRecap(input) {
+      requireInboxRecaps();
+      return withSession(async (token, client) => {
+        const me = await client.me(token);
+        if (me.id !== input.expectedUserId || me.organization.id !== input.expectedOrganizationId) {
+          throw new WsRpcError({
+            message: "Your account changed. Reload the recap before saving it.",
+            code: "INVALID_INPUT",
+          });
+        }
+        return client.saveInboxRecap(token, input.request);
+      });
+    },
+    listInboxRecaps(input) {
+      requireInboxRecaps();
+      return withSession((token, client) => client.listInboxRecaps(token, input));
+    },
+    deleteInboxRecap(input) {
+      requireInboxRecaps();
+      return withSession((token, client) => client.deleteInboxRecap(token, input.id));
+    },
+
     async updateProfile(input) {
       requireAccountProfileSync();
       const { workspaceName, ...profile } = input;

@@ -6,6 +6,8 @@ import {
   PublicProfile,
   UsageSummary,
   USAGE_PUSH_MAX_BUCKETS,
+  type SavedInboxRecap,
+  type SaveInboxRecapRequest,
 } from "@synara/contracts";
 import { eq } from "drizzle-orm";
 import { Schema } from "effect";
@@ -14,7 +16,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import type { WorkosApiConfig } from "../config";
 import { createDb } from "../db";
 import { runMigrations } from "../db/migrate";
-import { hosts, profiles, usageModelStats, usageSkillStats } from "../db/schema";
+import { hosts, profiles, usageModelStats, usageSkillStats, inboxRecaps } from "../db/schema";
 import { createDeviceRegistry } from "../identity/deviceRegistry";
 import { createHostGrantIssuer } from "../identity/grantIssuer";
 import { createHostKeyRegistry } from "../identity/hostKeyRegistry";
@@ -179,6 +181,214 @@ describe.skipIf(!TEST_DATABASE_URL)("createV1Routes", () => {
   // test that changes someone's memberships would otherwise leak into the next.
   beforeEach(() => {
     clearOrgCache();
+  });
+
+  describe("private saved Inbox recaps", () => {
+    const path = "/api/v1/inbox/recaps";
+    function snapshot(sourceHostId: string, day = "2026-10-01"): SaveInboxRecapRequest {
+      const next = new Date(`${day}T04:00:00.000Z`);
+      next.setUTCDate(next.getUTCDate() + 1);
+      const slot = {
+        from: `${day}T04:00:00.000Z`,
+        to: next.toISOString(),
+        prompts: 2,
+        chats: 1,
+        turns: 2,
+        failedTurns: 0,
+        agentWorkMs: 100,
+        tokens: { user: 20, automation: 10, agent: 5 },
+      };
+      return {
+        sourceHostId,
+        day,
+        timezone: "UTC",
+        recap: {
+          generatedAt: `${day}T05:00:00.000Z`,
+          totals: slot,
+          slots: [slot],
+          projects: [
+            {
+              projectId: "private-project",
+              title: "Private project",
+              prompts: 2,
+              chats: 1,
+              tokens: 35,
+            },
+          ],
+          models: [],
+          unavailableProviders: [],
+        },
+      };
+    }
+    async function source(session: Awaited<ReturnType<typeof signIn>>, discoverable = false) {
+      const [row] = await database.db
+        .insert(hosts)
+        .values({
+          ownerUserId: session.userId,
+          ownerOrgId: session.orgId,
+          environmentId: `env_${randomUUID()}`,
+          name: "Saved Mac",
+          platform: "darwin",
+          kind: "local",
+          discoverable,
+        })
+        .returning();
+      return row!;
+    }
+    function save(app: Hono, token: string, body: unknown) {
+      return app.request(path, {
+        method: "PUT",
+        headers: authHeaders(token),
+        body: JSON.stringify(body),
+      });
+    }
+
+    it("restores private history after sign-in on a new device and after source removal", async () => {
+      const { app, db } = buildApp();
+      const session = await signIn();
+      const host = await source(session);
+      const request = snapshot(host.id);
+      const first = await save(app, session.token, request);
+      expect(first.status).toBe(200);
+      expect(first.headers.get("cache-control")).toBe("private, no-store");
+      const original = (await first.json()) as SavedInboxRecap;
+      const updated = await save(app, session.token, {
+        ...request,
+        recap: { ...request.recap, projects: [] },
+      });
+      expect(updated.status).toBe(200);
+      const saved = (await updated.json()) as SavedInboxRecap;
+      expect(saved.id).toBe(original.id);
+      expect(saved.recap.projects).toEqual([]);
+      expect(saved.sourceHostName).toBe("Saved Mac");
+      expect(
+        (await db.select().from(inboxRecaps).where(eq(inboxRecaps.userId, session.userId))).length,
+      ).toBe(1);
+      await db.delete(hosts).where(eq(hosts.id, host.id));
+      const replacementToken = await workos.signAccessToken({
+        sub: session.userId,
+        sid: `session_${randomUUID()}`,
+        orgId: session.orgId,
+      });
+      const restored = await app.request(path, { headers: authHeaders(replacementToken) });
+      expect(await restored.json()).toEqual({ recaps: [saved], nextCursor: null });
+      expect(
+        await (
+          await app.request(`${path}/${saved.id}`, { headers: authHeaders(replacementToken) })
+        ).json(),
+      ).toEqual(saved);
+      const deleted = await app.request(`${path}/${saved.id}`, {
+        method: "DELETE",
+        headers: authHeaders(replacementToken),
+      });
+      expect(deleted.status).toBe(204);
+      expect(
+        (await app.request(`${path}/${saved.id}`, { headers: authHeaders(replacementToken) }))
+          .status,
+      ).toBe(404);
+    });
+
+    it("isolates accounts and workspaces, including other members who can access the same source", async () => {
+      const { app } = buildApp();
+      const owner = await signIn();
+      const host = await source(owner, true);
+      const saved = (await (
+        await save(app, owner.token, snapshot(host.id))
+      ).json()) as SavedInboxRecap;
+      const colleague = await signIn();
+      workos.addMembership(owner.orgId, colleague.userId);
+      const colleagueToken = await workos.signAccessToken({
+        sub: colleague.userId,
+        sid: `session_${randomUUID()}`,
+        orgId: owner.orgId,
+      });
+      const secondOrg = workos.addOrganization({ name: "Second workspace" });
+      workos.addMembership(secondOrg.id, owner.userId);
+      const otherWorkspaceToken = await workos.signAccessToken({
+        sub: owner.userId,
+        sid: `session_${randomUUID()}`,
+        orgId: secondOrg.id,
+      });
+      for (const token of [colleagueToken, otherWorkspaceToken, colleague.token]) {
+        expect(await (await app.request(path, { headers: authHeaders(token) })).json()).toEqual({
+          recaps: [],
+          nextCursor: null,
+        });
+        expect(
+          (await app.request(`${path}/${saved.id}`, { headers: authHeaders(token) })).status,
+        ).toBe(404);
+        expect(
+          (
+            await app.request(`${path}/${saved.id}`, {
+              method: "DELETE",
+              headers: authHeaders(token),
+            })
+          ).status,
+        ).toBe(404);
+      }
+      expect((await save(app, otherWorkspaceToken, snapshot(host.id))).status).toBe(404);
+      expect((await save(app, colleague.token, snapshot(host.id))).status).toBe(404);
+      expect((await save(app, colleagueToken, snapshot(host.id))).status).toBe(200);
+      expect((await app.request(path)).status).toBe(401);
+      expect((await save(app, "invalid", snapshot(host.id))).status).toBe(401);
+    });
+
+    it("paginates saves without duplicates and rejects invalid uploads without leaking their content", async () => {
+      const { app, db } = buildApp();
+      const session = await signIn();
+      const host = await source(session);
+      const savedIds: string[] = [];
+      for (const day of ["2026-09-28", "2026-09-29", "2026-09-30"]) {
+        const result = await save(app, session.token, snapshot(host.id, day));
+        expect(result.status).toBe(200);
+        savedIds.push(((await result.json()) as SavedInboxRecap).id);
+      }
+      const ids: string[] = [];
+      let cursor: string | null = null;
+      do {
+        const response = await app.request(`${path}?limit=1${cursor ? `&cursor=${cursor}` : ""}`, {
+          headers: authHeaders(session.token),
+        });
+        expect(response.status).toBe(200);
+        const page = (await response.json()) as {
+          recaps: SavedInboxRecap[];
+          nextCursor: string | null;
+        };
+        ids.push(...page.recaps.map((recap) => recap.id));
+        cursor = page.nextCursor;
+      } while (cursor && ids.length < 5);
+      expect(ids.toSorted()).toEqual(savedIds.toSorted());
+      for (const query of ["limit=0", "limit=51", "cursor=invalid"]) {
+        expect(
+          (await app.request(`${path}?${query}`, { headers: authHeaders(session.token) })).status,
+        ).toBe(400);
+      }
+      const valid = snapshot(host.id);
+      for (const invalid of [
+        { ...valid, day: "2026-02-30" },
+        { ...valid, timezone: "Unknown/Timezone" },
+        { ...valid, timezone: "Europe/Rome" },
+        { ...valid, day: "2026-10-02" },
+        { ...valid, recap: { ...valid.recap, slots: [] } },
+        {
+          ...valid,
+          recap: {
+            ...valid.recap,
+            projects: [{ ...valid.recap.projects[0], title: "Private".repeat(200) }],
+          },
+        },
+      ]) {
+        const response = await save(app, session.token, invalid);
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({
+          error: "validation_failed",
+          message: "Invalid saved recap",
+        });
+      }
+      expect(
+        (await db.select().from(inboxRecaps).where(eq(inboxRecaps.userId, session.userId))).length,
+      ).toBe(3);
+    });
   });
 
   it("rejects unauthenticated requests to /me and /hosts", async () => {

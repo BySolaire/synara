@@ -1,3 +1,10 @@
+import {
+  AccountSaveInboxRecapInput,
+  SavedInboxRecap,
+  ListSavedInboxRecapsInput,
+  ListSavedInboxRecapsResponse,
+  SavedInboxRecapIdInput,
+} from "./inboxRecaps";
 import { RemoteAgentCall, RemoteAgentResult } from "./remoteAgentGateway";
 import { RemoteAccessInput, RemoteAccessResult } from "./remotePairing";
 import { Schema } from "effect";
@@ -1636,6 +1643,22 @@ export const WsAccountUsageSummaryRpc = Rpc.make(WS_METHODS.accountUsageSummary,
   error: WsRpcError,
 });
 
+export const WsAccountSaveInboxRecapRpc = Rpc.make(WS_METHODS.accountSaveInboxRecap, {
+  payload: AccountSaveInboxRecapInput,
+  success: SavedInboxRecap,
+  error: WsRpcError,
+});
+export const WsAccountListInboxRecapsRpc = Rpc.make(WS_METHODS.accountListInboxRecaps, {
+  payload: ListSavedInboxRecapsInput,
+  success: ListSavedInboxRecapsResponse,
+  error: WsRpcError,
+});
+export const WsAccountDeleteInboxRecapRpc = Rpc.make(WS_METHODS.accountDeleteInboxRecap, {
+  payload: SavedInboxRecapIdInput,
+  success: Schema.Void,
+  error: WsRpcError,
+});
+
 export const WsAccountUpdateProfileRpc = Rpc.make(WS_METHODS.accountUpdateProfile, {
   payload: AccountUpdateProfileInput,
   success: AccountMe,
@@ -2215,6 +2238,9 @@ export const WsFeatureRpcGroup = RpcGroup.make(
   WsAccountCompleteSsoRpc,
   WsAccountCancelSsoRpc,
   WsAccountUsageSummaryRpc,
+  WsAccountSaveInboxRecapRpc,
+  WsAccountListInboxRecapsRpc,
+  WsAccountDeleteInboxRecapRpc,
   WsAccountUpdateProfileRpc,
   WsAccountUploadAvatarRpc,
   WsAccountDeleteAvatarRpc,

@@ -42,6 +42,19 @@ Device revocation closes RPC/resources before durable tombstone/ACK. Missing ACK
 
 ## Local and live evidence
 
+The Beta Inbox's **Save privately** action uploads an explicit snapshot to the
+account service, including project names. Saved recaps belong to one account
+and workspace and are independent of public profiles, pairing records and
+source-host lifetimes. A fresh sign-in can restore history while every Mac is
+offline. The desktop server refuses saved-recap RPCs on Stable; it also refuses
+a pending save if the account or workspace changed before upload.
+
+This feature requires additive account migration
+`apps/api/drizzle/0016_private_inbox_recaps.sql` and deployment of the updated
+account API. Neither production migration nor deployment is part of this local
+implementation. See the [private recap API contract](../apps/api/README.md#private-saved-inbox-recaps)
+for endpoints, ownership checks, pagination and default-deny RLS.
+
 Run affected PostgreSQL API tests against one disposable database, then the E2E transport suite against that database without concurrent destructive fixture setup. After `bun run build:desktop`, `TEST_DATABASE_URL=... SYNARA_E2E_EVIDENCE=/private/path bun run --cwd apps/e2e test:workspace` launches two built Node servers and Chromium with separate homes. Its external HTTPS proxy and connector subprocess simulate the Cloudflare boundary; WorkOS and provider CLI are deterministic fixtures. The inner TLS, actual account coordinator, approvals, resources, persistence and reconnect code are production paths. No public-CA verification is disabled: an ephemeral fixture certificate is trusted only by the isolated test processes.
 
 The authoritative execution ledger is [STATUS.md](implementation/cloudflare-remote/STATUS.md). Record the final checks and limitations there. Root checks alone skip database/build-dependent cases when their explicit environment variables are absent.

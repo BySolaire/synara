@@ -1,5 +1,9 @@
 import {
   RemoteTunnelResponse,
+  SaveInboxRecapRequest,
+  SavedInboxRecap,
+  ListSavedInboxRecapsResponse,
+  type ListSavedInboxRecapsInput,
   RemotePairingBundle,
   RemotePairingCodeResult,
   AccountErrorCode as AccountErrorCodeSchema,
@@ -227,6 +231,12 @@ export interface AccountClient {
    */
   authenticateOtp(request: OtpAuthenticateRequest): Promise<AuthTokensResponse>;
   me(token: string): Promise<AccountMe>;
+  saveInboxRecap(token: string, request: SaveInboxRecapRequest): Promise<SavedInboxRecap>;
+  listInboxRecaps(
+    token: string,
+    input: ListSavedInboxRecapsInput,
+  ): Promise<ListSavedInboxRecapsResponse>;
+  deleteInboxRecap(token: string, id: string): Promise<void>;
   /** Upserts the caller's profile. Rejects a changed handle; V1 handles are immutable. */
   updateProfile(token: string, request: UpdateProfileRequest): Promise<AccountMe>;
   /**
@@ -520,6 +530,37 @@ export function createAccountClient(options: CreateAccountClientOptions): Accoun
         { method: "GET", headers: authHeaders(token) },
         AccountMeSchema,
       );
+    },
+
+    async saveInboxRecap(token, request) {
+      return requestJson(
+        "/api/v1/inbox/recaps",
+        {
+          method: "PUT",
+          headers: { ...authHeaders(token), "content-type": "application/json" },
+          body: JSON.stringify(request),
+        },
+        SavedInboxRecap,
+      );
+    },
+    async listInboxRecaps(token, input) {
+      const query = new URLSearchParams();
+      if (input.limit !== undefined) query.set("limit", String(input.limit));
+      if (input.cursor !== undefined) query.set("cursor", input.cursor);
+      return requestJson(
+        `/api/v1/inbox/recaps?${query}`,
+        {
+          method: "GET",
+          headers: authHeaders(token),
+        },
+        ListSavedInboxRecapsResponse,
+      );
+    },
+    async deleteInboxRecap(token, id) {
+      await requestEmpty(`/api/v1/inbox/recaps/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: authHeaders(token),
+      });
     },
 
     async updateProfile(token, request) {

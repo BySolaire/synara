@@ -57,6 +57,7 @@ describe.skipIf(!url)("schema", () => {
         `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "${reader}"`,
       );
       await client.query(`ALTER TABLE profiles OWNER TO "${owner}"`);
+      await client.query(`ALTER TABLE inbox_recaps OWNER TO "${owner}"`);
       await client.query(`SET LOCAL ROLE "${owner}"`);
       await client.query(
         `INSERT INTO profiles (user_id, handle, display_name, avatar_color)
@@ -66,8 +67,36 @@ describe.skipIf(!url)("schema", () => {
       expect(
         (await client.query("SELECT user_id FROM profiles WHERE user_id = $1", [userId])).rowCount,
       ).toBe(1);
+      await client.query(
+        `INSERT INTO inbox_recaps (user_id, org_id, source_host_id, source_host_name, day, timezone, recap)
+         VALUES ($1, 'org_test', $2, 'Private Mac', '2026-10-01', 'UTC', '{}'::jsonb)`,
+        [userId, crypto.randomUUID()],
+      );
       await client.query("RESET ROLE");
       await client.query(`SET LOCAL ROLE "${reader}"`);
+      expect(
+        (await client.query("SELECT * FROM inbox_recaps WHERE user_id = $1", [userId])).rowCount,
+      ).toBe(0);
+      expect(
+        (
+          await client.query(
+            "UPDATE inbox_recaps SET source_host_name = 'Injected' WHERE user_id = $1",
+            [userId],
+          )
+        ).rowCount,
+      ).toBe(0);
+      expect(
+        (await client.query("DELETE FROM inbox_recaps WHERE user_id = $1", [userId])).rowCount,
+      ).toBe(0);
+      await client.query("SAVEPOINT denied_recap_insert");
+      await expect(
+        client.query(
+          `INSERT INTO inbox_recaps (user_id, org_id, source_host_id, source_host_name, day, timezone, recap)
+         VALUES ($1, 'org_test', $2, 'Injected Mac', '2026-10-01', 'UTC', '{}'::jsonb)`,
+          [userId, crypto.randomUUID()],
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+      await client.query("ROLLBACK TO SAVEPOINT denied_recap_insert");
       expect(
         (await client.query("SELECT user_id FROM profiles WHERE user_id = $1", [userId])).rowCount,
       ).toBe(0);
@@ -92,6 +121,13 @@ describe.skipIf(!url)("schema", () => {
       await client.query("ROLLBACK TO SAVEPOINT denied_insert");
       await client.query("RESET ROLE");
       await client.query(`SET LOCAL ROLE "${owner}"`);
+      expect(
+        (
+          await client.query("SELECT source_host_name FROM inbox_recaps WHERE user_id = $1", [
+            userId,
+          ])
+        ).rows,
+      ).toEqual([{ source_host_name: "Private Mac" }]);
       expect(
         (await client.query("SELECT display_name FROM profiles WHERE user_id = $1", [userId])).rows,
       ).toEqual([{ display_name: "Private profile" }]);

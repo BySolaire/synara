@@ -291,6 +291,7 @@ export async function startFakeWorkos(options: StartFakeWorkosOptions = {}): Pro
         ...(orgId !== undefined ? { orgId } : {}),
       }),
       refresh_token: refreshToken,
+      ...(orgId !== undefined ? { organization_id: orgId } : {}),
       user: {
         id: user.id,
         email: user.email,

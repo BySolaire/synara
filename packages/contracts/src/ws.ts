@@ -1,3 +1,8 @@
+import {
+  AccountSaveInboxRecapInput,
+  ListSavedInboxRecapsInput,
+  SavedInboxRecapIdInput,
+} from "./inboxRecaps";
 import { RemoteAgentCall } from "./remoteAgentGateway";
 import { RemoteAccessInput } from "./remotePairing";
 import { Schema, Struct } from "effect";
@@ -393,6 +398,9 @@ export const WS_METHODS = {
   accountCompleteSso: "account.completeSso",
   accountCancelSso: "account.cancelSso",
   accountUsageSummary: "account.usageSummary",
+  accountSaveInboxRecap: "account.saveInboxRecap",
+  accountListInboxRecaps: "account.listInboxRecaps",
+  accountDeleteInboxRecap: "account.deleteInboxRecap",
   accountUpdateProfile: "account.updateProfile",
   accountUploadAvatar: "account.uploadAvatar",
   accountDeleteAvatar: "account.deleteAvatar",
@@ -693,6 +701,9 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.accountCompleteSso, AccountCompleteSsoInput),
   tagRequestBody(WS_METHODS.accountCancelSso, AccountCompleteSsoInput),
   tagRequestBody(WS_METHODS.accountUsageSummary, AccountUsageSummaryInput),
+  tagRequestBody(WS_METHODS.accountSaveInboxRecap, AccountSaveInboxRecapInput),
+  tagRequestBody(WS_METHODS.accountListInboxRecaps, ListSavedInboxRecapsInput),
+  tagRequestBody(WS_METHODS.accountDeleteInboxRecap, SavedInboxRecapIdInput),
   tagRequestBody(WS_METHODS.accountUpdateProfile, AccountUpdateProfileInput),
   tagRequestBody(WS_METHODS.accountUploadAvatar, AccountUploadAvatarInput),
   tagRequestBody(WS_METHODS.accountDeleteAvatar, Schema.Struct({})),

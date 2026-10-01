@@ -113,6 +113,25 @@ export function makeAccountRpcHandlers({ accountSession, openBrowser }: AccountR
         () => Effect.tryPromise(() => accountSession.usageSummary(input)),
         "Failed to load account usage",
       ),
+    [WS_METHODS.accountSaveInboxRecap]: (input: Parameters<AccountSession["saveInboxRecap"]>[0]) =>
+      ownerSensitiveAccountRpc(
+        () => Effect.tryPromise(() => accountSession.saveInboxRecap(input)),
+        "Failed to save the private recap",
+      ),
+    [WS_METHODS.accountListInboxRecaps]: (
+      input: Parameters<AccountSession["listInboxRecaps"]>[0],
+    ) =>
+      ownerSensitiveAccountRpc(
+        () => Effect.tryPromise(() => accountSession.listInboxRecaps(input)),
+        "Failed to load saved recaps",
+      ),
+    [WS_METHODS.accountDeleteInboxRecap]: (
+      input: Parameters<AccountSession["deleteInboxRecap"]>[0],
+    ) =>
+      ownerSensitiveAccountRpc(
+        () => Effect.tryPromise(() => accountSession.deleteInboxRecap(input)),
+        "Failed to delete the saved recap",
+      ),
     [WS_METHODS.accountUpdateProfile]: (input: Parameters<AccountSession["updateProfile"]>[0]) =>
       ownerAccountRpc(
         () => Effect.tryPromise(() => accountSession.updateProfile(input)),

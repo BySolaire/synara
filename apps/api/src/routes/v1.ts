@@ -56,8 +56,11 @@ import {
   UpdateHostRequest,
   UpdateOrganizationRequest,
   UpdateProfileRequest,
+  SaveInboxRecapRequest,
+  type SavedInboxRecap,
+  type ListSavedInboxRecapsResponse,
 } from "@synara/contracts";
-import { and, desc, eq, gte, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Schema } from "effect";
 import { Hono } from "hono";
@@ -76,6 +79,7 @@ import {
   deviceRevocationDeliveries,
   devices as deviceRows,
   hosts as hostRows,
+  inboxRecaps,
   profiles,
   revocationEvents,
   usageModelStats,
@@ -265,6 +269,18 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 function isUuid(value: string): boolean {
   return UUID_PATTERN.test(value);
+}
+
+function toSavedInboxRecap(row: typeof inboxRecaps.$inferSelect): SavedInboxRecap {
+  return {
+    id: row.id,
+    sourceHostId: row.sourceHostId,
+    sourceHostName: row.sourceHostName,
+    day: row.day,
+    timezone: row.timezone,
+    savedAt: row.savedAt.toISOString(),
+    recap: row.recap,
+  };
 }
 
 function toOrganizationSummary(organization: OrganizationRef): OrganizationSummary {
@@ -729,6 +745,172 @@ export function createV1Routes(deps: {
     if (user instanceof Response) return user;
 
     return c.json(await accountMe(user, session.organization));
+  });
+
+  // Private account history has no relationship to public profile publication.
+  v1.use("/inbox/recaps", async (c, next) => {
+    c.header("Cache-Control", "private, no-store");
+    await next();
+  });
+  v1.use("/inbox/recaps/*", async (c, next) => {
+    c.header("Cache-Control", "private, no-store");
+    await next();
+  });
+  const recapWriteRateLimiter = createRateLimiter({ limit: 30, windowMs: 60_000 });
+
+  v1.put("/inbox/recaps", async (c) => {
+    const session = await requireOrgSession(c, { freshMembership: true });
+    if (session instanceof Response) return session;
+    if (!recapWriteRateLimiter.tryConsume(`user:${session.userId}`)) {
+      return errorResponse(c, 429, "rate_limited", "Too many recap saves — try again shortly");
+    }
+    let parsed: SaveInboxRecapRequest;
+    try {
+      parsed = Schema.decodeUnknownSync(SaveInboxRecapRequest)(await c.req.json());
+    } catch {
+      // Schema issues can include project titles. Keep private payloads out of errors.
+      return errorResponse(c, 400, "validation_failed", "Invalid saved recap");
+    }
+    const stored = await db.transaction(async (tx) => {
+      // Lock the source while saving so a concurrent removal or visibility
+      // change cannot race the authorization check. Historical rows have no FK.
+      const [host] = await tx
+        .select()
+        .from(hostRows)
+        .where(
+          and(
+            eq(hostRows.id, parsed.sourceHostId),
+            eq(hostRows.ownerOrgId, session.orgId),
+            or(eq(hostRows.ownerUserId, session.userId), eq(hostRows.discoverable, true)),
+          ),
+        )
+        .limit(1)
+        .for("share");
+      if (!host) return undefined;
+      const [row] = await tx
+        .insert(inboxRecaps)
+        .values({
+          userId: session.userId,
+          orgId: session.orgId,
+          sourceHostId: host.id,
+          sourceHostName: host.name,
+          day: parsed.day,
+          timezone: parsed.timezone,
+          recap: parsed.recap,
+        })
+        .onConflictDoUpdate({
+          target: [
+            inboxRecaps.userId,
+            inboxRecaps.orgId,
+            inboxRecaps.sourceHostId,
+            inboxRecaps.day,
+            inboxRecaps.timezone,
+          ],
+          set: { sourceHostName: host.name, recap: parsed.recap, savedAt: new Date() },
+        })
+        .returning();
+      return row;
+    });
+    if (!stored) return errorResponse(c, 404, "host_not_found", "Source host not found");
+    return c.json(toSavedInboxRecap(stored));
+  });
+
+  v1.get("/inbox/recaps", async (c) => {
+    const session = await requireOrgSession(c, { freshMembership: true });
+    if (session instanceof Response) return session;
+    const limitText = c.req.query("limit") ?? "20";
+    if (!/^\d{1,2}$/.test(limitText) || Number(limitText) < 1 || Number(limitText) > 50) {
+      return errorResponse(c, 400, "validation_failed", "Limit must be between 1 and 50");
+    }
+    const limit = Number(limitText);
+    const cursorText = c.req.query("cursor");
+    let cursor: { savedAt: Date; id: string } | undefined;
+    if (cursorText !== undefined) {
+      try {
+        if (cursorText.length > 512 || !/^[A-Za-z0-9_-]+$/.test(cursorText)) throw new Error();
+        const value: unknown = JSON.parse(Buffer.from(cursorText, "base64url").toString("utf8"));
+        if (
+          !Array.isArray(value) ||
+          value.length !== 2 ||
+          typeof value[0] !== "string" ||
+          typeof value[1] !== "string" ||
+          !isUuid(value[1])
+        )
+          throw new Error();
+        const savedAt = new Date(value[0]);
+        if (!Number.isFinite(savedAt.getTime()) || savedAt.toISOString() !== value[0])
+          throw new Error();
+        cursor = { savedAt, id: value[1] };
+      } catch {
+        return errorResponse(c, 400, "validation_failed", "Invalid recap cursor");
+      }
+    }
+    const rows = await db
+      .select()
+      .from(inboxRecaps)
+      .where(
+        and(
+          eq(inboxRecaps.userId, session.userId),
+          eq(inboxRecaps.orgId, session.orgId),
+          cursor
+            ? or(
+                lt(inboxRecaps.savedAt, cursor.savedAt),
+                and(eq(inboxRecaps.savedAt, cursor.savedAt), lt(inboxRecaps.id, cursor.id)),
+              )
+            : undefined,
+        ),
+      )
+      .orderBy(desc(inboxRecaps.savedAt), desc(inboxRecaps.id))
+      .limit(limit + 1);
+    const recaps = rows.slice(0, limit).map(toSavedInboxRecap);
+    const last = recaps.at(-1);
+    const response: ListSavedInboxRecapsResponse = {
+      recaps,
+      nextCursor:
+        rows.length > limit && last
+          ? Buffer.from(JSON.stringify([last.savedAt, last.id])).toString("base64url")
+          : null,
+    };
+    return c.json(response);
+  });
+
+  v1.get("/inbox/recaps/:id", async (c) => {
+    const session = await requireOrgSession(c, { freshMembership: true });
+    if (session instanceof Response) return session;
+    const id = c.req.param("id");
+    if (!isUuid(id)) return errorResponse(c, 404, "validation_failed", "Saved recap not found");
+    const [row] = await db
+      .select()
+      .from(inboxRecaps)
+      .where(
+        and(
+          eq(inboxRecaps.id, id),
+          eq(inboxRecaps.userId, session.userId),
+          eq(inboxRecaps.orgId, session.orgId),
+        ),
+      )
+      .limit(1);
+    if (!row) return errorResponse(c, 404, "validation_failed", "Saved recap not found");
+    return c.json(toSavedInboxRecap(row));
+  });
+
+  v1.delete("/inbox/recaps/:id", async (c) => {
+    const session = await requireOrgSession(c, { freshMembership: true });
+    if (session instanceof Response) return session;
+    const id = c.req.param("id");
+    if (!isUuid(id)) return errorResponse(c, 404, "validation_failed", "Saved recap not found");
+    const [deleted] = await db
+      .delete(inboxRecaps)
+      .where(
+        and(
+          eq(inboxRecaps.id, id),
+          eq(inboxRecaps.userId, session.userId),
+          eq(inboxRecaps.orgId, session.orgId),
+        ),
+      )
+      .returning({ id: inboxRecaps.id });
+    if (!deleted) return errorResponse(c, 404, "validation_failed", "Saved recap not found");
+    return c.body(null, 204);
   });
 
   /**

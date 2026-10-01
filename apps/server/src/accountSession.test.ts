@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
-import { EnvironmentId, type AccountMe } from "@synara/contracts";
+import { EnvironmentId, type AccountMe, type SaveInboxRecapRequest } from "@synara/contracts";
 import {
   AccountApiError,
   OrganizationRequiredError,
@@ -15,7 +15,15 @@ import { accountCredentialsPath, readAccountFile, writeAccountCredentials } from
 import { createAccountSession } from "./accountSession.ts";
 import { generateAndPersistHostIdentity } from "./hostIdentity";
 
-afterEach(() => vi.unstubAllEnvs());
+import { isServerBetaFeatureEnabled } from "./betaFeatureGate";
+vi.mock("./betaFeatureGate", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./betaFeatureGate")>()),
+  isServerBetaFeatureEnabled: vi.fn(() => true),
+}));
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.mocked(isServerBetaFeatureEnabled).mockReturnValue(true);
+});
 
 const temporaryDirectories: string[] = [];
 
@@ -782,5 +790,49 @@ describe("signOut", () => {
   it("is a no-op when there is nothing stored", async () => {
     const session = sessionFor(makeBaseDir(), makeClient({}));
     await expect(session.signOut()).resolves.toBeUndefined();
+  });
+});
+
+describe("private saved recaps", () => {
+  it("refuses Stable save, history and deletion before reading account credentials", async () => {
+    vi.mocked(isServerBetaFeatureEnabled).mockReturnValue(false);
+    const session = sessionFor(makeBaseDir(), makeClient({}));
+    const denied = {
+      message: "The Inbox is available in Synara Beta.",
+      code: "FEATURE_UNAVAILABLE",
+    };
+    expect(() =>
+      session.saveInboxRecap({
+        request: {} as SaveInboxRecapRequest,
+        expectedUserId: "user_1",
+        expectedOrganizationId: "org_1",
+      }),
+    ).toThrow(denied.message);
+    expect(() => session.listInboxRecaps({})).toThrow(denied.message);
+    expect(() => session.deleteInboxRecap({ id: "missing" })).toThrow(denied.message);
+  });
+
+  it.each([
+    { id: "different-user", organization: ORGANIZATION },
+    { id: "user_1", organization: { id: "different-org", name: "Other workspace" } },
+  ])("refuses an in-flight save when the broker login no longer matches %j", async (identity) => {
+    const baseDir = makeBaseDir();
+    await writeAccountCredentials(baseDir, credentials());
+    const upload = vi.fn();
+    const session = sessionFor(
+      baseDir,
+      makeClient({
+        me: async () => meResponse(identity),
+        saveInboxRecap: upload,
+      }),
+    );
+    await expect(
+      session.saveInboxRecap({
+        request: {} as SaveInboxRecapRequest,
+        expectedUserId: "user_1",
+        expectedOrganizationId: "org_1",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    expect(upload).not.toHaveBeenCalled();
   });
 });

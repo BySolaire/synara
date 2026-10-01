@@ -1,3 +1,10 @@
+import type {
+  AccountSaveInboxRecapInput,
+  SavedInboxRecap,
+  ListSavedInboxRecapsInput,
+  ListSavedInboxRecapsResponse,
+  SavedInboxRecapIdInput,
+} from "./inboxRecaps";
 import type { RemoteResourceReference } from "./remoteResources";
 import { Schema } from "effect";
 import type {
@@ -1298,6 +1305,9 @@ export interface NativeApi {
      * tab's device/account toggle. Server-brokered like every account call.
      */
     usageSummary: (input: AccountUsageSummaryInput) => Promise<UsageSummary>;
+    saveInboxRecap: (input: AccountSaveInboxRecapInput) => Promise<SavedInboxRecap>;
+    listInboxRecaps: (input: ListSavedInboxRecapsInput) => Promise<ListSavedInboxRecapsResponse>;
+    deleteInboxRecap: (input: SavedInboxRecapIdInput) => Promise<void>;
     /** Writes the profile, and renames the workspace when `workspaceName` differs. */
     updateProfile: (input: AccountUpdateProfileInput) => Promise<AccountMe>;
     /**

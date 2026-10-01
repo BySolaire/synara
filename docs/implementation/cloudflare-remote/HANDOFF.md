@@ -2,6 +2,18 @@
 
 Aggiornato il 1 ottobre 2026. Questo è il riepilogo corrente tra desktop e iOS; i documenti precedenti contengono anche stati storici ormai superati. Il ridisegno della UI e dei chip è in pausa. Successivamente l'utente ha richiesto soltanto nome “Connections” e globo Central Icons su desktop e iOS: applicati alle voci di accesso e ai titoli, senza cambiare il comportamento delle connessioni.
 
+## Inbox privata e MVP mobile — 1 ottobre 2026
+
+Aggiunto lo storico privato dei recap, distinto dal profilo pubblico. Desktop e mobile riutilizzano `StatsGetRecapResult`; un’azione esplicita **Save privately / Save recap** salva la fotografia del giorno nell’account. Include nomi dei progetti, metriche per modello, token e attività degli agenti; nessun caricamento retroattivo automatico. Le quote live non vengono congelate nello storico. I dati già pubblicati sul profilo restano gestiti dal loro percorso esistente.
+
+L’API `/api/v1/inbox/recaps` consente salvataggio idempotente, lettura paginata, dettaglio ed eliminazione. Il proprietario è l’utente nel workspace autenticato; la rimozione del computer non elimina i recap. Membership verificata, risposte private/no-store, payload limitato e RLS senza accesso diretto per `anon`/`authenticated`. Migrazione PostgreSQL additiva `0016_private_inbox_recaps.sql`; nessuna modifica ai database di produzione durante lo sviluppo.
+
+Su iPhone/iPad: Inbox nativa con metriche e fasce orarie, cronologia account leggibile senza computer online, Hubs/Tasks aggiornati mentre visibili e Tasks → Start with Agent tramite il picker modelli esistente. Il primo turno passa dalla coda persistente soltanto dopo il collegamento condizionale della task. Corretto anche un crash mobile di reconnect: le copie in cache mantengono gli ID qualificati per computer quando il cursore viene invalidato.
+
+Verifiche desktop del delta: formato, lint, tipi e lineage passati; suite completa **15.470 test passati, 38 saltati, 10 package riusciti**, inclusi 338 test API su PostgreSQL isolato. Tre test browser mirati passati per gate Stable, salvataggio esplicito e cambio account. Probe SQL isolato: `anon` e `authenticated` non leggono/modificano/eliminano record e non possono inserirli, anche con permessi tabella concessi.
+
+**Deploy ancora da eseguire:** applicare la migrazione e pubblicare l’API prima di usare Saved Inbox sull’account reale. Pubblicare i client aggiornati dopo l’API. Il test con login sintetico e database isolato non equivale a una migrazione o a un rilascio di produzione. Vedere il recap mobile per compilazioni, prove nel simulatore e limiti.
+
 ## Integrazione di main — 1 ottobre 2026
 
 Integrato `origin/main` a `4f204aef7d9a38e19baff915c58aec0a5498524f` nel branch desktop `codex/cloudflare-remote-mvp`. Il lavoro locale preesistente (119 percorsi) è stato prima salvato nel commit `ee36a79`, conservato anche dal branch `codex/remote-before-main-20261001`. La descrizione del delta non committato e i checkpoint del 30 settembre più sotto sono **storici**, non lo stato corrente. Nessuna modifica alla repo iOS o all'infrastruttura Cloudflare in questo passaggio.
