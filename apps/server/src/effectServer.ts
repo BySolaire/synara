@@ -12,6 +12,7 @@ import { AgentGatewayCredentials } from "./agentGateway/Services/AgentGatewayCre
 import { AutomationRunReactor } from "./automation/Services/AutomationRunReactor";
 import { AutomationScheduler } from "./automation/Services/AutomationScheduler";
 import { AutomationService } from "./automation/Services/AutomationService";
+import { TodoService } from "./todo/Services/TodoService";
 import {
   clearPersistedServerRuntimeState,
   makePersistedServerRuntimeState,
@@ -75,6 +76,7 @@ export interface ServerShape {
     | AutomationRunReactor
     | AutomationScheduler
     | AutomationService
+    | TodoService
     | ServerLifecycleEvents
     | OrchestrationEngineService
     | OrchestrationReactor
@@ -294,6 +296,7 @@ export const createEffectServer = Effect.fn(function* (
       homeDir: config.homeDir,
       chatWorkspaceRoot: config.chatWorkspaceRoot,
       studioWorkspaceRoot: config.studioWorkspaceRoot,
+      groupsWorkspaceRoot: config.groupsWorkspaceRoot,
       projectName: config.cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? config.cwd,
     },
   });

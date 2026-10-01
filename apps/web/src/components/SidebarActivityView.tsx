@@ -45,6 +45,7 @@ import { WorkspaceThreadActions } from "./hosts/WorkspaceProjects";
 import { ComposerPickerMenuPopup } from "./chat/ComposerPickerMenuPopup";
 import { FolderClosed } from "./FolderClosed";
 import { ProviderIcon } from "./ProviderIcon";
+import { ProjectSidebarIcon } from "./ProjectSidebarIcon";
 import { PrStateChip } from "./pullRequest/PrStateChip";
 import {
   createSidebarThreadHoverAnchorId,
@@ -76,12 +77,16 @@ import {
   type SidebarRowContextMenuPosition,
 } from "./sidebarThreadRowGestures";
 import { SidebarIconButton } from "./SidebarIconButton";
+import {
+  SidebarCollapsibleSection,
+  SidebarSectionLabel,
+  SidebarShowMoreRow,
+} from "./SidebarListSection";
 import { SidebarSectionToolbar } from "./SidebarSectionToolbar";
 import { SidebarStatusTrailingGlyph } from "./SidebarStatusTrailingGlyph";
 import { ThreadArchiveActionButton } from "./ThreadArchiveActionButton";
 import { ThreadPinToggleButton } from "./ThreadPinToggleButton";
 import { DisclosureChevron } from "./ui/DisclosureChevron";
-import { DisclosureRegion } from "./ui/DisclosureRegion";
 import {
   Menu,
   MenuGroup,
@@ -154,7 +159,6 @@ function ActivityThreadRow({
       envMode: thread.envMode,
       worktreePath: thread.worktreePath,
     }) === "worktree";
-  const ProjectGlyph = isWorktree ? WorktreeIcon : FolderClosed;
   const hoverAnchorId = createSidebarThreadHoverAnchorId({
     scope: "activity",
     threadId: thread.id,
@@ -224,13 +228,29 @@ function ActivityThreadRow({
           ) : null}
         </span>
         <span className="flex min-w-0 items-center gap-1.5">
-          <ProjectGlyph
-            className={sidebarGlyphClass("meta", "text-muted-foreground/70")}
-            aria-hidden
-          />
+          {project?.cwd && !external ? (
+            <ProjectSidebarIcon
+              cwd={project.cwd}
+              expanded={false}
+              appearance={project.appearance}
+              glyphClassName={sidebarGlyphClass("meta", "text-muted-foreground/70")}
+              presentation="favicon"
+            />
+          ) : (
+            <FolderClosed
+              className={sidebarGlyphClass("meta", "text-muted-foreground/70")}
+              aria-hidden
+            />
+          )}
           <span className="min-w-0 truncate text-ui-sm text-muted-foreground/80">
             {resolveThreadProjectLabel(project)}
           </span>
+          {isWorktree ? (
+            <WorktreeIcon
+              className={sidebarGlyphClass("meta", "text-muted-foreground/70")}
+              aria-label="Worktree"
+            />
+          ) : null}
           {external ? (
             <span className="min-w-0 truncate text-ui-sm text-muted-foreground/70">
               · {external.hostName}
@@ -340,72 +360,6 @@ function ActivityThreadRow({
       </TooltipTrigger>
       {renderHoverCard(hoverAnchorId)}
     </Tooltip>
-  );
-}
-
-function ActivitySectionLabel({
-  label,
-  onContextMenu,
-}: {
-  label: string;
-  /** Project blocks carry the same right-click menu as a classic project row. */
-  onContextMenu?: (position: SidebarRowContextMenuPosition) => void;
-}) {
-  return (
-    <div
-      data-slot="activity-section-label"
-      className="mb-1.5 px-2"
-      {...(onContextMenu
-        ? {
-            onContextMenu: (event: MouseEvent) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onContextMenu({ x: event.clientX, y: event.clientY });
-            },
-          }
-        : {})}
-    >
-      <span className={SIDEBAR_SECTION_LABEL_CLASS_NAME}>{label}</span>
-    </div>
-  );
-}
-
-/**
- * Collapsible section (Pinned, Earlier, Settled): the same label + inline
- * disclosure chevron the classic "Chats" header uses, with the shared
- * disclosure motion. Section-to-section spacing is owned by the parent list.
- */
-function ActivityCollapsibleSection({
-  label,
-  open,
-  onToggle,
-  children,
-  className,
-}: {
-  label: string;
-  open: boolean;
-  onToggle: () => void;
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <div className={className}>
-      <button
-        type="button"
-        className={cn(
-          "flex h-7 w-full min-w-0 cursor-pointer items-center gap-1 rounded-md px-2 py-0.5",
-          SIDEBAR_ROW_FOCUS_CLASS_NAME,
-        )}
-        aria-expanded={open}
-        onClick={onToggle}
-      >
-        <span className={cn("min-w-0 truncate", SIDEBAR_SECTION_LABEL_CLASS_NAME)}>{label}</span>
-        <DisclosureChevron open={open} className="text-muted-foreground/58" />
-      </button>
-      <DisclosureRegion open={open}>
-        <div className="flex flex-col gap-0.5 pt-0.5">{children}</div>
-      </DisclosureRegion>
-    </div>
   );
 }
 
@@ -547,40 +501,6 @@ function ActivityFilterMenu({
         </MenuItem>
       </ComposerPickerMenuPopup>
     </Menu>
-  );
-}
-
-function ActivityShowMoreRow({
-  canShowMore,
-  canShowLess,
-  onShowMore,
-  onShowLess,
-}: {
-  canShowMore: boolean;
-  canShowLess: boolean;
-  onShowMore: () => void;
-  onShowLess: () => void;
-}) {
-  if (!canShowMore && !canShowLess) return null;
-  const buttonClassName =
-    "h-7 cursor-pointer rounded-lg px-2.5 text-left text-ui text-muted-foreground/79 hover:text-foreground";
-  return (
-    <div className="flex w-full items-center gap-1">
-      {canShowMore ? (
-        <button type="button" className={cn(buttonClassName, "flex-1")} onClick={onShowMore}>
-          Show more
-        </button>
-      ) : null}
-      {canShowLess ? (
-        <button
-          type="button"
-          className={cn(buttonClassName, canShowMore ? "flex-none" : "flex-1")}
-          onClick={onShowLess}
-        >
-          Show less
-        </button>
-      ) : null}
-    </div>
   );
 }
 
@@ -847,7 +767,7 @@ export function SidebarActivityView({
   return (
     <div className="flex flex-col gap-3">
       {scopedPinnedThreads.length > 0 ? (
-        <ActivityCollapsibleSection
+        <SidebarCollapsibleSection
           label="Pinned"
           open={pinnedOpen}
           onToggle={() => setPinnedOpen((open) => !open)}
@@ -855,7 +775,7 @@ export function SidebarActivityView({
           {scopedPinnedThreads.map((thread) =>
             renderRow(thread, isThreadSettledForActivity(thread, settledOverrideByThreadId)),
           )}
-        </ActivityCollapsibleSection>
+        </SidebarCollapsibleSection>
       ) : null}
 
       {/* `group/project-header` is the marker SidebarSectionToolbar reveals on, so
@@ -898,7 +818,7 @@ export function SidebarActivityView({
       ) : groupMode === "project" ? (
         pagedProjectGroups.map(({ group, paging, threads: visibleThreads }) => (
           <div key={group.key}>
-            <ActivitySectionLabel
+            <SidebarSectionLabel
               label={
                 group.kind === "chats"
                   ? "Synara"
@@ -914,7 +834,7 @@ export function SidebarActivityView({
             />
             <div className="flex flex-col gap-0.5">
               {visibleThreads.map(renderActiveRow)}
-              <ActivityShowMoreRow
+              <SidebarShowMoreRow
                 canShowMore={paging.canShowMore}
                 canShowLess={paging.canShowLess}
                 onShowMore={() => {
@@ -941,32 +861,32 @@ export function SidebarActivityView({
         <>
           {recentThreads.length > 0 ? (
             <div>
-              <ActivitySectionLabel label="Recent" />
+              <SidebarSectionLabel label="Recent" />
               <div className="flex flex-col gap-0.5">{recentThreads.map(renderActiveRow)}</div>
             </div>
           ) : null}
           {dateBuckets.today.length > 0 ? (
             <div>
-              <ActivitySectionLabel label="Today" />
+              <SidebarSectionLabel label="Today" />
               <div className="flex flex-col gap-0.5">{dateBuckets.today.map(renderActiveRow)}</div>
             </div>
           ) : null}
           {dateBuckets.yesterday.length > 0 ? (
             <div>
-              <ActivitySectionLabel label="Yesterday" />
+              <SidebarSectionLabel label="Yesterday" />
               <div className="flex flex-col gap-0.5">
                 {dateBuckets.yesterday.map(renderActiveRow)}
               </div>
             </div>
           ) : null}
           {dateBuckets.earlier.length > 0 ? (
-            <ActivityCollapsibleSection
+            <SidebarCollapsibleSection
               label="Earlier"
               open={earlierOpen}
               onToggle={() => setEarlierOpen((open) => !open)}
             >
               {dateBuckets.earlier.slice(0, earlierPaging.previewLimit).map(renderActiveRow)}
-              <ActivityShowMoreRow
+              <SidebarShowMoreRow
                 canShowMore={earlierPaging.canShowMore}
                 canShowLess={earlierPaging.canShowLess}
                 onShowMore={() => setEarlierExtraPages(earlierPaging.effectiveExtraPages + 1)}
@@ -974,13 +894,13 @@ export function SidebarActivityView({
                   setEarlierExtraPages(Math.max(0, earlierPaging.effectiveExtraPages - 1))
                 }
               />
-            </ActivityCollapsibleSection>
+            </SidebarCollapsibleSection>
           ) : null}
         </>
       )}
 
       {model.settled.length > 0 ? (
-        <ActivityCollapsibleSection
+        <SidebarCollapsibleSection
           label="Done"
           open={settledOpen}
           onToggle={() => setSettledOpen((open) => !open)}
@@ -988,7 +908,7 @@ export function SidebarActivityView({
           {model.settled
             .slice(0, settledPaging.previewLimit)
             .map((thread) => renderRow(thread, true))}
-          <ActivityShowMoreRow
+          <SidebarShowMoreRow
             canShowMore={settledPaging.canShowMore}
             canShowLess={settledPaging.canShowLess}
             onShowMore={() => setSettledExtraPages(settledPaging.effectiveExtraPages + 1)}
@@ -996,7 +916,7 @@ export function SidebarActivityView({
               setSettledExtraPages(Math.max(0, settledPaging.effectiveExtraPages - 1))
             }
           />
-        </ActivityCollapsibleSection>
+        </SidebarCollapsibleSection>
       ) : null}
     </div>
   );

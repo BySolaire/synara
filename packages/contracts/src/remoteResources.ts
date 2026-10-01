@@ -32,6 +32,7 @@ export const RemoteResource = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("voice-upload"),
     provider: ResourceId,
+    providerInstanceId: Schema.optional(ResourceText),
     cwd: ResourcePath,
     threadId: Schema.optional(ResourceId),
     mimeType: ResourceText,

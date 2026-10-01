@@ -2,7 +2,9 @@
 // Purpose: Assign stable, lineage-wide sequence titles to forked threads.
 // Layer: Orchestration domain helper
 
-interface ForkLineageThread {
+import { isSidechatThread, type SidechatIdentityFields } from "@synara/shared/sidechatThread";
+
+interface ForkLineageThread extends SidechatIdentityFields {
   readonly id: string;
   readonly projectId: string;
   readonly title: string;
@@ -11,7 +13,6 @@ interface ForkLineageThread {
   // `exactOptionalPropertyTypes` an explicitly-undefined property is not
   // assignable to an optional that only admits `string | null`.
   readonly forkSourceThreadId?: string | null | undefined;
-  readonly sidechatSourceThreadId?: string | null | undefined;
 }
 
 interface LineageRoot {
@@ -65,7 +66,7 @@ export function buildForkThreadTitle(
     ? parseForkVersion(sourceRoot.thread.title)
     : fallbackTitle;
   const family = projectThreads.filter((thread) => {
-    if (thread.projectId !== source.projectId || thread.sidechatSourceThreadId) {
+    if (thread.projectId !== source.projectId || isSidechatThread(thread)) {
       return false;
     }
     const root = findLineageRoot(thread, threadsById);

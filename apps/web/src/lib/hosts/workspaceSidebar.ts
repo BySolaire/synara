@@ -67,6 +67,7 @@ export function deriveWorkspaceProjectThreadRows(input: {
 
 export function remoteSidebarProjects(
   sessions: readonly WorkspaceSession[],
+  section: "projects" | "studio" = "projects",
 ): WorkspaceProjectEntry[] {
   return sessions.flatMap((session) => {
     const environmentId = session.host.executionScope.environmentId;
@@ -81,8 +82,8 @@ export function remoteSidebarProjects(
       const threads = threadsByProject.get(project.id) ?? [];
       // Connecting a computer doesn't import its entire empty project catalog into navigation.
       if (
-        project.kind !== "project" ||
-        project.section !== "projects" ||
+        project.section !== section ||
+        project.kind === "chat" ||
         (!threads.length && !project.isPinned && session.summary?.activeProjectId !== project.id)
       )
         return [];

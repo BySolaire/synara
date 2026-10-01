@@ -7,6 +7,15 @@ export const ACCOUNT_MIGRATION_LINEAGES = [
   { prefix: 90, tail: ["AccountUsageSync", "AccountUsageSyncIdentity"] },
   { prefix: 98, tail: ["AccountUsageSync", "AccountUsageSyncIdentity"] },
   { prefix: 99, tail: ["AccountUsageSync", "AccountUsageSyncIdentity"] },
+  {
+    prefix: 108,
+    tail: [
+      "AccountUsageSync",
+      "AccountUsageSyncIdentity",
+      "RemoteDeviceTrust",
+      "RemoteConnectionPreferences",
+    ],
+  },
 ] as const;
 
 export type MigrationIdentity = { readonly migration_id: number; readonly name: string };

@@ -76,12 +76,17 @@ describe("unified workspace sidebar", () => {
           { ...project("active-empty"), section: "projects" },
           { ...project("home"), kind: "chat", section: "chats" },
           { ...project("orphan"), kind: "chat", section: "projects", isPinned: true },
-          { ...project("studio"), kind: "studio", section: "studio" },
+          { ...project("studio"), kind: "studio", section: "studio", isPinned: true },
+          { ...project("hub"), kind: "group", section: "studio", isPinned: true },
         ],
         activeProjectId: "active-empty",
         threads: [...host.summary!.threads, thread("2026-09-29T01:00:00Z", "home")],
       },
     };
+    expect(remoteSidebarProjects([host], "studio").map((entry) => entry.project.id)).toEqual([
+      "studio",
+      "hub",
+    ]);
     expect(remoteSidebarProjects([host]).map((entry) => entry.project.id)).toEqual([
       "same-project",
       "active-empty",
@@ -120,7 +125,8 @@ describe("unified workspace sidebar", () => {
         ...host.summary!,
         projects: [
           { ...project(), kind: "chat", section: "chats" },
-          { ...project("studio"), kind: "studio", section: "studio" },
+          { ...project("studio"), kind: "studio", section: "studio", isPinned: true },
+          { ...project("hub"), kind: "group", section: "studio", isPinned: true },
         ],
         threads: [...host.summary!.threads, thread("2026-09-29T01:00:00Z", "studio")],
       },

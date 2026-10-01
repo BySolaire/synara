@@ -33,6 +33,7 @@ const transportInstances: Array<{
 }> = [];
 const requestMock = vi.fn<(...args: Array<unknown>) => Promise<unknown>>();
 const disposeMock = vi.fn();
+const unsubscribeProjectAgentEventsMock = vi.fn(async (_projectId: string) => undefined);
 const showContextMenuFallbackMock =
   vi.fn<
     <T extends string>(
@@ -81,6 +82,7 @@ vi.mock("./wsTransport", () => {
         this.calls.subscriptions.push(args[0]);
         return subscribeMock(...args);
       };
+      unsubscribeProjectAgentEvents = unsubscribeProjectAgentEventsMock;
       onStateChange() {
         return () => undefined;
       }
@@ -146,6 +148,8 @@ function getWindowForTest(): Window & typeof globalThis & { desktopBridge?: unkn
 const defaultProviders: ReadonlyArray<ServerProviderStatus> = [
   {
     provider: "codex",
+    instanceId: "codex",
+    driver: "codex",
     status: "ready",
     available: true,
     authStatus: "authenticated",
@@ -158,6 +162,7 @@ beforeEach(() => {
   requestMock.mockReset();
   transportInstances.length = 0;
   disposeMock.mockReset();
+  unsubscribeProjectAgentEventsMock.mockClear();
   showContextMenuFallbackMock.mockReset();
   withNativeMenuIconsMock.mockClear();
   subscribeMock.mockClear();
@@ -371,12 +376,21 @@ describe("wsNativeApi", () => {
         enableProviderUpdateChecks: true,
         defaultThreadEnvMode: "local",
         addProjectBaseDirectory: "",
+        githubInboxIncludeUpstreams: false,
         textGenerationModelSelection: { provider: "codex", model: "gpt-5.4-mini" },
         providers: {
-          codex: { enabled: true, binaryPath: "codex", homePath: "", customModels: [] },
+          codex: {
+            enabled: true,
+            binaryPath: "codex",
+            homePath: "",
+            selectedAccountId: "default",
+            accounts: [],
+            customModels: [],
+          },
           claudeAgent: {
             enabled: true,
             binaryPath: "claude",
+            homePath: "",
             launchArgs: "",
             enableArtifacts: false,
             customModels: [],
@@ -397,6 +411,7 @@ describe("wsNativeApi", () => {
           pi: { enabled: true, binaryPath: "pi", agentDir: "", customModels: [] },
           omp: { enabled: true, binaryPath: "omp", agentDir: "", customModels: [] },
         },
+        providerInstances: {},
         skills: { disabled: [] },
       },
     } as const;
@@ -494,6 +509,45 @@ describe("wsNativeApi", () => {
       kind: "phase_started",
       phase: "worktree",
     });
+  });
+
+  it("ref-counts project-agent subscriptions so an earlier unmount keeps the stream", async () => {
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+    requestMock.mockResolvedValue(undefined);
+    const projectId = ProjectId.makeUnsafe("project-1");
+
+    await api.projectAgent.subscribe({ projectId });
+    await api.projectAgent.subscribe({ projectId });
+    expect(requestMock).toHaveBeenCalledExactlyOnceWith(WS_METHODS.subscribeProjectAgentEvents, {
+      projectId,
+    });
+
+    // The dialog's cleanup fires while the panel still holds a subscription —
+    // the transport stream must stay up.
+    await api.projectAgent.unsubscribe({ projectId });
+    expect(unsubscribeProjectAgentEventsMock).not.toHaveBeenCalled();
+
+    await api.projectAgent.unsubscribe({ projectId });
+    expect(unsubscribeProjectAgentEventsMock).toHaveBeenCalledExactlyOnceWith(projectId);
+  });
+
+  it("re-subscribes the project-agent stream after the last unsubscribe", async () => {
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+    requestMock.mockResolvedValue(undefined);
+    const projectId = ProjectId.makeUnsafe("project-1");
+
+    await api.projectAgent.subscribe({ projectId });
+    await api.projectAgent.unsubscribe({ projectId });
+    await api.projectAgent.subscribe({ projectId });
+
+    expect(
+      requestMock.mock.calls.filter(
+        ([method]) => method === WS_METHODS.subscribeProjectAgentEvents,
+      ),
+    ).toHaveLength(2);
+    expect(unsubscribeProjectAgentEventsMock).toHaveBeenCalledExactlyOnceWith(projectId);
   });
 
   it("wraps orchestration dispatch commands in the command envelope", async () => {
@@ -1059,6 +1113,7 @@ describe("wsNativeApi", () => {
     const api = createWsNativeApi();
     const result = await api.server.transcribeVoice({
       provider: "codex",
+      providerInstanceId: "codex_work",
       cwd: "/repo",
       audioBase64: "AQID",
       mimeType: "audio/wav",
@@ -1071,6 +1126,7 @@ describe("wsNativeApi", () => {
       expect.stringContaining("/api/voice/transcribe?"),
       expect.objectContaining({ method: "POST", body: Uint8Array.from([1, 2, 3]) }),
     );
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("providerInstanceId=codex_work");
     expect(requestMock).not.toHaveBeenCalledWith(
       WS_METHODS.serverTranscribeVoice,
       expect.anything(),

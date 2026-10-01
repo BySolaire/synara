@@ -96,6 +96,7 @@ function setup(entry = tool()) {
   };
   const tools = makeRemoteAwareTools({
     tools: [entry],
+    assertRemoteWriteAllowed: () => Effect.void,
     environment: remoteTestEnvironment("book"),
     connections,
     requireThreadShell: () =>

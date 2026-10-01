@@ -101,6 +101,22 @@ interface CreationCoordinatorDependencies {
   readonly requireThreadShell: (
     threadId: string,
   ) => Effect.Effect<OrchestrationThreadShell, ToolInputError>;
+  readonly authorizeManagedGoalCreation?: (input: {
+    readonly callerThreadId: ThreadId;
+    readonly requestedCount: number;
+  }) => Effect.Effect<void, ToolInputError>;
+  readonly recordManagedWorkerThreads?: (input: {
+    readonly callerThreadId: ThreadId;
+    readonly requestId: string;
+    readonly batchId?: string;
+    readonly threadIds: ReadonlyArray<ThreadId>;
+    readonly titles: ReadonlyArray<string>;
+    readonly prompts?: ReadonlyArray<string | null>;
+  }) => Effect.Effect<void, ToolInputError>;
+  readonly assertCreateTargetProject?: (input: {
+    readonly callerThreadId: string;
+    readonly targetProjectId: ProjectId;
+  }) => Effect.Effect<void, ToolInputError>;
 }
 
 export type GatewayCreationContext =
@@ -182,6 +198,9 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
     serverConfig,
     loadProviderAvailabilities,
     requireThreadShell,
+    authorizeManagedGoalCreation,
+    recordManagedWorkerThreads,
+    assertCreateTargetProject,
   } = dependencies;
   const lockIndex = yield* Semaphore.make(1);
   const locks = new Map<string, { readonly lock: Semaphore.Semaphore; users: number }>();
@@ -336,6 +355,12 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
         context.kind === "provider-session"
           ? (context.remoteCaller ?? (yield* requireThreadShell(context.callerThreadId)))
           : null;
+      if (authorizeManagedGoalCreation && caller && "id" in caller) {
+        yield* authorizeManagedGoalCreation({
+          callerThreadId: caller.id,
+          requestedCount: input.threads.length,
+        });
+      }
       const operationId = `gateway:create:${stableGatewayDigest({
         principalKind: context.kind,
         principalId:
@@ -1102,6 +1127,12 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
 
                   const interactionMode = interactionModeForGatewayTarget(entry.target);
                   yield* context.assertAuthority();
+                  if (context.kind === "provider-session" && assertCreateTargetProject) {
+                    yield* assertCreateTargetProject({
+                      callerThreadId: context.callerThreadId,
+                      targetProjectId: entry.projectId,
+                    });
+                  }
                   yield* orchestrationEngine
                     .dispatch({
                       type: "thread.create",
@@ -1182,6 +1213,9 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
                     environment: entry.environment,
                     branch,
                     worktreePath,
+                    // Ready-to-use markdown target for `message_user` replies
+                    // and thread mentions; renders as a clickable thread link.
+                    link: `thread://${entry.ids.threadId}`,
                     status: "task_dispatched" as const,
                   };
                 }),
@@ -1196,14 +1230,28 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
             threadIds: results.map((entry) => entry.threadId),
             threads: results,
           } satisfies SynaraCreateThreadsResult;
-          // Once every deterministic dispatch succeeded, durable completion is
-          // the commit point. A late client cancellation must not roll back a
-          // fully-created operation or strand it between dispatching/completed.
-          yield* operationStore.complete({
-            operationId,
-            resultJson: JSON.stringify(result),
-            now: gatewayIsoNow(),
-          });
+          const promptByThreadId = new Map(
+            createdThreads.map((entry) => [entry.ids.threadId, entry.spec.prompt]),
+          );
+          // Required Group tracking belongs to the same transaction as the
+          // replay result. Registration or commit failure rolls metadata back
+          // before the existing compensation path removes created resources.
+          // Once this completes, late cancellation cannot undo the operation.
+          yield* operationStore.complete(
+            { operationId, resultJson: JSON.stringify(result), now: gatewayIsoNow() },
+            recordManagedWorkerThreads && caller && "id" in caller
+              ? recordManagedWorkerThreads({
+                  callerThreadId: caller.id,
+                  requestId: input.requestId,
+                  batchId: operationId,
+                  threadIds: result.threadIds,
+                  titles: result.threads.map((thread) => thread.title),
+                  prompts: result.threadIds.map(
+                    (threadId) => promptByThreadId.get(threadId) ?? null,
+                  ),
+                })
+              : Effect.void,
+          );
           return { kind: "created" as const, result };
         }).pipe(
           Effect.catchCause((cause) =>

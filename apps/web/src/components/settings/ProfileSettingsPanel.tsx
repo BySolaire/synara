@@ -548,7 +548,12 @@ function ModelUsageSection({
   basis,
   unavailableProviders = [],
 }: {
-  entries: readonly { provider: ProviderKind | "unknown"; model: string; percent: number }[];
+  entries: readonly {
+    provider: ProviderKind | "unknown";
+    instanceId?: string;
+    model: string;
+    percent: number;
+  }[];
   basis?: string;
   unavailableProviders?: readonly ProviderKind[];
 }) {
@@ -562,7 +567,7 @@ function ModelUsageSection({
         <ul className="grid grid-cols-1 gap-x-12 gap-y-3 sm:grid-cols-2">
           {entries.slice(0, 6).map((entry) => (
             <ModelUsageRow
-              key={`${entry.provider}:${entry.model}`}
+              key={`${entry.instanceId ?? entry.provider}:${entry.model}`}
               icon={
                 entry.provider !== "unknown" ? (
                   <ProviderIcon provider={entry.provider} className="size-3.5 shrink-0" />

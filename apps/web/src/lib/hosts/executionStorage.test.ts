@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EnvironmentId, type RemoteExecutionScope } from "@synara/contracts";
+import { EnvironmentId, ProjectId, ThreadId, type RemoteExecutionScope } from "@synara/contracts";
 
 function memoryStorage(): Storage {
   const data = new Map<string, string>();
@@ -37,6 +37,39 @@ async function windowStorage(
 }
 afterEach(() => vi.resetModules());
 describe("execution persistence", () => {
+  it("isolates the new open-tab and hub stores between connected computers", async () => {
+    const disk = memoryStorage();
+    vi.stubGlobal("localStorage", disk);
+    vi.stubGlobal("window", { localStorage: disk });
+    const readStores = async (environmentId: string) => {
+      await windowStorage(disk, environmentId);
+      const { useOpenThreadTabsStore } = await import("../../openThreadTabsStore");
+      const { usePinnedProjectAgentsStore } = await import("../../pinnedProjectAgentsStore");
+      const { useGroupPanelClosedStore } = await import("../../groupPanelClosedStore");
+      return {
+        tabs: useOpenThreadTabsStore.getState(),
+        pins: usePinnedProjectAgentsStore.getState(),
+        panels: useGroupPanelClosedStore.getState(),
+      };
+    };
+    try {
+      const local = await readStores("book");
+      local.tabs.openThreadTab(ThreadId.makeUnsafe("same-thread"));
+      local.pins.pinProjectAgent(ProjectId.makeUnsafe("same-project"));
+      local.panels.setGroupPanelClosed(ProjectId.makeUnsafe("same-project"), true);
+      const other = await readStores("mini");
+      expect(other.tabs.threadIds).toEqual([]);
+      expect(other.pins.pinnedProjectAgentIds).toEqual([]);
+      expect(other.panels.closedProjectIds).toEqual([]);
+      other.tabs.openThreadTab(ThreadId.makeUnsafe("remote-thread"));
+      const restored = await readStores("book");
+      expect(restored.tabs.threadIds).toEqual(["same-thread"]);
+      expect(restored.pins.pinnedProjectAgentIds).toEqual(["same-project"]);
+      expect(restored.panels.closedProjectIds).toEqual(["same-project"]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
   it("copies legacy only to its verified local owner and never resurrects a removed draft", async () => {
     const disk = memoryStorage();
     disk.setItem("draft", "legacy-local");

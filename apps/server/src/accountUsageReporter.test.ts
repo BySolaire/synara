@@ -175,7 +175,7 @@ const seedTokenActivity = (
 const seedUsageFixture = Effect.fnUntraced(function* (sql: SqlClient.SqlClient) {
   yield* seedThread(sql, "thread-a", '{"provider":"codex","model":"gpt-5-codex"}');
 
-  // Turn 1: claudeAgent/fable at effort max — attribution must follow the
+  // Turn 1: codex/gpt-5.6 at effort max — attribution must follow the
   // turn's selection, not the thread's current (codex) selection.
   yield* seedUserMessage(sql, {
     messageId: "msg-1",
@@ -197,7 +197,7 @@ const seedUsageFixture = Effect.fnUntraced(function* (sql: SqlClient.SqlClient) 
     streamVersion: 1,
     occurredAt: "2026-08-11T09:05:10.000Z",
     payloadJson:
-      '{"threadId":"thread-a","messageId":"msg-1","modelSelection":{"provider":"claudeAgent","model":"claude-fable-5","options":{"effort":"max"}}}',
+      '{"threadId":"thread-a","messageId":"msg-1","modelSelection":{"provider":"codex","model":"gpt-5.6","options":{"effort":"max"}}}',
   });
   // Cumulative counter: 1000 in minute 09:05, grows to 1600 in minute 09:06.
   yield* seedTokenActivity(sql, {
@@ -327,6 +327,74 @@ describe("isAccountUsageRelevantEventType", () => {
 });
 
 describe("collectUsageBuckets", () => {
+  it("keeps account counters per provider and counts verified Claude completions", async () => {
+    await runReporterTest(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* seedThread(sql, "multi", '{"instanceId":"codex","model":"gpt-5.6"}');
+        const entries = [
+          ["codex", "gpt-5.6", 1000],
+          ["opencode", "qwen", 100],
+          ["codex", "gpt-5.6", 1100],
+          ["claudeAgent", "claude-sonnet-5", 9000],
+        ] as const;
+        for (const [index, [instanceId, model, totalProcessedTokens]] of entries.entries()) {
+          const turnId = `turn-${index}`;
+          const messageId = `message-${index}`;
+          const at = `2026-09-30T10:0${index}:00.000Z`;
+          yield* seedUserMessage(sql, { threadId: "multi", turnId, messageId, createdAt: at });
+          yield* seedTurn(sql, {
+            threadId: "multi",
+            turnId,
+            pendingMessageId: messageId,
+            requestedAt: at,
+          });
+          yield* seedTurnStartEvent(sql, {
+            threadId: "multi",
+            eventId: `event-${index}`,
+            streamVersion: index + 1,
+            occurredAt: at,
+            payloadJson: JSON.stringify({
+              threadId: "multi",
+              messageId,
+              modelSelection: { instanceId, model },
+            }),
+          });
+          yield* seedTokenActivity(sql, {
+            threadId: "multi",
+            turnId,
+            activityId: `usage-${index}`,
+            sequence: index + 1,
+            createdAt: at,
+            payloadJson: JSON.stringify({ provider: instanceId, totalProcessedTokens }),
+          });
+        }
+        yield* seedTokenActivity(sql, {
+          threadId: "multi",
+          turnId: "turn-3",
+          activityId: "completed",
+          sequence: 5,
+          createdAt: "2026-09-30T10:03:20.000Z",
+          payloadJson: '{"provider":"claudeAgent","tokenAccountingVersion":1,"mainLoopTokens":70}',
+        });
+        yield* sql`UPDATE projection_thread_activities SET kind = 'turn.completed' WHERE activity_id = 'completed'`;
+        const { models } = yield* collectUsageBuckets(sql, "2026-09-30T10:01:00Z");
+        expect(
+          models.map(({ provider, tokens, turns, prompts }) => ({
+            provider,
+            tokens,
+            turns,
+            prompts,
+          })),
+        ).toEqual([
+          { provider: "opencode", tokens: 100, turns: 1, prompts: 1 },
+          { provider: "codex", tokens: 100, turns: 1, prompts: 1 },
+          { provider: "claudeAgent", tokens: 70, turns: 1, prompts: 1 },
+        ]);
+      }),
+    );
+  });
+
   it("derives per-minute token deltas, turns, prompts, and skills with model+reasoning attribution", async () => {
     await runReporterTest(
       Effect.gen(function* () {
@@ -338,21 +406,12 @@ describe("collectUsageBuckets", () => {
         expect(models).toEqual([
           {
             minute: "2026-08-11T09:05:00Z",
-            provider: "claudeAgent",
-            model: "claude-fable-5",
+            provider: "codex",
+            model: "gpt-5.6",
             reasoning: "max",
             tokens: 1000,
             turns: 1,
             prompts: 1,
-          },
-          {
-            minute: "2026-08-11T09:06:00Z",
-            provider: "claudeAgent",
-            model: "claude-fable-5",
-            reasoning: "max",
-            tokens: 600,
-            turns: 0,
-            prompts: 0,
           },
           {
             minute: "2026-08-11T09:06:00Z",
@@ -362,6 +421,15 @@ describe("collectUsageBuckets", () => {
             tokens: 250,
             turns: 1,
             prompts: 1,
+          },
+          {
+            minute: "2026-08-11T09:06:00Z",
+            provider: "codex",
+            model: "gpt-5.6",
+            reasoning: "max",
+            tokens: 600,
+            turns: 0,
+            prompts: 0,
           },
         ]);
         expect(skills).toEqual([

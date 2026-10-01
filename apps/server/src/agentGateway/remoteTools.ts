@@ -70,6 +70,7 @@ function qualifyGatewayResult(result: McpToolCallResult, environmentId: string):
 }
 
 export interface RemoteGatewayDependencies {
+  readonly assertRemoteWriteAllowed: (callerThreadId: string) => Effect.Effect<void, unknown>;
   readonly tools: readonly ToolEntry[];
   readonly environment: ServerEnvironmentShape;
   readonly connections: Pick<
@@ -168,6 +169,8 @@ export function makeRemoteAwareTools(input: RemoteGatewayDependencies): readonly
                 ),
               );
             if (tool.requiresActiveTurn) yield* context.assertCallerTurnActive();
+            if (tool.requiredCapability === "thread:write")
+              yield* input.assertRemoteWriteAllowed(context.callerThreadId);
             const caller = yield* input.requireThreadShell(context.callerThreadId);
             const generation = input.connections.lifecycleGeneration;
             const connectionSignal = input.connections.connectionSignal(connection.hostId);

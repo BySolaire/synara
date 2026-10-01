@@ -58,15 +58,18 @@ import {
   type WsWelcomePayload,
   type WsBootstrapNegotiateResult,
   type AutomationStreamEvent,
+  type TodoStreamEvent,
   DEVICE_WS_CHANNELS,
   DEVICE_WS_METHODS,
   type DeviceEvent,
+  type ProjectAgentStreamEvent,
   COMPUTER_WS_CHANNELS,
   COMPUTER_WS_METHODS,
   type ComputerEvent,
 } from "@synara/contracts";
 
 import { showConfirmDialogFallback } from "./confirmDialogFallback";
+import { TASKS_OFFERED_BY_BUILD } from "./tasksSurface";
 import { showContextMenuFallback } from "./contextMenuFallback";
 import { requireHttpExternalUrl } from "./lib/externalUrl";
 import { withNativeMenuIcons } from "./lib/nativeMenuIcons";
@@ -174,7 +177,9 @@ function omitNullUserInputAnswers(
 const terminalEventListeners = createListenerRegistry<TerminalEvent>();
 const projectDevServerEventListeners = createListenerRegistry<ProjectDevServerEvent>();
 const automationEventListeners = createListenerRegistry<AutomationStreamEvent>();
+const todoEventListeners = createListenerRegistry<TodoStreamEvent>();
 const deviceEventListeners = createListenerRegistry<DeviceEvent>();
+const projectAgentEventListeners = createListenerRegistry<ProjectAgentStreamEvent>();
 const computerEventListeners = createListenerRegistry<ComputerEvent>();
 const orchestrationDomainEventListeners = createListenerRegistry<OrchestrationEvent>();
 const orchestrationShellEventListeners = createListenerRegistry<OrchestrationShellStreamItem>();
@@ -195,7 +200,9 @@ function clearWsNativeApiListeners(): void {
   terminalEventListeners.clear();
   projectDevServerEventListeners.clear();
   automationEventListeners.clear();
+  todoEventListeners.clear();
   deviceEventListeners.clear();
+  projectAgentEventListeners.clear();
   computerEventListeners.clear();
   orchestrationDomainEventListeners.clear();
   orchestrationShellEventListeners.clear();
@@ -275,6 +282,7 @@ async function requestVoiceTranscriptionUpload(
       sampleRateHz: input.sampleRateHz,
       durationMs: input.durationMs,
       ...(input.threadId ? { threadId: input.threadId } : {}),
+      ...(input.providerInstanceId ? { providerInstanceId: input.providerInstanceId } : {}),
     }),
     {
       method: "POST",
@@ -468,6 +476,7 @@ export function createWsNativeApi(): NativeApi {
     return transport.request(...args);
   };
   let unsubscribeDomainEventTransport: (() => void) | null = null;
+  const projectAgentSubscribeCounts = new Map<string, number>();
   transport.onStateChange((state) => emitWsTransportState(state), { replayCurrent: true });
   transport.onCompatibilityIssue((issue) => emitWsCompatibilityIssue(issue), {
     replayCurrent: true,
@@ -515,6 +524,14 @@ export function createWsNativeApi(): NativeApi {
       computerEventListeners.emit(message.data);
     });
   }
+  if (TASKS_OFFERED_BY_BUILD) {
+    transport.subscribe(WS_CHANNELS.todoEvent, (message) => {
+      todoEventListeners.emit(message.data);
+    });
+  }
+  transport.subscribe(WS_CHANNELS.projectAgentEvent, (message) => {
+    projectAgentEventListeners.emit(message.data);
+  });
   transport.subscribe(ORCHESTRATION_WS_CHANNELS.shellEvent, (message) => {
     orchestrationShellEventListeners.emit(message.data);
   });
@@ -672,10 +689,12 @@ export function createWsNativeApi(): NativeApi {
       onActionProgress: gitActionProgressListeners.subscribe,
       onWorktreeSetupProgress: gitWorktreeSetupProgressListeners.subscribe,
     },
+    githubInbox: {
+      list: (input) => executionRequest(WS_METHODS.githubInboxList, input),
+      issueDetail: (input) => executionRequest(WS_METHODS.githubInboxIssueDetail, input),
+      issueComment: (input) => executionRequest(WS_METHODS.githubInboxIssueComment, input),
+    },
     pullRequests: {
-      list: (input) => executionRequest(WS_METHODS.pullRequestsList, input),
-      reviewRequestCount: (input) =>
-        executionRequest(WS_METHODS.pullRequestsReviewRequestCount, input),
       detail: (input) => executionRequest(WS_METHODS.pullRequestsDetail, input),
       diff: (input) => executionRequest(WS_METHODS.pullRequestsDiff, input),
       action: (input) =>
@@ -796,6 +815,7 @@ export function createWsNativeApi(): NativeApi {
       getProfileStats: (input) => executionRequest(WS_METHODS.statsGetProfileStats, input),
       getProfileTokenStats: (input) =>
         executionRequest(WS_METHODS.statsGetProfileTokenStats, input),
+      getRecap: (input) => executionRequest(WS_METHODS.statsGetRecap, input),
     },
     provider: {
       getComposerCapabilities: (input) =>
@@ -925,6 +945,65 @@ export function createWsNativeApi(): NativeApi {
       disconnect: (input) => controller.request(WS_METHODS.hostsDisconnect, input),
       listConnections: () => controller.request(WS_METHODS.hostsListConnections),
     },
+    projectAgent: {
+      getOverview: (input) => executionRequest(WS_METHODS.projectAgentGetOverview, input),
+      listSummaries: (input = {}) => executionRequest(WS_METHODS.projectAgentListSummaries, input),
+      configure: (input) => executionRequest(WS_METHODS.projectAgentConfigure, input),
+      linkProject: (input) => executionRequest(WS_METHODS.projectAgentLinkProject, input),
+      unlinkProject: (input) => executionRequest(WS_METHODS.projectAgentUnlinkProject, input),
+      pauseGroup: (input) => executionRequest(WS_METHODS.projectAgentPauseGroup, input),
+      resumeGroup: (input) => executionRequest(WS_METHODS.projectAgentResumeGroup, input),
+      archiveGroup: (input) => executionRequest(WS_METHODS.projectAgentArchiveGroup, input),
+      unarchiveGroup: (input) => executionRequest(WS_METHODS.projectAgentUnarchiveGroup, input),
+      restartCoordinator: (input) =>
+        executionRequest(WS_METHODS.projectAgentRestartCoordinator, input),
+      deleteGroup: (input) => executionRequest(WS_METHODS.projectAgentDeleteGroup, input),
+      resolveWorker: (input) => executionRequest(WS_METHODS.projectAgentResolveWorker, input),
+      startGoal: (input) => executionRequest(WS_METHODS.projectAgentStartGoal, input),
+      updateGoal: (input) => executionRequest(WS_METHODS.projectAgentUpdateGoal, input),
+      pauseGoal: (input) => executionRequest(WS_METHODS.projectAgentPauseGoal, input),
+      resumeGoal: (input) => executionRequest(WS_METHODS.projectAgentResumeGoal, input),
+      stopGoal: (input) => executionRequest(WS_METHODS.projectAgentStopGoal, input),
+      listTasks: (input) => executionRequest(WS_METHODS.projectAgentListTasks, input),
+      createTask: (input) => executionRequest(WS_METHODS.projectAgentCreateTask, input),
+      updateTask: (input) => executionRequest(WS_METHODS.projectAgentUpdateTask, input),
+      listEvidence: (input) => executionRequest(WS_METHODS.projectAgentListEvidence, input),
+      listThreadIndex: (input) => executionRequest(WS_METHODS.projectAgentListThreadIndex, input),
+      excludeThread: (input) => executionRequest(WS_METHODS.projectAgentExcludeThread, input),
+      backfillSummaries: (input) =>
+        executionRequest(WS_METHODS.projectAgentBackfillSummaries, input),
+      listActivity: (input) => executionRequest(WS_METHODS.projectAgentListActivity, input),
+      listDocuments: (input) => executionRequest(WS_METHODS.projectAgentListDocuments, input),
+      readDocument: (input) => executionRequest(WS_METHODS.projectAgentReadDocument, input),
+      writeDocument: (input) => executionRequest(WS_METHODS.projectAgentWriteDocument, input),
+      exportDocuments: (input) => executionRequest(WS_METHODS.projectAgentExportDocuments, input),
+      refreshDigest: (input) => executionRequest(WS_METHODS.projectAgentRefreshDigest, input),
+      library: {
+        list: (input) => executionRequest(WS_METHODS.projectAgentLibraryList, input),
+        mkdir: (input) => executionRequest(WS_METHODS.projectAgentLibraryMkdir, input),
+        rename: (input) => executionRequest(WS_METHODS.projectAgentLibraryRename, input),
+        delete: (input) => executionRequest(WS_METHODS.projectAgentLibraryDelete, input),
+        history: (input) => executionRequest(WS_METHODS.projectAgentLibraryHistory, input),
+        restore: (input) => executionRequest(WS_METHODS.projectAgentLibraryRestore, input),
+        status: (input) => executionRequest(WS_METHODS.projectAgentLibraryStatus, input),
+      },
+      subscribe: async (input) => {
+        const count = (projectAgentSubscribeCounts.get(input.projectId) ?? 0) + 1;
+        projectAgentSubscribeCounts.set(input.projectId, count);
+        if (count > 1) return;
+        await executionRequest(WS_METHODS.subscribeProjectAgentEvents, input);
+      },
+      unsubscribe: async (input) => {
+        const count = (projectAgentSubscribeCounts.get(input.projectId) ?? 0) - 1;
+        if (count > 0) {
+          projectAgentSubscribeCounts.set(input.projectId, count);
+          return;
+        }
+        projectAgentSubscribeCounts.delete(input.projectId);
+        await transport.unsubscribeProjectAgentEvents(input.projectId);
+      },
+      onEvent: projectAgentEventListeners.subscribe,
+    },
     automation: {
       list: (input) => executionRequest(WS_METHODS.automationList, input),
       getMemory: (input) => executionRequest(WS_METHODS.automationGetMemory, input),
@@ -937,6 +1016,13 @@ export function createWsNativeApi(): NativeApi {
       archiveRun: (input) => executionRequest(WS_METHODS.automationArchiveRun, input),
       resolveProposal: (input) => executionRequest(WS_METHODS.automationResolveProposal, input),
       onEvent: automationEventListeners.subscribe,
+    },
+    todo: {
+      list: () => executionRequest(WS_METHODS.todoList, {}),
+      create: (input) => executionRequest(WS_METHODS.todoCreate, input),
+      update: (input) => executionRequest(WS_METHODS.todoUpdate, input),
+      delete: (input) => executionRequest(WS_METHODS.todoDelete, input),
+      onEvent: todoEventListeners.subscribe,
     },
     device: {
       list: (input) => executionRequest(DEVICE_WS_METHODS.list, input),

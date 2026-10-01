@@ -71,6 +71,7 @@ export function remoteResourceRoute(resource: RemoteResource): {
       path = "/api/voice/transcribe";
       params = {
         provider: resource.provider,
+        ...(resource.providerInstanceId ? { providerInstanceId: resource.providerInstanceId } : {}),
         cwd: resource.cwd,
         mimeType: resource.mimeType,
         sampleRateHz: String(resource.sampleRateHz),

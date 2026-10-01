@@ -62,7 +62,7 @@ import {
 } from "../../lib/hosts/workspaceSessions";
 import { recoverBeforeLocalEscape } from "../../lib/hosts/executionSwitch";
 import { isHomeChatContainerProject } from "../../lib/chatProjects";
-import { isStudioContainerProject } from "../../lib/studioProjects";
+import { isGroupContainerProject } from "../../lib/groupProjects";
 import { useWorkspacePathsStore } from "../../workspacePathsStore";
 import { useTerminalStateStore } from "../../terminalStateStore";
 import { useSidebar } from "../ui/sidebar";
@@ -559,7 +559,7 @@ export function WorkspaceFrameNavigation() {
         isPinned: pinnedProjectIds.includes(project.id),
         section: isHomeChatContainerProject(project, paths)
           ? "chats"
-          : isStudioContainerProject(project, paths)
+          : isGroupContainerProject(project, paths)
             ? "studio"
             : "projects",
       })),
