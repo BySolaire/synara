@@ -308,6 +308,23 @@ describe("account credential store", () => {
 });
 
 describe("withFreshAccessToken", () => {
+  it.each(["accountUrl", "userId", "organizationId", "hostId"] as const)(
+    "refuses a background upload after its %s changes, before passing any token to the client",
+    async (field) => {
+      const baseDir = makeBaseDir();
+      const expected = { ...credentials(), userId: "user_1", hostId: "host_1" };
+      await writeAccountCredentials(baseDir, { ...expected, [field]: "changed" });
+      const upload = vi.fn(async () => undefined);
+      await expect(
+        withFreshAccessToken(
+          { baseDir, client: makeClient({}), expectedIdentity: expected },
+          upload,
+        ),
+      ).rejects.toBeInstanceOf(WorkspaceAccessChangedError);
+      expect(upload).not.toHaveBeenCalled();
+    },
+  );
+
   it("passes the stored access token straight through when it is accepted", async () => {
     const baseDir = makeBaseDir();
     await writeAccountCredentials(baseDir, credentials());

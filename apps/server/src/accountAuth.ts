@@ -491,6 +491,11 @@ function isGrantRejected(error: unknown): boolean {
 export interface WithFreshAccessTokenOptions {
   readonly baseDir: string;
   readonly client: AccountClient;
+  /** Pin a background upload to the authority/user/workspace that produced its data. */
+  readonly expectedIdentity?: Pick<
+    StoredAccountFile,
+    "accountUrl" | "userId" | "organizationId" | "hostId"
+  >;
   /**
    * Lets a caller preserve domain-specific 401/403 answers. Most account
    * routes use those statuses for authentication, but a host grant also uses
@@ -657,6 +662,18 @@ export async function withFreshAccessToken<A>(
   const { baseDir, client } = options;
   const credentials = await readAccountCredentials(baseDir);
   if (!credentials) throw new SessionExpiredError();
+  const assertIdentity = (current: StoredAccountFile) => {
+    const expected = options.expectedIdentity;
+    if (
+      expected &&
+      (current.accountUrl !== expected.accountUrl ||
+        current.userId !== expected.userId ||
+        current.organizationId !== expected.organizationId ||
+        current.hostId !== expected.hostId)
+    )
+      throw new WorkspaceAccessChangedError();
+  };
+  assertIdentity(credentials);
   try {
     return await fn(credentials.accessToken);
   } catch (error) {
@@ -676,6 +693,9 @@ export async function withFreshAccessToken<A>(
 
     const renewal = await renewSession(baseDir, client, credentials);
     if (renewal.kind === "expired") throw new SessionExpiredError();
+    const current = await readAccountCredentials(baseDir);
+    if (!current) throw new SessionExpiredError();
+    assertIdentity(current);
     return await fn(renewal.accessToken);
   }
 }

@@ -109,6 +109,10 @@ import {
   isAccountUsageRelevantEventType,
 } from "./accountUsageReporter";
 import { registerAccountUsageReporterNudge } from "./accountUsageReporterRegistry";
+import { createAccountInboxReporter } from "./accountInboxReporter";
+import { RecapStatsQuery } from "./recapStats";
+import { isServerBetaFeatureEnabled } from "./betaFeatureGate";
+import { INBOX_BETA_FEATURE } from "@synara/shared/betaFeatures";
 import { fetchSynaraServerStatus, formatSynaraServerStatus } from "./serverStatusCli";
 import {
   embeddedMigrationRuntimeSourceDigest,
@@ -546,6 +550,15 @@ const makeServerProgram = (input: CliInput) =>
     // Start the retention loop after the server is live so startup can serve
     // existing history first, then hide inactive threads from the app in the background.
     yield* startThreadRetentionJob(orchestrationEngine, projectionSnapshotQuery);
+    if (isServerBetaFeatureEnabled(INBOX_BETA_FEATURE)) {
+      const inboxReporter = createAccountInboxReporter({
+        sql: yield* SqlClient.SqlClient,
+        recapQuery: yield* RecapStatsQuery,
+        baseDir: config.baseDir,
+        ...(config.devUrl ? { devUrl: config.devUrl } : {}),
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(() => inboxReporter.stop()));
+    }
     // Event-driven account usage sync: every committed usage-relevant domain
     // event nudges the reporter, which debounces, recomputes recent per-minute
     // buckets from the local projections, and pushes absolute values to the

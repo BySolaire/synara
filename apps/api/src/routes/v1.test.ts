@@ -288,6 +288,48 @@ describe.skipIf(!TEST_DATABASE_URL)("createV1Routes", () => {
       ).toBe(404);
     });
 
+    it("syncs absolute snapshots without restoring deleted data, while explicit saves can restore it", async () => {
+      const { app, db } = buildApp();
+      const session = await signIn();
+      const host = await source(session);
+      const request = snapshot(host.id);
+      const sync = () =>
+        app.request(`${path}/sync`, {
+          method: "POST",
+          headers: authHeaders(session.token),
+          body: JSON.stringify(request),
+        });
+      expect((await sync()).status).toBe(204);
+      expect((await sync()).status).toBe(204);
+      const rows = await db
+        .select()
+        .from(inboxRecaps)
+        .where(eq(inboxRecaps.userId, session.userId));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.recap?.totals.tokens.user).toBe(20);
+      expect(
+        (
+          await app.request(`${path}/${rows[0]!.id}`, {
+            method: "DELETE",
+            headers: authHeaders(session.token),
+          })
+        ).status,
+      ).toBe(204);
+      expect((await sync()).status).toBe(204);
+      const [deleted] = await db.select().from(inboxRecaps).where(eq(inboxRecaps.id, rows[0]!.id));
+      expect(deleted?.recap).toBeNull();
+      expect(deleted?.sourceHostName).toBe("");
+      expect(deleted?.deletedAt).toBeInstanceOf(Date);
+      expect(
+        await (await app.request(path, { headers: authHeaders(session.token) })).json(),
+      ).toEqual({ recaps: [], nextCursor: null });
+      expect((await save(app, session.token, request)).status).toBe(200);
+      expect(
+        (await app.request(`${path}/${rows[0]!.id}`, { headers: authHeaders(session.token) }))
+          .status,
+      ).toBe(200);
+    });
+
     it("isolates accounts and workspaces, including other members who can access the same source", async () => {
       const { app } = buildApp();
       const owner = await signIn();
@@ -310,6 +352,16 @@ describe.skipIf(!TEST_DATABASE_URL)("createV1Routes", () => {
         orgId: secondOrg.id,
       });
       for (const token of [colleagueToken, otherWorkspaceToken, colleague.token]) {
+        // Automatic uploads are owner-only, even for a discoverable colleague's computer.
+        expect(
+          (
+            await app.request(`${path}/sync`, {
+              method: "POST",
+              headers: authHeaders(token),
+              body: JSON.stringify(snapshot(host.id)),
+            })
+          ).status,
+        ).toBe(404);
         expect(await (await app.request(path, { headers: authHeaders(token) })).json()).toEqual({
           recaps: [],
           nextCursor: null,

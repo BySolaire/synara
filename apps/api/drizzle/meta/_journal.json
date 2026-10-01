@@ -120,6 +120,13 @@
       "when": 1790854940948,
       "tag": "0016_private_inbox_recaps",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790881643480,
+      "tag": "0017_inbox_automatic_sync",
+      "breakpoints": true
     }
   ]
 }

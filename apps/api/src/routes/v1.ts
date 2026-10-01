@@ -272,6 +272,7 @@ function isUuid(value: string): boolean {
 }
 
 function toSavedInboxRecap(row: typeof inboxRecaps.$inferSelect): SavedInboxRecap {
+  if (!row.recap) throw new Error("Deleted recaps cannot be serialized");
   return {
     id: row.id,
     sourceHostId: row.sourceHostId,
@@ -758,7 +759,7 @@ export function createV1Routes(deps: {
   });
   const recapWriteRateLimiter = createRateLimiter({ limit: 30, windowMs: 60_000 });
 
-  v1.put("/inbox/recaps", async (c) => {
+  const saveRecap = async (c: Context, automatic: boolean) => {
     const session = await requireOrgSession(c, { freshMembership: true });
     if (session instanceof Response) return session;
     if (!recapWriteRateLimiter.tryConsume(`user:${session.userId}`)) {
@@ -781,7 +782,9 @@ export function createV1Routes(deps: {
           and(
             eq(hostRows.id, parsed.sourceHostId),
             eq(hostRows.ownerOrgId, session.orgId),
-            or(eq(hostRows.ownerUserId, session.userId), eq(hostRows.discoverable, true)),
+            automatic
+              ? eq(hostRows.ownerUserId, session.userId)
+              : or(eq(hostRows.ownerUserId, session.userId), eq(hostRows.discoverable, true)),
           ),
         )
         .limit(1)
@@ -806,14 +809,25 @@ export function createV1Routes(deps: {
             inboxRecaps.day,
             inboxRecaps.timezone,
           ],
-          set: { sourceHostName: host.name, recap: parsed.recap, savedAt: new Date() },
+          set: {
+            sourceHostName: host.name,
+            recap: parsed.recap,
+            savedAt: new Date(),
+            deletedAt: null,
+          },
+          // A manual Save may restore a deleted day; automatic retries never do.
+          ...(automatic ? { setWhere: isNull(inboxRecaps.deletedAt) } : {}),
         })
         .returning();
-      return row;
+      return row ?? null;
     });
-    if (!stored) return errorResponse(c, 404, "host_not_found", "Source host not found");
+    if (stored === undefined)
+      return errorResponse(c, 404, "host_not_found", "Source host not found");
+    if (automatic || !stored) return c.body(null, 204);
     return c.json(toSavedInboxRecap(stored));
-  });
+  };
+  v1.put("/inbox/recaps", (c) => saveRecap(c, false));
+  v1.post("/inbox/recaps/sync", (c) => saveRecap(c, true));
 
   v1.get("/inbox/recaps", async (c) => {
     const session = await requireOrgSession(c, { freshMembership: true });
@@ -852,6 +866,7 @@ export function createV1Routes(deps: {
         and(
           eq(inboxRecaps.userId, session.userId),
           eq(inboxRecaps.orgId, session.orgId),
+          isNull(inboxRecaps.deletedAt),
           cursor
             ? or(
                 lt(inboxRecaps.savedAt, cursor.savedAt),
@@ -887,6 +902,7 @@ export function createV1Routes(deps: {
           eq(inboxRecaps.id, id),
           eq(inboxRecaps.userId, session.userId),
           eq(inboxRecaps.orgId, session.orgId),
+          isNull(inboxRecaps.deletedAt),
         ),
       )
       .limit(1);
@@ -900,12 +916,14 @@ export function createV1Routes(deps: {
     const id = c.req.param("id");
     if (!isUuid(id)) return errorResponse(c, 404, "validation_failed", "Saved recap not found");
     const [deleted] = await db
-      .delete(inboxRecaps)
+      .update(inboxRecaps)
+      .set({ recap: null, sourceHostName: "", deletedAt: new Date() })
       .where(
         and(
           eq(inboxRecaps.id, id),
           eq(inboxRecaps.userId, session.userId),
           eq(inboxRecaps.orgId, session.orgId),
+          isNull(inboxRecaps.deletedAt),
         ),
       )
       .returning({ id: inboxRecaps.id });

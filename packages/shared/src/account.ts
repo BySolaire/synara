@@ -232,6 +232,8 @@ export interface AccountClient {
   authenticateOtp(request: OtpAuthenticateRequest): Promise<AuthTokensResponse>;
   me(token: string): Promise<AccountMe>;
   saveInboxRecap(token: string, request: SaveInboxRecapRequest): Promise<SavedInboxRecap>;
+  /** Background upsert; respects deleted days instead of restoring them. */
+  syncInboxRecap(token: string, request: SaveInboxRecapRequest): Promise<void>;
   listInboxRecaps(
     token: string,
     input: ListSavedInboxRecapsInput,
@@ -456,10 +458,21 @@ export function createAccountClient(options: CreateAccountClientOptions): Accoun
     return Schema.decodeUnknownSync(schema)(json);
   }
 
-  async function requestEmpty(path: string, init: RequestInit): Promise<void> {
+  async function requestEmpty(
+    path: string,
+    init: RequestInit,
+    expectedStatus?: number,
+  ): Promise<void> {
     const response = await boundedFetch(path, init);
     if (!response.ok) {
       throw await toRequestError(response);
+    }
+    if (expectedStatus !== undefined && response.status !== expectedStatus) {
+      throw new AccountApiError({
+        code: "internal_error",
+        status: 502,
+        message: "The account service did not acknowledge the save.",
+      });
     }
   }
 
@@ -541,6 +554,17 @@ export function createAccountClient(options: CreateAccountClientOptions): Accoun
           body: JSON.stringify(request),
         },
         SavedInboxRecap,
+      );
+    },
+    async syncInboxRecap(token, request) {
+      await requestEmpty(
+        "/api/v1/inbox/recaps/sync",
+        {
+          method: "POST",
+          headers: { ...authHeaders(token), "content-type": "application/json" },
+          body: JSON.stringify(request),
+        },
+        204,
       );
     },
     async listInboxRecaps(token, input) {

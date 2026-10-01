@@ -22,7 +22,7 @@ const SavedRecapSlot = Schema.Struct({
   to: RecapDateTime,
 });
 
-/** Private snapshots are uploaded only by an explicit Save action. */
+/** Account-private snapshots; never exposed by public profile routes. */
 export const SavedInboxRecapPayload = Schema.Struct({
   ...StatsGetRecapResult.fields,
   generatedAt: RecapDateTime,

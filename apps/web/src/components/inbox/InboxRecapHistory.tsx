@@ -20,7 +20,7 @@ export function InboxRecapHistory(props: HistoryProps) {
   if (status?.state !== "signed-in") {
     return (
       <div className="flex items-center justify-between gap-3 text-ui-sm text-muted-foreground">
-        <span>Sign in to save private recaps across your devices.</span>
+        <span>Sign in to automatically save private recaps across your devices.</span>
         <Button variant="outline" size="sm" onClick={openSignIn}>
           Sign in
         </Button>
@@ -119,8 +119,9 @@ function PrivateRecapHistory({
         </Button>
       </div>
       <p className="text-ui-sm text-muted-foreground">
-        Saves project names and activity to your private account, available even when this computer
-        is offline.
+        Your signed-in computer automatically saves recaps, including project names, to your private
+        account. Save privately updates this day now. Saved history stays available when this
+        computer is offline.
       </p>
       {save.isSuccess ? (
         <p role="status" className="text-ui-sm text-status-success">

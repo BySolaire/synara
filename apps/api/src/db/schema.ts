@@ -32,7 +32,9 @@ export const inboxRecaps = pgTable(
     sourceHostName: text("source_host_name").notNull(),
     day: text("day").notNull(),
     timezone: text("timezone").notNull(),
-    recap: jsonb("recap").$type<SavedInboxRecap["recap"]>().notNull(),
+    // A deletion keeps only the source/day key, preventing background sync from restoring it.
+    recap: jsonb("recap").$type<SavedInboxRecap["recap"]>(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true, precision: 3 }),
     savedAt: timestamp("saved_at", { withTimezone: true, precision: 3 }).notNull().defaultNow(),
   },
   (table) => [

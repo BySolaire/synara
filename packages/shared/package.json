@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./inboxDay": {
+      "types": "./src/inboxDay.ts",
+      "import": "./src/inboxDay.ts"
+    },
     "./betaFeatures": {
       "types": "./src/betaFeatures.ts",
       "import": "./src/betaFeatures.ts"
