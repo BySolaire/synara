@@ -10,7 +10,7 @@ import { providerUsageDisplayName } from "@synara/shared/providerUsage";
 import { useQuery } from "@tanstack/react-query";
 
 import { useAppSettings } from "~/appSettings";
-import type { ProviderUsageTone } from "~/lib/providerUsageDisplay";
+import { providerUsageToneClassName, type ProviderUsageTone } from "~/lib/providerUsageDisplay";
 import {
   serverAllProviderUsageQueryOptions,
   serverSettingsQueryOptions,
@@ -29,6 +29,7 @@ import {
   SIDEBAR_HOVER_CARD_TRIGGER_PROPS,
 } from "./sidebarHoverCardStyles";
 import { PreviewCard, PreviewCardPopup, PreviewCardTrigger } from "./ui/preview-card";
+import { StatusChip } from "./ui/status-chip";
 
 const RING_TONE_CLASS_NAME: Record<ProviderUsageTone, string> = {
   healthy: "stroke-emerald-500",
@@ -36,10 +37,11 @@ const RING_TONE_CLASS_NAME: Record<ProviderUsageTone, string> = {
   danger: "stroke-red-500",
 };
 
-// The ring's box is 28 units; the stroke sits inside it, like Sidekick's AIUsageRing.
-const RING_SIZE = 28;
+// Two tracks fit inside the existing 36px button while leaving room for its provider glyph.
+const SINGLE_RING_SIZE = 28;
+const DOUBLE_RING_SIZE = 32;
 const RING_STROKE = 2.5;
-const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2;
+const RING_SPACING = 3.75;
 
 function AppRailUsageRing({
   provider,
@@ -67,8 +69,22 @@ function AppRailUsageRing({
     snapshot,
     hasUsageLines: model.usageLines.length > 0,
   });
-  // The tightest window drives the ring, as it does the chat header chip.
-  const primaryRow = model.primaryRow;
+  // Named model/pool sublimits can share these durations, so select the account labels.
+  const weeklyRow = model.rows.find((row) => row.label === "Weekly");
+  const fiveHourRow = model.rows.find((row) => row.label === "5h");
+  const ringRows = [weeklyRow, fiveHourRow].filter((row) => row !== undefined);
+  // Providers with other kinds of windows retain their most constrained single ring.
+  if (ringRows.length === 0 && model.primaryRow) {
+    ringRows.push(model.primaryRow);
+  }
+  const rings = ringRows.map((row) => ({
+    row,
+    strokeClassName:
+      row.label === "5h" ? "stroke-sky-500" : RING_TONE_CLASS_NAME[row.remainingTone],
+    dotClassName: row.label === "5h" ? "bg-sky-500" : providerUsageToneClassName(row.remainingTone),
+  }));
+  const ringSize = rings.length > 1 ? DOUBLE_RING_SIZE : SINGLE_RING_SIZE;
+  const outerRadius = (ringSize - RING_STROKE) / 2;
 
   return (
     <PreviewCard>
@@ -87,33 +103,46 @@ function AppRailUsageRing({
         }
       >
         <svg
-          viewBox={`0 0 ${RING_SIZE} ${RING_SIZE}`}
-          className="size-7 -rotate-90"
+          viewBox={`0 0 ${ringSize} ${ringSize}`}
+          className={cn("-rotate-90", rings.length > 1 ? "size-8" : "size-7")}
           fill="none"
           aria-hidden
         >
-          <circle
-            cx={RING_SIZE / 2}
-            cy={RING_SIZE / 2}
-            r={RING_RADIUS}
-            strokeWidth={RING_STROKE}
-            className="stroke-current opacity-15"
-          />
-          {primaryRow ? (
+          {rings.length === 0 ? (
             <circle
-              cx={RING_SIZE / 2}
-              cy={RING_SIZE / 2}
-              r={RING_RADIUS}
+              cx={ringSize / 2}
+              cy={ringSize / 2}
+              r={outerRadius}
               strokeWidth={RING_STROKE}
-              strokeLinecap="round"
-              pathLength={100}
-              strokeDasharray={`${primaryRow.remainingPercent} 100`}
-              className={cn(
-                "transition-[stroke-dasharray] duration-500",
-                RING_TONE_CLASS_NAME[primaryRow.remainingTone],
-              )}
+              className="stroke-current opacity-15"
             />
           ) : null}
+          {rings.map(({ row, strokeClassName }, index) => (
+            <g key={row.id}>
+              <circle
+                cx={ringSize / 2}
+                cy={ringSize / 2}
+                r={outerRadius - index * RING_SPACING}
+                strokeWidth={RING_STROKE}
+                className="stroke-current opacity-15"
+              />
+              {row.remainingPercent > 0 ? (
+                <circle
+                  cx={ringSize / 2}
+                  cy={ringSize / 2}
+                  r={outerRadius - index * RING_SPACING}
+                  strokeWidth={RING_STROKE}
+                  strokeLinecap="round"
+                  pathLength={100}
+                  strokeDasharray={`${row.remainingPercent} 100`}
+                  className={cn(
+                    "transition-[stroke-dasharray] duration-500 motion-reduce:transition-none",
+                    strokeClassName,
+                  )}
+                />
+              ) : null}
+            </g>
+          ))}
         </svg>
         <ProviderIcon
           provider={provider}
@@ -135,6 +164,15 @@ function AppRailUsageRing({
               <span className="shrink-0 text-ui-sm text-muted-foreground">{snapshot.planName}</span>
             ) : null}
           </div>
+          {rings.length > 1 ? (
+            <div className="flex items-center gap-3 text-muted-foreground">
+              {rings.map(({ row, dotClassName }, index) => (
+                <StatusChip key={row.id} dotClassName={dotClassName}>
+                  {row.label} · {index === 0 ? "outer" : "inner"}
+                </StatusChip>
+              ))}
+            </div>
+          ) : null}
           <ProviderUsagePanelContent
             provider={provider}
             rateLimits={model.rateLimits}
@@ -152,7 +190,7 @@ function AppRailUsageRing({
   );
 }
 
-/** Sits above the rail's Help button: one ring per provider chosen in Settings → Usage. */
+/** Sits above Help: weekly and five-hour rings for each provider chosen in Settings → Usage. */
 export function AppRailUsage({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
   const { settings } = useAppSettings();
   const providers = resolveRailUsageProviders(settings.railUsageProviders);
