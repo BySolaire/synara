@@ -31,6 +31,7 @@ import {
   type ComputerPermission,
   type ComputerSetupRequiredPayload,
   type ModelSelection,
+  type OrchestrationCommand,
   type ProjectId,
   type ProviderApprovalDecision,
   type ProviderKind,
@@ -699,38 +700,62 @@ export const makeAgentGateway = Effect.gen(function* () {
                 messageId,
               })
             : null;
-        yield* orchestrationEngine
-          .dispatch({
-            type: "thread.turn.start",
-            commandId: followupCommandId,
-            threadId: target.id,
-            message: {
-              messageId,
-              role: "user",
-              text: sourceMessages.length
-                ? renderHubWorkPrompt({ brief: message, sourceMessages })
-                : message,
-              attachments,
-            },
-            dispatchMode,
-            dispatchOrigin: "agent",
-            runtimeMode: target.runtimeMode,
-            interactionMode: target.interactionMode,
-            createdAt: admission?.admittedAt ?? sourceMessages.at(-1)?.updatedAt ?? isoNow(),
-          })
-          .pipe(
-            Effect.tapError(() =>
-              admission && hubGateway
-                ? hubGateway.service.releaseFailedFollowup({
-                    workItemId: admission.id,
-                    commandId: followupCommandId,
-                    admittedAt: admission.admittedAt,
-                    expectedRevision: admission.revision,
-                  })
-                : Effect.void,
-            ),
-            Effect.mapError((error) => new ToolInputError(errorText(error))),
-          );
+        const command = {
+          type: "thread.turn.start",
+          commandId: followupCommandId,
+          threadId: target.id,
+          message: {
+            messageId,
+            role: "user",
+            text: sourceMessages.length
+              ? renderHubWorkPrompt({ brief: message, sourceMessages })
+              : message,
+            attachments,
+          },
+          dispatchMode,
+          dispatchOrigin: "agent",
+          runtimeMode: target.runtimeMode,
+          interactionMode: target.interactionMode,
+          // A durable worker admission pins replay time. Source timestamps describe
+          // quoted history, not when this new target turn was requested.
+          createdAt: admission?.admittedAt ?? isoNow(),
+        } satisfies OrchestrationCommand;
+        yield* orchestrationEngine.dispatch(command).pipe(
+          Effect.catchTag("OrchestrationCommandIdentityCollisionError", (error) =>
+            Effect.gen(function* () {
+              if (admission || !sourceMessages.length || !commandReceipts)
+                return yield* Effect.fail(error);
+              const receipt = yield* commandReceipts.getByCommandId({
+                commandId: followupCommandId,
+              });
+              if (
+                Option.isNone(receipt) ||
+                receipt.value.status !== "accepted" ||
+                receipt.value.aggregateKind !== "thread" ||
+                receipt.value.aggregateId !== target.id
+              ) {
+                return yield* Effect.fail(error);
+              }
+              // An identical send may have committed after our snapshot read. Reuse
+              // its durable time; the engine still validates the full command identity.
+              return yield* orchestrationEngine.dispatch({
+                ...command,
+                createdAt: receipt.value.acceptedAt,
+              });
+            }),
+          ),
+          Effect.tapError(() =>
+            admission && hubGateway
+              ? hubGateway.service.releaseFailedFollowup({
+                  workItemId: admission.id,
+                  commandId: followupCommandId,
+                  admittedAt: admission.admittedAt,
+                  expectedRevision: admission.revision,
+                })
+              : Effect.void,
+          ),
+          Effect.mapError((error) => new ToolInputError(errorText(error))),
+        );
         return mcpToolResultJson({ threadId: target.id, dispatched: dispatchMode });
       }).pipe(Effect.catch((error) => Effect.succeed(mcpToolResultError(errorText(error))))),
   };
