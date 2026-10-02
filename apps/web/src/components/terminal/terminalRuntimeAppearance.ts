@@ -197,9 +197,7 @@ function resolveTerminalBackground(fallback: string): string {
     return background;
   }
   const channels = background.match(/^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/);
-  return channels
-    ? `rgba(${channels[1]}, ${channels[2]}, ${channels[3]}, 0)`
-    : "rgba(0, 0, 0, 0)";
+  return channels ? `rgba(${channels[1]}, ${channels[2]}, ${channels[3]}, 0)` : "rgba(0, 0, 0, 0)";
 }
 
 export function terminalThemeFromApp(): ITheme {
