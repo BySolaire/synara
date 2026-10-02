@@ -3,12 +3,16 @@ import "../index.css";
 import { DEFAULT_SERVER_SETTINGS_VIEW, type ServerProviderUsageSnapshot } from "@synara/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { page, userEvent } from "vitest/browser";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
-vi.mock("~/appSettings", () => ({
-  useAppSettings: () => ({ settings: { codexHomePath: "", railUsageProviders: ["codex"] } }),
+const settings = vi.hoisted(() => ({
+  codexHomePath: "",
+  railUsageProviders: ["codex"],
+  railUsageWindow: "both",
 }));
+
+vi.mock("~/appSettings", () => ({ useAppSettings: () => ({ settings }) }));
 
 import { serverQueryKeys } from "~/lib/serverReactQuery";
 
@@ -42,6 +46,10 @@ async function renderUsage(
 }
 
 describe("AppRailUsage", () => {
+  beforeEach(() => {
+    settings.railUsageWindow = "both";
+  });
+
   it("shows independent weekly and five-hour rings even when a model sublimit is tighter", async () => {
     const onOpenUsageSettings = await renderUsage([
       { window: "seven_day", usedPercent: 57, windowDurationMins: 10_080 },
@@ -59,7 +67,9 @@ describe("AppRailUsage", () => {
     expect(Number(fills[0]?.getAttribute("r"))).toBeGreaterThan(
       Number(fills[1]?.getAttribute("r")),
     );
-    expect(getComputedStyle(fills[0]!).stroke).not.toBe(getComputedStyle(fills[1]!).stroke);
+    // Both rings colour by the same remaining-quota scale: 43% is fair, 78% is healthy.
+    expect(fills[0]?.getAttribute("class")).toContain("stroke-yellow-500");
+    expect(fills[1]?.getAttribute("class")).toContain("stroke-emerald-500");
 
     await userEvent.hover(button);
     await expect.element(page.getByText("Weekly · outer")).toBeVisible();
@@ -68,6 +78,23 @@ describe("AppRailUsage", () => {
     await expect.element(page.getByText("78% left", { exact: true })).toBeVisible();
     await button.click();
     expect(onOpenUsageSettings).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["fiveHour", "85 100", "stroke-emerald-500"],
+    ["weekly", "8 100", "stroke-red-500"],
+  ])("draws a single ring for the %s setting", async (window, dasharray, strokeClassName) => {
+    settings.railUsageWindow = window;
+    await renderUsage([
+      { window: "Weekly", usedPercent: 92 },
+      { window: "5h", usedPercent: 15 },
+    ]);
+    const button = page.getByRole("button", { name: /^Codex usage:/ });
+    await expect.element(button).toBeVisible();
+    const fills = button.element().querySelectorAll("circle[stroke-dasharray]");
+    expect(fills).toHaveLength(1);
+    expect(fills[0]?.getAttribute("stroke-dasharray")).toBe(dasharray);
+    expect(fills[0]?.getAttribute("class")).toContain(strokeClassName);
   });
 
   it.each(["Weekly", "5h"])("shows only the reported %s ring", async (window) => {
