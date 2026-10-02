@@ -1511,12 +1511,12 @@ export const makeGitManager = Effect.gen(function* () {
   });
 
   const resolvePullRequest: GitManagerShape["resolvePullRequest"] = Effect.fnUntraced(
-    function* (input) {
+    function* (input, options) {
       const pullRequest = yield* gitHubCli
         .getPullRequest({
           cwd: input.cwd,
           reference: normalizePullRequestReference(input.reference),
-          background: true,
+          background: options?.background ?? false,
         })
         .pipe(Effect.map((resolved) => toResolvedPullRequest(resolved)));
 

@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { Effect, Fiber, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { afterEach, expect, vi } from "vitest";
 
@@ -15,6 +15,7 @@ import {
   fakeInboxPullRequestNode,
 } from "../testing/fakeGitHubCli.ts";
 import { GitHubCliLive } from "./GitHubCli.ts";
+import { GITHUB_READ_SLOTS } from "../githubReadGate";
 
 const mockedRunProcess = vi.mocked(runProcess);
 
@@ -2339,5 +2340,58 @@ it.effect("serves cached background PR lookups while paused and gates only misse
     // Mutation-required lookups retain their existing ungated path.
     yield* gh.getPullRequest({ cwd: "/paused-cache", reference: "#78" });
     expect(mockedRunProcess).toHaveBeenCalledTimes(3);
+  }).pipe(Effect.provide(GitHubCliLive)),
+);
+
+it.effect("keeps mutation lookups independent of background gate admission", () =>
+  Effect.gen(function* () {
+    const gh = yield* GitHubCli;
+    const occupied = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let started = 0;
+    const holders = yield* Effect.forEach(Array.from({ length: GITHUB_READ_SLOTS }), () =>
+      gh
+        .withRead(
+          Effect.gen(function* () {
+            started += 1;
+            if (started === GITHUB_READ_SLOTS) yield* Deferred.succeed(occupied, undefined);
+            yield* Deferred.await(release);
+          }),
+        )
+        .pipe(Effect.forkChild),
+    );
+    yield* Deferred.await(occupied);
+    mockedRunProcess.mockImplementation(async (_command, args) => {
+      if (args[0] === "api") throw new Error("gh: API rate limit exceeded (HTTP 403)");
+      return processResult(
+        JSON.stringify({
+          number: 78,
+          title: "Interactive lookup",
+          url: "https://github.com/acme/app/pull/78",
+          baseRefName: "main",
+          headRefName: "feature",
+          state: "OPEN",
+        }),
+      );
+    });
+    const input = { cwd: "/queued-lookup", reference: "#78" };
+    const background = yield* gh
+      .getPullRequest({ ...input, background: true })
+      .pipe(Effect.result, Effect.forkChild);
+    yield* Effect.yieldNow;
+    const interactive = yield* gh.getPullRequest(input).pipe(Effect.result, Effect.forkChild);
+    yield* Effect.yieldNow;
+    yield* gh.execute({ cwd: input.cwd, args: ["api", "user"] }).pipe(Effect.flip);
+    yield* Deferred.succeed(release, undefined);
+    yield* Effect.forEach(holders, Fiber.join);
+    const direct = yield* Fiber.join(interactive);
+    const polled = yield* Fiber.join(background);
+    expect(direct._tag).toBe("Success");
+    if (direct._tag === "Success") expect(direct.success.number).toBe(78);
+    expect(polled._tag).toBe("Failure");
+    if (polled._tag === "Failure") expect(polled.failure.reason).toBe("rate-limited");
+    // The result is shared across modes even though gate admission was not.
+    expect((yield* gh.getPullRequest({ ...input, background: true })).number).toBe(78);
+    expect(mockedRunProcess).toHaveBeenCalledTimes(2);
   }).pipe(Effect.provide(GitHubCliLive)),
 );

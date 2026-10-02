@@ -1,4 +1,4 @@
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer, Option, Schema } from "effect";
 import {
   PositiveInt,
   TrimmedNonEmptyString,
@@ -2723,12 +2723,16 @@ const makeGitHubCli = Effect.gen(function* () {
         readGate.withRead(service.listPullRequests(input)),
       ),
     getPullRequest: (input) =>
-      pullRequestLookupCache.get(
-        [input.cwd, input.reference].join("\u0000"),
-        input.background
-          ? readGate.withRead(service.getPullRequest(input))
-          : service.getPullRequest(input),
-      ),
+      Effect.gen(function* () {
+        const key = [input.cwd, input.reference].join("\u0000");
+        const lookup = pullRequestLookupCache.get(key, service.getPullRequest(input));
+        if (!input.background) return yield* lookup;
+        const cached = yield* pullRequestLookupCache.getCached(key);
+        if (Option.isSome(cached)) return cached.value;
+        // Admission belongs to this polling caller, not the shared remote computation.
+        // A mutation may start or join the actual lookup without waiting for a read slot.
+        return yield* readGate.withRead(lookup);
+      }),
     runPullRequestAction: (input) =>
       service.runPullRequestAction(input).pipe(Effect.ensuring(invalidatePullRequestLookups)),
     createPullRequest: (input) =>
