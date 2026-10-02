@@ -140,7 +140,9 @@ interface ChatMarkdownProps {
   isStreaming?: boolean;
   className?: string | undefined;
   style?: CSSProperties | undefined;
-  onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
+  onImageExpand?:
+    | ((preview: ExpandedImagePreview, sourceImage?: HTMLImageElement) => void)
+    | undefined;
   /** Case-insensitive substring to wrap while in-thread find is open. */
   findQuery?: string | undefined;
   /** Active occurrence in this markdown body; other hits stay dimmer. */
@@ -1107,8 +1109,20 @@ const MARKDOWN_COMPONENTS: Components = {
     );
   },
   a: function MarkdownLink({ node: _node, href, children, ...props }) {
-    const { isUserVariant, cwd, knownAbsoluteFilePaths, resolvedTheme, onOpenThread } =
-      useContext(MarkdownRenderContext)!;
+    const context = useContext(MarkdownRenderContext)!;
+    const { isUserVariant, cwd, knownAbsoluteFilePaths, resolvedTheme, onOpenThread } = context;
+    const linkedContext = useMemo(
+      () => (context.onImageExpand ? { ...context, onImageExpand: undefined } : context),
+      [context],
+    );
+    // Linked images belong to the link, not to the fullscreen gallery.
+    const linkedChildren = context.onImageExpand ? (
+      <MarkdownRenderContext.Provider value={linkedContext}>
+        {children}
+      </MarkdownRenderContext.Provider>
+    ) : (
+      children
+    );
     const linkActions = useContext(ChatLinkActionsContext);
     const restoredHref = href ? restoreLiteralDollarPlaceholders(href) : href;
     const threadHref = restoredHref?.startsWith("thread://")
@@ -1123,7 +1137,7 @@ const MARKDOWN_COMPONENTS: Components = {
           className="inline p-0 text-inherit underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground/70"
           onClick={() => onOpenThread(ThreadId.makeUnsafe(threadHref))}
         >
-          {children}
+          {linkedChildren}
         </button>
       );
     }
@@ -1179,7 +1193,7 @@ const MARKDOWN_COMPONENTS: Components = {
           {isExternalHttp ? (
             <LinkChipIcon url={restoredHref} className={MARKDOWN_EXTERNAL_LINK_ICON_CLASS_NAME} />
           ) : null}
-          {children}
+          {linkedChildren}
         </a>
       );
     }
@@ -1188,7 +1202,7 @@ const MARKDOWN_COMPONENTS: Components = {
       <OpenableFileChip
         targetPath={targetPath}
         theme={resolvedTheme}
-        label={children}
+        label={linkedChildren}
         {...(restoredHref ? { href: restoredHref } : {})}
       />
     );
@@ -1287,10 +1301,11 @@ const MARKDOWN_COMPONENTS: Components = {
       return <img {...props} src={restoredSrc} alt={alt} loading="lazy" />;
     }
     const expandImage = (event: SyntheticEvent<HTMLImageElement>) => {
-      // A linked image (badge, thumbnail) keeps its link behavior.
-      if (event.currentTarget.closest("a")) return;
       event.preventDefault();
-      onImageExpand({ images: [{ src: restoredSrc, name: alt || "Image" }], index: 0 });
+      onImageExpand(
+        { images: [{ src: restoredSrc, name: alt || "Image" }], index: 0 },
+        event.currentTarget,
+      );
     };
     return (
       <img

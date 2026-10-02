@@ -22,15 +22,38 @@ const BODY = [
 ].join("\n");
 
 describe("PullRequestMarkdown images", () => {
-  afterEach(() => {
-    document.body.innerHTML = "";
-  });
-
-  it("opens a body image and steps through the other unlinked images", async () => {
+  it("keeps linked badges as one keyboard link without a nested preview button", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const screen = await render(
       <QueryClientProvider client={queryClient}>
         <PullRequestMarkdown text={BODY} fallback="" cwd="/repo" />
+      </QueryClientProvider>,
+    );
+    try {
+      await expect.element(page.getByRole("link", { name: "Badge" })).toBeInTheDocument();
+      await expect.element(page.getByRole("button", { name: "Badge" })).not.toBeInTheDocument();
+      const badge = document.querySelector<HTMLImageElement>('img[alt="Badge"]')!;
+      expect(badge.tabIndex).toBe(-1);
+      expect(badge.closest("a")?.getAttribute("href")).toBe("https://example.com");
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it.each(["distinct", "shared"])("opens the clicked image when URLs are %s", async (urls) => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <PullRequestMarkdown
+          text={urls === "shared" ? BODY.replace(/#before|#after/g, "") : BODY}
+          fallback=""
+          cwd="/repo"
+        />
       </QueryClientProvider>,
     );
 

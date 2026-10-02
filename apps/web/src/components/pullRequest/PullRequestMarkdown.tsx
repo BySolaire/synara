@@ -23,7 +23,7 @@ import {
 } from "./pullRequestMarkdown.logic";
 import { PR_BODY_TEXT_CLASS_NAME, PR_META_TEXT_CLASS_NAME } from "./pullRequestText";
 
-type ImageExpandHandler = (preview: ExpandedImagePreview) => void;
+type ImageExpandHandler = (preview: ExpandedImagePreview, sourceImage?: HTMLImageElement) => void;
 
 function DetailsSection({
   summary,
@@ -81,14 +81,15 @@ export function PullRequestMarkdown({
     useExpandedImagePreview();
   // Widen the clicked image to every image currently rendered in this body, so the
   // preview can step through a PR's before/after screenshots.
-  const expandImage: ImageExpandHandler = (preview) => {
-    const clicked = preview.images[preview.index];
-    const images = Array.from(
+  const expandImage: ImageExpandHandler = (preview, sourceImage) => {
+    const elements = Array.from(
       containerRef.current?.querySelectorAll<HTMLImageElement>("img[data-expandable-image]") ?? [],
-    )
-      .filter((image) => !image.closest("a"))
-      .map((image) => ({ src: image.getAttribute("src") ?? "", name: image.alt || "Image" }));
-    const index = images.findIndex((image) => image.src === clicked?.src);
+    );
+    const index = sourceImage ? elements.indexOf(sourceImage) : -1;
+    const images = elements.map((image) => ({
+      src: image.getAttribute("src") ?? "",
+      name: image.alt || "Image",
+    }));
     setExpandedImage(index < 0 ? preview : { images, index });
   };
   const sections = splitPullRequestMarkdownSections(preparePullRequestMarkdown(text));

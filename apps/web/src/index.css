@@ -2990,9 +2990,6 @@ diffs-container {
 .chat-markdown img[data-expandable-image] {
   cursor: zoom-in;
 }
-.chat-markdown a img[data-expandable-image] {
-  cursor: pointer;
-}
 .pull-request-prose p,
 .pull-request-prose ul,
 .pull-request-prose ol,

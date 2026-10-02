@@ -54,8 +54,9 @@ export function useExpandedImagePreview() {
       navigateExpandedImage(1);
     };
 
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    // Consume Escape before a containing dialog handles it and discards its draft.
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [closeExpandedImage, expandedImage, navigateExpandedImage]);
 
   return { expandedImage, setExpandedImage, closeExpandedImage, navigateExpandedImage };
