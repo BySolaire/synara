@@ -34,6 +34,7 @@ import React, {
   useRef,
   useState,
   type ReactNode,
+  type SyntheticEvent,
 } from "react";
 import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
@@ -1282,7 +1283,30 @@ const MARKDOWN_COMPONENTS: Components = {
         />
       );
     }
-    return <img {...props} src={restoredSrc} alt={alt} loading="lazy" />;
+    if (!onImageExpand || !restoredSrc) {
+      return <img {...props} src={restoredSrc} alt={alt} loading="lazy" />;
+    }
+    const expandImage = (event: SyntheticEvent<HTMLImageElement>) => {
+      // A linked image (badge, thumbnail) keeps its link behavior.
+      if (event.currentTarget.closest("a")) return;
+      event.preventDefault();
+      onImageExpand({ images: [{ src: restoredSrc, name: alt || "Image" }], index: 0 });
+    };
+    return (
+      <img
+        {...props}
+        src={restoredSrc}
+        alt={alt}
+        loading="lazy"
+        role="button"
+        tabIndex={0}
+        data-expandable-image=""
+        onClick={expandImage}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") expandImage(event);
+        }}
+      />
+    );
   },
   li: function MarkdownListItem({ node, children, ...props }) {
     // Task items carry their source line down to the checkbox via context.
