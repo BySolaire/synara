@@ -211,6 +211,7 @@ import {
 } from "../lib/threadEnvironment";
 import { canForkThread, dispatchThreadFork, FORK_THREAD_TARGET_LABELS } from "../lib/threadFork";
 import { contextMenuGroup } from "../lib/contextMenuGroup";
+import { registerThreadContextMenu, type ThreadContextMenuOptions } from "../lib/threadContextMenu";
 import { gitBranchesQueryOptions } from "../lib/gitReactQuery";
 import { resolveComposerSlashRootBranch } from "../composerSlashCommands";
 import { dispatchThreadRename } from "../lib/threadRename";
@@ -3153,18 +3154,17 @@ export default function Sidebar() {
     async (
       threadId: ThreadId,
       position: { x: number; y: number },
-      options?: {
-        extraItems?: Array<{
-          id: "return-to-single-chat";
-          label: string;
-        }>;
-        onExtraAction?: (itemId: "return-to-single-chat") => Promise<void> | void;
-      },
+      options?: ThreadContextMenuOptions,
     ) => {
       const api = readNativeApi();
       if (!api) return;
       const thread = getThreadFromState(useStore.getState(), threadId);
       if (!thread) return;
+      const extraItems = options?.extraItems ?? [];
+      // Only leaf rows resolve the menu; a parent row just opens its submenu.
+      const extraItemIds = new Set(
+        extraItems.flatMap((item) => item.children?.map((child) => child.id) ?? [item.id]),
+      );
       const threadSummary = sidebarThreadSummaryById[threadId];
       const isPinned = pinnedThreadIdSet.has(threadId);
       const hasPendingApprovals =
@@ -3329,7 +3329,7 @@ export default function Sidebar() {
                 },
               ]
             : []),
-          ...(options?.extraItems ?? []),
+          ...extraItems,
           ...hubItems,
           // Subagent threads are archived and restored through their parent
           // (thread.archive cascades); archiving one alone would strand it with
@@ -3355,6 +3355,10 @@ export default function Sidebar() {
         position,
       );
 
+      if (clicked !== null && extraItemIds.has(clicked)) {
+        await options?.onExtraAction?.(clicked);
+        return;
+      }
       if (clicked === "rename") {
         openRenameThreadDialog(threadId);
         return;
@@ -3497,10 +3501,6 @@ export default function Sidebar() {
         await forkThread(thread, clicked === "fork:worktree" ? "worktree" : "local");
         return;
       }
-      if (clicked === "return-to-single-chat") {
-        await options?.onExtraAction?.("return-to-single-chat");
-        return;
-      }
       if (clicked === "archive") {
         await confirmAndArchiveThread(threadId);
         return;
@@ -3536,6 +3536,8 @@ export default function Sidebar() {
       toggleThreadPinned,
     ],
   );
+  // The open-thread tabs open this same menu for their thread, with their close rows added.
+  useEffect(() => registerThreadContextMenu(handleThreadContextMenu), [handleThreadContextMenu]);
   const handleMultiSelectContextMenu = useCallback(
     async (position: { x: number; y: number }) => {
       const api = readNativeApi();
