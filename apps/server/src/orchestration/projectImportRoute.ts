@@ -613,7 +613,7 @@ export function makeProjectImportHandlers(options: ProjectImportRouteOptions) {
             });
           }
           if (!history) {
-            const page = yield* readHistory({
+            const historyInput = {
               provider: source.provider,
               threadId,
               nativeId,
@@ -626,7 +626,47 @@ export function makeProjectImportHandlers(options: ProjectImportRouteOptions) {
                 ? { claudeEnvironment: sourceAccount.claudeEnvironment }
                 : {}),
               ...(runtimeCwd ? { cwd: runtimeCwd } : {}),
-            });
+            };
+            let page = yield* readHistory(historyInput);
+            const legacyMessages = yield* options.repository.getLegacyMessages(threadId);
+            if (legacyMessages.length > 0) {
+              // Finish the old oldest-first import in its original live transcript.
+              // Mixing its persisted prefix with read-only older pages duplicates
+              // rows and can overwrite full text with Codex summary text.
+              const pages = [page];
+              const cursors = new Set<string>();
+              while (page.nextCursor) {
+                if (cursors.has(page.nextCursor))
+                  return yield* new ProjectImportError({
+                    message: "The provider repeated a history cursor.",
+                  });
+                cursors.add(page.nextCursor);
+                page = yield* readHistory({ ...historyInput, cursor: page.nextCursor });
+                pages.push(page);
+              }
+              const existingIds = new Set(legacyMessages.map((message) => message.messageId));
+              let previousDate = Date.parse(legacyMessages.at(-1)!.createdAt);
+              page = {
+                nextCursor: null,
+                messages: pages
+                  .reverse()
+                  .flatMap((entry) => entry.messages)
+                  .flatMap((message) => {
+                    if (existingIds.has(message.messageId)) return [];
+                    existingIds.add(message.messageId);
+                    previousDate = Math.max(previousDate + 1, Date.parse(message.createdAt));
+                    return [
+                      {
+                        ...message,
+                        createdAt: new Date(previousDate).toISOString(),
+                        updatedAt: new Date(
+                          Math.max(previousDate, Date.parse(message.updatedAt)),
+                        ).toISOString(),
+                      },
+                    ];
+                  }),
+              };
+            }
             history = {
               provider: source.provider,
               threadId,

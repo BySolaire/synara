@@ -90,6 +90,18 @@ export const makeProjectImportRepository = Effect.gen(function* () {
           : Effect.succeed(undefined),
       ),
     );
+  // The previous importer committed oldest-first batches before a history ledger
+  // existed. Only an accepted legacy receipt identifies that upgrade case.
+  const getLegacyMessages = (threadId: ThreadId) =>
+    sql<{ messageId: string; createdAt: string }>`
+      SELECT message_id AS "messageId", created_at AS "createdAt"
+      FROM projection_thread_messages
+      WHERE thread_id = ${threadId} AND EXISTS (
+        SELECT 1 FROM orchestration_command_receipts
+        WHERE command_id = ${`project-import:${threadId}:messages:0`} AND status = 'accepted'
+      )
+      ORDER BY created_at, message_id
+    `;
   const saveHistory = (state: ProjectImportHistoryState) =>
     sql`
     INSERT INTO project_import_history (thread_id, revision, state_json)
@@ -117,6 +129,7 @@ export const makeProjectImportRepository = Effect.gen(function* () {
     complete,
     listNativeBindings,
     getHistory,
+    getLegacyMessages,
     saveHistory,
     isCompleted,
   };

@@ -139,6 +139,7 @@ function harness(input: {
   );
   const historyStates = new Map<string, ProjectImportHistoryState>();
   const repository = {
+    getLegacyMessages: () => Effect.succeed([]),
     getHistory: (id: ThreadId, revision = 0) =>
       Effect.sync(() => historyStates.get(`${id}:${revision}`)),
     saveHistory: (state: ProjectImportHistoryState) =>

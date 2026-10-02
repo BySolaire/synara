@@ -313,7 +313,11 @@ export function ChatTranscriptPane({
         ) : (
           <MessagesTimeline
             key={activeThreadId}
-            historyHeader={<ImportedHistoryButton history={importedHistory} />}
+            historyHeader={
+              importedHistory.nextCursor || importedHistory.error ? (
+                <ImportedHistoryButton history={importedHistory} />
+              ) : undefined
+            }
             hasMessages={hasMessages}
             isWorking={isWorking}
             {...(workingLabel ? { workingLabel } : {})}

@@ -59,7 +59,11 @@ or change its activity time. They do not expose actions that require a Synara me
 or forking, and are not added to Synara's searchable message store. Reopening a chat starts with its recent messages again; fetched pages are cached durably
 and reused on retry, including after a server restart. Unfetched pages require the original import
 account's storage location and the native copy to remain available. Existing fully imported chats
-are unchanged.
+are unchanged. Interrupted imports from before paginated history finish their original full
+transcript: the already saved messages stay intact, and missing messages are read in bounded
+provider pages and saved for retry before being appended. This compatibility recovery gathers
+the remaining display history before completing, so unusually large legacy imports can still
+require more memory than new imports.
 
 Codex must support `thread/turns/list` with lightweight item views. Older incompatible CLI versions
 are reported with an upgrade instruction instead of falling back to an unbounded full-history read.
