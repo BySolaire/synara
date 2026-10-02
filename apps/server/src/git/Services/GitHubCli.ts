@@ -363,6 +363,8 @@ export interface GitHubCliShape {
   readonly getPullRequest: (input: {
     readonly cwd: string;
     readonly reference: string;
+    /** Gate cache misses for polling; mutation-required lookups remain ungated. */
+    readonly background?: boolean;
   }) => Effect.Effect<GitHubPullRequestSummary, GitHubCliError>;
 
   /**

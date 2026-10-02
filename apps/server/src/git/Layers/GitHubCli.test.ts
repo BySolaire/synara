@@ -2310,3 +2310,34 @@ it.effect("pauses background lookups after a rate limit while mutations keep run
     expect(mockedRunProcess).toHaveBeenCalledTimes(3);
   }).pipe(Effect.provide(GitHubCliLive)),
 );
+
+// Exercise the real cache and read gate together, with only the gh process stubbed.
+it.effect("serves cached background PR lookups while paused and gates only misses", () =>
+  Effect.gen(function* () {
+    const gh = yield* GitHubCli;
+    const output = JSON.stringify({
+      number: 77,
+      title: "Cached lookup",
+      url: "https://github.com/acme/app/pull/77",
+      baseRefName: "main",
+      headRefName: "feature",
+      state: "OPEN",
+    });
+    mockedRunProcess.mockResolvedValue(processResult(output));
+    const lookup = gh.getPullRequest({ cwd: "/paused-cache", reference: "#77", background: true });
+    const cached = yield* lookup;
+    mockedRunProcess.mockRejectedValueOnce(new Error("gh: API rate limit exceeded (HTTP 403)"));
+    yield* gh.execute({ cwd: "/paused-cache", args: ["api", "user"] }).pipe(Effect.flip);
+    expect(yield* lookup).toEqual(cached);
+    expect(mockedRunProcess).toHaveBeenCalledTimes(2);
+    const miss = yield* gh
+      .getPullRequest({ cwd: "/paused-cache", reference: "#78", background: true })
+      .pipe(Effect.result);
+    expect(miss._tag).toBe("Failure");
+    if (miss._tag === "Failure") expect(miss.failure.reason).toBe("rate-limited");
+    expect(mockedRunProcess).toHaveBeenCalledTimes(2);
+    // Mutation-required lookups retain their existing ungated path.
+    yield* gh.getPullRequest({ cwd: "/paused-cache", reference: "#78" });
+    expect(mockedRunProcess).toHaveBeenCalledTimes(3);
+  }).pipe(Effect.provide(GitHubCliLive)),
+);

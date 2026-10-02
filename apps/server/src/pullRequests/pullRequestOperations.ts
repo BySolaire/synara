@@ -156,22 +156,21 @@ export function makePullRequestOperations(dependencies: {
       const repository = yield* dependencies.validateProjectRepository(project, input.repository);
       if (input.action === "merge") {
         const mergeMethod = input.mergeMethod ?? "merge";
-        const capabilities = yield* dependencies.loadMergeCapabilities(
-          project.workspaceRoot,
+        // These reads authorize a user mutation, so they bypass the background pause.
+        const capabilities = yield* dependencies.github.getRepositoryMergeCapabilities({
+          cwd: project.workspaceRoot,
           repository,
-        );
+        });
         if (!isPullRequestMergeMethodAllowed(capabilities, mergeMethod)) {
           return yield* Effect.fail(
             new Error(`The repository does not allow the ${mergeMethod} merge method.`),
           );
         }
-        yield* dependencies.withGitHubRead(
-          dependencies.github.getPullRequestStack({
-            cwd: project.workspaceRoot,
-            repository,
-            number: input.number,
-          }),
-        );
+        yield* dependencies.github.getPullRequestStack({
+          cwd: project.workspaceRoot,
+          repository,
+          number: input.number,
+        });
       }
       const result = yield* dependencies.github
         .runPullRequestAction({

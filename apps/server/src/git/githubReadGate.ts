@@ -56,8 +56,9 @@ export function makeGitHubReadGate(options?: {
           slots.withPermits(1)(
             // Checked again once a slot is free: a read queued before the limit hit must not run.
             failWhilePaused.pipe(
-              Effect.andThen(effect),
-              Effect.tapError((error) => Effect.sync(() => noteFailure(error))),
+              Effect.andThen(
+                effect.pipe(Effect.tapError((error) => Effect.sync(() => noteFailure(error)))),
+              ),
             ),
           ),
         ),

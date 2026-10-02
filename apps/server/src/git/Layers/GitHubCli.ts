@@ -2725,7 +2725,9 @@ const makeGitHubCli = Effect.gen(function* () {
     getPullRequest: (input) =>
       pullRequestLookupCache.get(
         [input.cwd, input.reference].join("\u0000"),
-        service.getPullRequest(input),
+        input.background
+          ? readGate.withRead(service.getPullRequest(input))
+          : service.getPullRequest(input),
       ),
     runPullRequestAction: (input) =>
       service.runPullRequestAction(input).pipe(Effect.ensuring(invalidatePullRequestLookups)),

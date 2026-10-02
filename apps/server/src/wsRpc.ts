@@ -1883,13 +1883,10 @@ const makeWsRpcHandlersLayer = () =>
             ),
             { label: "git.stacked-action" },
           ),
-        // Both are polled by the client (thread badges, the Environment panel), so they share
-        // the GitHub read queue and its rate-limit pause with the inbox.
+        // Summary lookups gate cache misses inside GitHubCli so fresh badge data stays available.
         [WS_METHODS.gitResolvePullRequest]: (input) =>
-          rpcEffect(
-            github.withRead(gitManager.resolvePullRequest(input)),
-            "Failed to resolve pull request",
-          ),
+          rpcEffect(gitManager.resolvePullRequest(input), "Failed to resolve pull request"),
+        // Uncached snapshot polling shares the inbox read queue and rate-limit pause.
         [WS_METHODS.gitPullRequestSnapshot]: (input) =>
           rpcEffect(
             github.withRead(gitManager.pullRequestSnapshot(input)),

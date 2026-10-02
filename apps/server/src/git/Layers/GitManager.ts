@@ -1516,6 +1516,7 @@ export const makeGitManager = Effect.gen(function* () {
         .getPullRequest({
           cwd: input.cwd,
           reference: normalizePullRequestReference(input.reference),
+          background: true,
         })
         .pipe(Effect.map((resolved) => toResolvedPullRequest(resolved)));
 

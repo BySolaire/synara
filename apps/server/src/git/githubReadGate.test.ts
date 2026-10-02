@@ -44,7 +44,8 @@ describe("makeGitHubReadGate", () => {
   });
 
   it("bounds concurrent reads and refuses queued ones once the limit is hit", async () => {
-    const gate = makeGitHubReadGate();
+    const clock = { value: 1_000 };
+    const gate = makeGitHubReadGate({ now: () => clock.value });
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const release = yield* Deferred.make<void>();
@@ -67,6 +68,8 @@ describe("makeGitHubReadGate", () => {
         const startedBeforeLimit = started;
 
         gate.noteFailure(rateLimited);
+        // The occupying reads finish later, while their queued peers are still paused.
+        clock.value += GITHUB_INBOX_RATE_LIMIT_FALLBACK_PAUSE_MS - 1;
         yield* Deferred.succeed(release, undefined);
         const exits = yield* Effect.forEach(fibers, Fiber.join);
         return {
@@ -83,5 +86,7 @@ describe("makeGitHubReadGate", () => {
       peak: GITHUB_READ_SLOTS,
       failed: GITHUB_READ_SLOTS,
     });
+    clock.value += 1;
+    expect(await Effect.runPromise(gate.withRead(Effect.succeed("resumed")))).toBe("resumed");
   });
 });
