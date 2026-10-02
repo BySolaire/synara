@@ -5,6 +5,7 @@ import { setupWorker } from "msw/browser";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
+import ChatMarkdown from "../ChatMarkdown";
 import { downloadUrlAsBlob } from "~/lib/browserDownload";
 import { projectLocalPreviewGrantQueryOptions } from "~/lib/projectReactQuery";
 import { GeneratedMarkdownImage } from "./GeneratedMarkdownImage";
@@ -209,4 +210,46 @@ it("resets recovery across source changes and returns to a previously failed sou
   expect(document.querySelector<HTMLImageElement>(".chat-generated-image__img")?.src).not.toContain(
     "grant=",
   );
+});
+
+it.each([
+  { src: "./workspace.png", expandable: true },
+  { src: "file:///Users/tester/Desktop/simulator%20shot.png", expandable: false },
+])("lets a linked local image follow its link ($src)", async ({ src, expandable }) => {
+  const expand = vi.fn();
+  const screen = await render(
+    <QueryClientProvider client={client}>
+      <ChatMarkdown
+        text={`[![Simulator screenshot](${src})](https://example.com/screenshot)`}
+        cwd="/Users/tester/project"
+        onImageExpand={expandable ? expand : undefined}
+      />
+    </QueryClientProvider>,
+  );
+  const img = screen.getByRole("img", { name: "Simulator screenshot" });
+  await vi.waitFor(() => expect((img.element() as HTMLImageElement).naturalWidth).toBe(1));
+  let cancelledBeforeNavigation: boolean | undefined;
+  const observeClick = (event: MouseEvent) => {
+    cancelledBeforeNavigation = event.defaultPrevented;
+    // Observe browser activation without opening an external test tab.
+    event.preventDefault();
+  };
+  document.addEventListener("click", observeClick, { once: true });
+  try {
+    (img.element() as HTMLImageElement).click();
+  } finally {
+    document.removeEventListener("click", observeClick);
+  }
+  expect(cancelledBeforeNavigation).toBe(false);
+  expect(expand).not.toHaveBeenCalled();
+  const link = screen.getByRole("link", { name: "Simulator screenshot" }).element();
+  expect(link.getAttribute("href")).toBe("https://example.com/screenshot");
+  expect(link.querySelector("button, a")).toBeNull();
+  if (src.startsWith("file:")) {
+    expect(createLocalFilePreviewGrant).toHaveBeenCalledExactlyOnceWith({ path: desktopPath });
+    const url = new URL((img.element() as HTMLImageElement).src);
+    expect(grants.get(url.searchParams.get("grant") ?? "")).toBe(desktopPath);
+  } else {
+    expect(createLocalFilePreviewGrant).not.toHaveBeenCalled();
+  }
 });

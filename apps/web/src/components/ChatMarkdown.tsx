@@ -1067,6 +1067,7 @@ function UncachedShikiCodeBlock({
 }
 
 interface MarkdownRenderContextValue {
+  isInsideLink: boolean;
   cwd: ChatMarkdownProps["cwd"];
   knownAbsoluteFilePaths: string[] | undefined;
   diffThemeName: DiffThemeName;
@@ -1112,16 +1113,14 @@ const MARKDOWN_COMPONENTS: Components = {
     const context = useContext(MarkdownRenderContext)!;
     const { isUserVariant, cwd, knownAbsoluteFilePaths, resolvedTheme, onOpenThread } = context;
     const linkedContext = useMemo(
-      () => (context.onImageExpand ? { ...context, onImageExpand: undefined } : context),
+      () => ({ ...context, onImageExpand: undefined, isInsideLink: true }),
       [context],
     );
     // Linked images belong to the link, not to the fullscreen gallery.
-    const linkedChildren = context.onImageExpand ? (
+    const linkedChildren = (
       <MarkdownRenderContext.Provider value={linkedContext}>
         {children}
       </MarkdownRenderContext.Provider>
-    ) : (
-      children
     );
     const linkActions = useContext(ChatLinkActionsContext);
     const restoredHref = href ? restoreLiteralDollarPlaceholders(href) : href;
@@ -1284,7 +1283,7 @@ const MARKDOWN_COMPONENTS: Components = {
     );
   },
   img: function MarkdownImage({ node: _node, src, alt: altProp, ...props }) {
-    const { cwd, onImageExpand } = useContext(MarkdownRenderContext)!;
+    const { cwd, onImageExpand, isInsideLink } = useContext(MarkdownRenderContext)!;
     const alt = altProp ?? "";
     const restoredSrc = src ? restoreLiteralDollarPlaceholders(src) : "";
     if (isLocalImageMarkdownSrc(restoredSrc)) {
@@ -1294,6 +1293,7 @@ const MARKDOWN_COMPONENTS: Components = {
           alt={alt}
           cwd={cwd}
           onImageExpand={onImageExpand}
+          isLinked={isInsideLink}
         />
       );
     }
@@ -1487,6 +1487,7 @@ function ChatMarkdown({
   }, [findActiveRange, findQuery, renderedText]);
   const renderContext = useMemo<MarkdownRenderContextValue>(
     () => ({
+      isInsideLink: false,
       cwd,
       knownAbsoluteFilePaths,
       diffThemeName,
