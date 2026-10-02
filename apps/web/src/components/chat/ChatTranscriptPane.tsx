@@ -7,6 +7,8 @@ import { type MessageId, type ThreadId, type TurnId } from "@synara/contracts";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
   useEffect,
+  useMemo,
+  useCallback,
   useState,
   useSyncExternalStore,
   type ComponentProps,
@@ -35,6 +37,7 @@ import { createThreadFindHighlightStore, type ThreadFindHighlightStore } from ".
 import { AgentActivityDetailView } from "./AgentActivityDetailView";
 import type { AgentActivityDetail } from "./agentActivity.logic";
 import { ThreadErrorBanner } from "./ThreadErrorBanner";
+import { ImportedHistoryButton, useImportedHistory } from "~/projectImport/ImportedHistoryButton";
 
 interface ChatTranscriptPaneProps {
   activeThreadId: string;
@@ -226,7 +229,6 @@ export function ChatTranscriptPane({
   // flow through a stable store (not pane state) so scroll updates re-render only
   // the trail, not the memoized timeline; reset on thread switch so stale
   // highlights can't linger.
-  const trailItems = deriveMessageTrailItems(timelineEntries);
   const [activeTrailStore] = useState(() => createActiveTrailStore());
   const [fallbackFindHighlightStore] = useState(() => createThreadFindHighlightStore());
   const findHighlightStore = findHighlightStoreProp ?? fallbackFindHighlightStore;
@@ -238,9 +240,46 @@ export function ChatTranscriptPane({
   useEffect(() => {
     activeTrailStore.set(null);
   }, [activeThreadId, activeTrailStore]);
+  const importedHistory = useImportedHistory(activeThreadId, !isTemporaryThread);
+  const olderTimelineEntries = useMemo(
+    () =>
+      importedHistory.messages.map((message) => ({
+        id: message.messageId,
+        kind: "message" as const,
+        createdAt: message.createdAt,
+        message: {
+          id: message.messageId,
+          role: message.role,
+          text: message.text,
+          createdAt: message.createdAt,
+          updatedAt: message.updatedAt,
+          turnId: null,
+          streaming: false,
+          source: "native" as const,
+        },
+      })),
+    [importedHistory.messages],
+  );
+  const visibleTimelineEntries = useMemo(
+    () =>
+      olderTimelineEntries.length ? [...olderTimelineEntries, ...timelineEntries] : timelineEntries,
+    [olderTimelineEntries, timelineEntries],
+  );
+  const olderMessageIds = useMemo(
+    () => new Set(importedHistory.messages.map((message) => message.messageId)),
+    [importedHistory.messages],
+  );
+  const canActOnMessage = useCallback(
+    (messageId: MessageId) =>
+      !olderMessageIds.has(messageId) && (canPinMessage?.(messageId) ?? true),
+    [olderMessageIds, canPinMessage],
+  );
+  const trailItems = deriveMessageTrailItems(visibleTimelineEntries);
   const handleTrailSelect = (messageId: MessageId) => {
     timelineControllerRef?.current?.scrollToMessage(messageId);
   };
+
+  const agentDetailOpen = Boolean(agentActivityDetail && onCloseAgentActivityDetail);
 
   return (
     <div
@@ -265,19 +304,21 @@ export function ChatTranscriptPane({
       ) : null}
 
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-        {agentActivityDetail && onCloseAgentActivityDetail ? (
-          <AgentActivityDetailView
-            detail={agentActivityDetail}
-            chatFontSizePx={chatFontSizePx}
-            contentInsetRightPx={contentInsetRightPx}
-            markdownCwd={markdownCwd}
-            onBack={onCloseAgentActivityDetail}
-            onImageExpand={onExpandTimelineImage}
-            timestampFormat={timestampFormat}
-          />
-        ) : (
+        {/* The timeline stays mounted under the agent detail: unmounting it would rebuild
+            every row and lose the scroll position on Back. The wrapper has no box of its own
+            (`contents`), so the timeline's layout and measurement are the same either way. */}
+        <div
+          className={cn("contents", agentDetailOpen && "pointer-events-none invisible")}
+          aria-hidden={agentDetailOpen || undefined}
+          inert={agentDetailOpen}
+        >
           <MessagesTimeline
             key={activeThreadId}
+            historyHeader={
+              importedHistory.nextCursor || importedHistory.error ? (
+                <ImportedHistoryButton history={importedHistory} />
+              ) : undefined
+            }
             hasMessages={hasMessages}
             isWorking={isWorking}
             {...(workingLabel ? { workingLabel } : {})}
@@ -290,7 +331,7 @@ export function ChatTranscriptPane({
             listRef={listRef}
             {...(timelineControllerRef ? { controllerRef: timelineControllerRef } : {})}
             {...(pinnedMessageIds ? { pinnedMessageIds } : {})}
-            {...(canPinMessage ? { canPinMessage } : {})}
+            canPinMessage={canActOnMessage}
             {...(onTogglePinMessage ? { onTogglePinMessage } : {})}
             {...(onForkFromMessage ? { onForkFromMessage } : {})}
             {...(goalAchievements ? { goalAchievements } : {})}
@@ -300,9 +341,9 @@ export function ChatTranscriptPane({
             {...(crossTaskOrigin ? { crossTaskOrigin } : {})}
             {...(forkSource ? { forkSource } : {})}
             isTemporaryThread={isTemporaryThread ?? false}
-            timelineEntries={timelineEntries}
+            timelineEntries={visibleTimelineEntries}
             hubWorkItemsByMessageId={hubWorkItemsByMessageId}
-            messageChangeSignal={messageChangeSignal}
+            messageChangeSignal={messageChangeSignal ?? timelineEntries}
             turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
             conversationOnly={conversationOnly === true}
             onOpenTurnDiff={onOpenTurnDiff}
@@ -354,7 +395,20 @@ export function ChatTranscriptPane({
             {...(expandedWorkGroups ? { expandedWorkGroups } : {})}
             {...(onToggleWorkGroup ? { onToggleWorkGroup } : {})}
           />
-        )}
+        </div>
+        {agentActivityDetail && onCloseAgentActivityDetail ? (
+          <div className="absolute inset-0">
+            <AgentActivityDetailView
+              detail={agentActivityDetail}
+              chatFontSizePx={chatFontSizePx}
+              contentInsetRightPx={contentInsetRightPx}
+              markdownCwd={markdownCwd}
+              onBack={onCloseAgentActivityDetail}
+              onImageExpand={onExpandTimelineImage}
+              timestampFormat={timestampFormat}
+            />
+          </div>
+        ) : null}
 
         {!agentActivityDetail ? (
           <div
