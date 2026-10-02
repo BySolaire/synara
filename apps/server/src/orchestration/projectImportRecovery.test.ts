@@ -13,41 +13,53 @@ import type { ServerSettingsShape } from "../serverSettings";
 import { OrchestrationEngineLive } from "./Layers/OrchestrationEngine";
 import { OrchestrationProjectionPipelineLive } from "./Layers/ProjectionPipeline";
 import { OrchestrationProjectionSnapshotQueryLive } from "./Layers/ProjectionSnapshotQuery";
+import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine";
 import { makeProjectImportHandlers } from "./projectImportRoute";
+import {
+  resolveProjectImportSources,
+  resolveProjectImportSourceHome,
+} from "./projectImportSources";
 import { ServerSettingsService } from "../serverSettings.ts";
+
+function makeRuntime() {
+  return ManagedRuntime.make(
+    OrchestrationEngineLive.pipe(
+      Layer.provide(OrchestrationProjectionPipelineLive),
+      Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+      Layer.provide(OrchestrationEventStoreLive),
+      Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+      Layer.provide(ServerSettingsService.layerTest()),
+      Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "synara-project-import-recovery-" }),
+      ),
+      Layer.provideMerge(NodeServices.layer),
+    ),
+  );
+}
 
 it.each(["pending", "completed"] as const)(
   "recovers a deleted %s import with durable reservations and command receipts",
   async (status) => {
-    const runtime = ManagedRuntime.make(
-      OrchestrationEngineLive.pipe(
-        Layer.provide(OrchestrationProjectionPipelineLive),
-        Layer.provide(OrchestrationProjectionSnapshotQueryLive),
-        Layer.provide(OrchestrationEventStoreLive),
-        Layer.provide(OrchestrationCommandReceiptRepositoryLive),
-        Layer.provide(ServerSettingsService.layerTest()),
-        Layer.provideMerge(SqlitePersistenceMemory),
-        Layer.provideMerge(
-          ServerConfig.layerTest(process.cwd(), { prefix: "synara-project-import-recovery-" }),
-        ),
-        Layer.provideMerge(NodeServices.layer),
-      ),
-    );
+    const runtime = makeRuntime();
     try {
       const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
       const repository = await runtime.runPromise(makeProjectImportRepository);
       const createdAt = "2026-09-16T00:00:00.000Z";
       const readHistory = vi.fn(({ threadId }: { threadId: string }) =>
-        Effect.succeed([
-          {
-            messageId: MessageId.makeUnsafe(`import:${threadId}:message`),
-            role: "user" as const,
-            text: "Original conversation",
-            createdAt,
-            updatedAt: createdAt,
-          },
-        ]),
+        Effect.succeed({
+          nextCursor: null,
+          messages: [
+            {
+              messageId: MessageId.makeUnsafe(`import:${threadId}:message`),
+              role: "user" as const,
+              text: "Original conversation",
+              createdAt,
+              updatedAt: createdAt,
+            },
+          ],
+        }),
       );
       const copy = vi.fn(({ threadId }: { threadId: string }) =>
         Effect.succeed({ threadId, resumeCursor: { threadId: `copy:${threadId}` } }),
@@ -128,6 +140,115 @@ it.each(["pending", "completed"] as const)(
       await expect(runtime.runPromise(handlers.importProject(input))).resolves.toMatchObject({
         threadId: replacement.threadId,
         status: "already-present",
+      });
+    } finally {
+      await runtime.dispose();
+    }
+  },
+);
+
+it.each(["codex", "claudeAgent"] as const)(
+  "keeps %s older pages durable and read-only across retries and restarts",
+  async (provider) => {
+    const runtime = makeRuntime();
+    try {
+      const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+      const repository = await runtime.runPromise(makeProjectImportRepository);
+      const source = resolveProjectImportSources(DEFAULT_SERVER_SETTINGS, [provider])[0]!;
+      const sourceHome = await resolveProjectImportSourceHome(source);
+      const createdAt = "2026-09-16T00:00:00.000Z";
+      const readHistory = vi.fn(({ threadId, cursor }: { threadId: string; cursor?: string }) =>
+        Effect.succeed({
+          nextCursor: cursor === "oldest" ? null : cursor === "older" ? "oldest" : "older",
+          messages: [
+            {
+              messageId: MessageId.makeUnsafe(`import:${threadId}:${cursor ?? "recent"}`),
+              role: "assistant" as const,
+              text: cursor ?? "recent",
+              createdAt,
+              updatedAt: createdAt,
+            },
+          ],
+        }),
+      );
+      const options = {
+        repository,
+        orchestrationEngine: engine,
+        providerService: {
+          importExternalThread: ({ threadId }: { threadId: string }) =>
+            Effect.succeed({
+              threadId,
+              resumeCursor:
+                provider === "codex" ? { threadId: "frozen-copy" } : { resume: "frozen-copy" },
+            }),
+          stopRuntimeSession: () => Effect.void,
+        } as unknown as ProviderServiceShape,
+        providerAdapterRegistry: {} as ProviderAdapterRegistryShape,
+        serverSettings: {
+          getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
+        } as unknown as ServerSettingsShape,
+        discover: async () => ({
+          sourceHome,
+          projects: [{ id: "source", title: "Source", roots: [process.cwd()] }],
+          sessions: [
+            {
+              id: "original",
+              projectId: "source",
+              title: "Original",
+              cwd: process.cwd(),
+              createdAt,
+              updatedAt: createdAt,
+              archived: false,
+            },
+          ],
+        }),
+        readHistory,
+      };
+      const handlers = makeProjectImportHandlers(options);
+      const project = (
+        await runtime.runPromise(handlers.listProjectImports({ providers: [provider] }))
+      ).projects[0]!;
+      const imported = await runtime.runPromise(
+        handlers.importProject({ projectKey: project.key, threadKey: project.threads[0]!.key }),
+      );
+      const threadId = imported.threadId!;
+      expect(await runtime.runPromise(handlers.loadProjectImportHistory({ threadId }))).toEqual({
+        nextCursor: "1",
+        messages: [],
+      });
+      const query = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
+      const before = await runtime.runPromise(query.getThreadDetailById(threadId));
+      const save = repository.saveHistory;
+      repository.saveHistory = (state) =>
+        state.revision === 2 ? Effect.die("interrupted page boundary") : save(state);
+      await expect(
+        runtime.runPromise(handlers.loadProjectImportHistory({ threadId, cursor: "1" })),
+      ).rejects.toThrow("interrupted page boundary");
+      repository.saveHistory = save;
+      // Recreate handlers and rehydrate the model, preserving only durable state.
+      await runtime.runPromise(engine.refreshCommandReadModel());
+      const restarted = makeProjectImportHandlers(options);
+      const older = await runtime.runPromise(
+        restarted.loadProjectImportHistory({ threadId, cursor: "1" }),
+      );
+      expect(older).toMatchObject({ nextCursor: "2", messages: [{ text: "older" }] });
+      expect(readHistory).toHaveBeenCalledTimes(2);
+      const oldest = await runtime.runPromise(
+        restarted.loadProjectImportHistory({ threadId, cursor: "2" }),
+      );
+      expect(oldest).toMatchObject({ nextCursor: null, messages: [{ text: "oldest" }] });
+      // Reloading an earlier cached page cannot erase a later cached page.
+      expect(
+        await runtime.runPromise(restarted.loadProjectImportHistory({ threadId, cursor: "1" })),
+      ).toEqual(older);
+      expect(
+        await runtime.runPromise(restarted.loadProjectImportHistory({ threadId, cursor: "2" })),
+      ).toEqual(oldest);
+      expect(readHistory).toHaveBeenCalledTimes(3);
+      expect(await runtime.runPromise(query.getThreadDetailById(threadId))).toEqual(before);
+      expect(await runtime.runPromise(restarted.loadProjectImportHistory({ threadId }))).toEqual({
+        nextCursor: "1",
+        messages: [],
       });
     } finally {
       await runtime.dispose();

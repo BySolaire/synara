@@ -1,6 +1,36 @@
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import type { ProjectId, ProjectImportProvider, ThreadId } from "@synara/contracts";
+import {
+  IsoDateTime,
+  NonNegativeInt,
+  ProjectImportProvider,
+  ProviderInstanceId,
+  ThreadHandoffImportedMessage,
+  ThreadId,
+  type ProjectId,
+} from "@synara/contracts";
+
+export const ProjectImportHistoryState = Schema.Struct({
+  threadId: ThreadId,
+  provider: ProjectImportProvider,
+  providerInstanceId: ProviderInstanceId,
+  nativeId: Schema.String,
+  sourceHome: Schema.String,
+  sourceCwd: Schema.String,
+  sourceCreatedAt: IsoDateTime,
+  cwd: Schema.optional(Schema.String),
+  cursor: Schema.NullOr(Schema.String),
+  before: Schema.NullOr(IsoDateTime),
+  revision: NonNegativeInt,
+  // Persist before dispatch so a crash retries exactly the same messages.
+  pending: Schema.NullOr(
+    Schema.Struct({
+      messages: Schema.Array(ThreadHandoffImportedMessage),
+      nextCursor: Schema.NullOr(Schema.String),
+    }),
+  ),
+});
+export type ProjectImportHistoryState = typeof ProjectImportHistoryState.Type;
 
 export interface ProjectImportOrigin {
   readonly sourceKey: string;
@@ -46,6 +76,30 @@ export const makeProjectImportRepository = Effect.gen(function* () {
     sql`
     UPDATE project_import_origins SET status = 'completed' WHERE source_key = ${sourceKey}
   `.pipe(Effect.asVoid);
+  const getHistory = (threadId: ThreadId, revision = 0) =>
+    sql<{ state: string }>`
+    SELECT h.state_json AS state FROM project_import_history h
+    JOIN project_import_origins o ON o.thread_id = h.thread_id
+    WHERE h.thread_id = ${threadId} AND h.revision = ${revision}
+  `.pipe(
+      Effect.flatMap((rows) =>
+        rows[0]
+          ? Schema.decodeUnknownEffect(Schema.fromJsonString(ProjectImportHistoryState))(
+              rows[0].state,
+            )
+          : Effect.succeed(undefined),
+      ),
+    );
+  const saveHistory = (state: ProjectImportHistoryState) =>
+    sql`
+    INSERT INTO project_import_history (thread_id, revision, state_json)
+    VALUES (${state.threadId}, ${state.revision}, ${JSON.stringify(state)})
+    ON CONFLICT(thread_id, revision) DO UPDATE SET state_json = excluded.state_json
+  `.pipe(Effect.asVoid);
+  const isCompleted = (threadId: ThreadId) =>
+    sql<{ status: string }>`
+    SELECT status FROM project_import_origins WHERE thread_id = ${threadId}
+  `.pipe(Effect.map((rows) => rows[0]?.status === "completed"));
   const listNativeBindings = () => sql<{
     readonly threadId: ThreadId;
     readonly projectId: ProjectId;
@@ -56,7 +110,16 @@ export const makeProjectImportRepository = Effect.gen(function* () {
       r.provider_name AS provider, r.resume_cursor_json AS cursor
     FROM provider_session_runtime r JOIN projection_threads t ON t.thread_id = r.thread_id
   `;
-  return { list, find, reserve, complete, listNativeBindings };
+  return {
+    list,
+    find,
+    reserve,
+    complete,
+    listNativeBindings,
+    getHistory,
+    saveHistory,
+    isCompleted,
+  };
 });
 
 export type ProjectImportRepository = Effect.Success<typeof makeProjectImportRepository>;
