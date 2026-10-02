@@ -27,7 +27,7 @@ export function makePullRequestOperations(dependencies: {
     cwd: string,
     repository: string,
   ) => Effect.Effect<PullRequestDetail["mergeCapabilities"], unknown>;
-  withGitHubRead: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+  withGitHubRead: GitHubCliShape["withRead"];
   /** Short server cache around a validated detail read; honours `forceRefresh`. */
   cacheDetail: (
     input: { projectId: string; repository: string; number: number; forceRefresh: boolean },

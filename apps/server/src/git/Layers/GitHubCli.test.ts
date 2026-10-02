@@ -2278,3 +2278,35 @@ layer("GitHubCliLive", (it) => {
     }),
   );
 });
+
+// Own layer: the pause is wall-clock state that would leak into the shared layer's later tests.
+it.effect("pauses background lookups after a rate limit while mutations keep running", () =>
+  Effect.gen(function* () {
+    const gh = yield* GitHubCli;
+    mockedRunProcess.mockRejectedValueOnce(
+      new Error("gh pr view failed (code=1, signal=null). gh: API rate limit exceeded (HTTP 403)"),
+    );
+    const limited = yield* gh.getPullRequest({ cwd: "/repo", reference: "#1" }).pipe(Effect.flip);
+    assert.equal(limited.reason, "rate-limited");
+    expect(mockedRunProcess).toHaveBeenCalledTimes(1);
+
+    const lookup = yield* gh
+      .listPullRequests({ cwd: "/repo", headSelector: "feature/paused" })
+      .pipe(Effect.flip);
+    const queued = yield* gh.withRead(gh.getViewerLogin({ cwd: "/repo" })).pipe(Effect.flip);
+    assert.equal(lookup.reason, "rate-limited");
+    assert.equal(queued.reason, "rate-limited");
+    expect(mockedRunProcess).toHaveBeenCalledTimes(1);
+
+    mockedRunProcess.mockResolvedValue(processResult("[]"));
+    yield* gh.listOpenPullRequests({ cwd: "/repo", headSelector: "feature/paused" });
+    yield* gh.createPullRequest({
+      cwd: "/repo",
+      baseBranch: "main",
+      headSelector: "feature/paused",
+      title: "Paused",
+      bodyFile: "/tmp/body.md",
+    });
+    expect(mockedRunProcess).toHaveBeenCalledTimes(3);
+  }).pipe(Effect.provide(GitHubCliLive)),
+);

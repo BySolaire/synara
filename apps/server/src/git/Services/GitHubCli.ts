@@ -209,6 +209,15 @@ export interface GitHubPullRequestDetailData {
  */
 export interface GitHubCliShape {
   /**
+   * Run a background read through the server-wide GitHub read queue. Fails fast with a
+   * `rate-limited` error while GitHub is limiting the account. User-initiated mutations and the
+   * reads they depend on call the methods below directly instead.
+   */
+  readonly withRead: <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | GitHubCliError, R>;
+
+  /**
    * Execute a GitHub CLI command and return full process output.
    */
   readonly execute: (input: {

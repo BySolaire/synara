@@ -1883,11 +1883,16 @@ const makeWsRpcHandlersLayer = () =>
             ),
             { label: "git.stacked-action" },
           ),
+        // Both are polled by the client (thread badges, the Environment panel), so they share
+        // the GitHub read queue and its rate-limit pause with the inbox.
         [WS_METHODS.gitResolvePullRequest]: (input) =>
-          rpcEffect(gitManager.resolvePullRequest(input), "Failed to resolve pull request"),
+          rpcEffect(
+            github.withRead(gitManager.resolvePullRequest(input)),
+            "Failed to resolve pull request",
+          ),
         [WS_METHODS.gitPullRequestSnapshot]: (input) =>
           rpcEffect(
-            gitManager.pullRequestSnapshot(input),
+            github.withRead(gitManager.pullRequestSnapshot(input)),
             "Failed to load pull request checks and comments",
           ),
         [WS_METHODS.gitPreparePullRequestThread]: (input) =>
