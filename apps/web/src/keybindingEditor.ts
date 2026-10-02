@@ -417,6 +417,17 @@ export function evaluateRecordedShortcut(input: {
   const { source, row, replacing, shortcut } = input;
   if (!shortcut) return { status: "idle" };
 
+  const candidates = candidateRules(source, row, replacing, shortcut);
+  const replaced = replacing?.rules ?? [];
+  const unchanged =
+    replaced.length === candidates.length &&
+    candidates.every(
+      (candidate, index) =>
+        shortcutConflictKey(candidate.shortcut, source.platform) ===
+        shortcutConflictKey(replaced[index]!.shortcut, source.platform),
+    );
+  if (unchanged) return { status: "idle" };
+
   const label = formatShortcutLabel(shortcut, source.platform);
   const hasCommandModifier =
     shortcut.modKey || shortcut.metaKey || shortcut.ctrlKey || shortcut.altKey;
@@ -433,17 +444,6 @@ export function evaluateRecordedShortcut(input: {
   }
   const reserved = reservedReason(shortcut, source.platform);
   if (reserved) return { status: "problem", message: `${label} ${reserved}. Try another.` };
-
-  const candidates = candidateRules(source, row, replacing, shortcut);
-  const replaced = replacing?.rules ?? [];
-  const unchanged =
-    replaced.length === candidates.length &&
-    candidates.every(
-      (candidate, index) =>
-        shortcutConflictKey(candidate.shortcut, source.platform) ===
-        shortcutConflictKey(replaced[index]!.shortcut, source.platform),
-    );
-  if (unchanged) return { status: "idle" };
 
   const colliding = collidingRules(source, candidates, replaced);
   if (colliding.some((rule) => row.commands.includes(rule.command))) {

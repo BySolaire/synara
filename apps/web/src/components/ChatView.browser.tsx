@@ -65,6 +65,7 @@ import {
 } from "../lib/terminalContext";
 import { extractTrailingBrowserAnnotations } from "../lib/browserAnnotations";
 import { isMacNavigatorPlatform } from "../lib/utils";
+import { STARRED_MODELS_STORAGE_KEY } from "../lib/starredModels";
 import { readNativeApi } from "../nativeApi";
 import { setThreadDetailResumeCursor } from "../threadDetailResumeCursors";
 import { resetHomeChatProjectPrewarmStateForTests } from "../lib/chatProjects";
@@ -73,7 +74,8 @@ import { getRouter } from "../router";
 import { showContextMenuFallback } from "../contextMenuFallback";
 import { useRightDockStore } from "../rightDockStore";
 import { useOpenThreadTabsStore } from "../openThreadTabsStore";
-import { useSplitViewStore } from "../splitViewStore";
+import { resolveSplitViewPaneIdForThread, useSplitViewStore } from "../splitViewStore";
+import { splitViewPaneScopeId } from "../lib/chatPaneScope";
 import { useSpacesUiStore } from "../spacesUiStore";
 import { useRailShellStore } from "../railShellStore";
 import { useStore } from "../store";
@@ -2391,6 +2393,164 @@ describe("ChatView transcript geometry (full app)", () => {
 
   // #1374: real route, dock and Lexical composers; only the server boundary is
   // simulated. The main agent must keep running while the panel toggles.
+  it("keeps the surviving non-route chat mounted when a split collapses", async () => {
+    const snapshot = addThreadToSnapshot(
+      createSnapshotWithLongAssistantResponse(),
+      OTHER_THREAD_ID,
+    );
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+    try {
+      useComposerDraftStore.getState().setPrompt(OTHER_THREAD_ID, "surviving draft");
+      const splitViewId = useSplitViewStore.getState().createFromDrop({
+        sourceThreadId: THREAD_ID,
+        ownerProjectId: PROJECT_ID,
+        droppedThreadId: OTHER_THREAD_ID,
+        direction: "horizontal",
+        side: "second",
+      });
+      await mounted.router.navigate({
+        to: "/$threadId",
+        params: { threadId: THREAD_ID },
+        search: () => ({ splitViewId }),
+      });
+      await vi.waitFor(() =>
+        expect(document.querySelectorAll('[contenteditable="true"]').length).toBe(2),
+      );
+      await waitForLayout();
+      const split = useSplitViewStore.getState().splitViewsById[splitViewId]!;
+      if (
+        split.root.kind !== "split" ||
+        split.root.first.kind !== "leaf" ||
+        split.root.second.kind !== "leaf"
+      )
+        throw new Error("Expected two panes");
+      const scope = splitViewPaneScopeId(splitViewId, split.root.second.id);
+      const survivingEditor = document.querySelector<HTMLElement>(
+        `[data-chat-pane-scope="${scope}"] [contenteditable="true"]`,
+      )!;
+      const survivingChat = survivingEditor.closest("[data-chat-pane-scope]")!;
+      await vi.waitFor(() => expect(survivingEditor.textContent).toContain("surviving draft"));
+      // The public split store publishes the one remaining leaf before the router
+      // commits its new parameter, just as closing the current pane does.
+      useSplitViewStore
+        .getState()
+        .removePaneFromSplitView({ splitViewId, paneId: split.root.first.id });
+      await vi.waitFor(() => {
+        expect(mounted.router.state.location.pathname).toBe(`/${OTHER_THREAD_ID}`);
+        expect(mounted.router.state.location.search.splitViewId).toBeUndefined();
+        expect(document.querySelectorAll('[contenteditable="true"]').length).toBe(1);
+      });
+      expect(document.querySelector('[contenteditable="true"]')).toBe(survivingEditor);
+      expect(document.querySelector("[data-chat-pane-scope]")).toBe(survivingChat);
+      expect(survivingEditor.textContent).toContain("surviving draft");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each([
+    { panes: 2, closing: "non-source" },
+    { panes: 3, closing: "non-source" },
+    { panes: 3, closing: "source" },
+  ] as const)("closes a standalone Side in $panes panes ($closing)", async ({ panes, closing }) => {
+    const thirdId = ThreadId.makeUnsafe("third-standalone-grid-chat");
+    const closingThreadId = closing === "source" ? THREAD_ID : OTHER_THREAD_ID;
+    const base = addThreadToSnapshot(
+      addThreadToSnapshot(createSnapshotWithLongAssistantResponse(), OTHER_THREAD_ID),
+      thirdId,
+    );
+    const snapshot = {
+      ...base,
+      threads: base.threads.map((thread) =>
+        thread.id === closingThreadId
+          ? {
+              ...thread,
+              sidechatContext: {
+                kind: "github-item" as const,
+                itemKind: "pullRequest" as const,
+                repository: "acme/widgets",
+                number: 1472,
+                url: "https://github.com/acme/widgets/pull/1472",
+              },
+            }
+          : thread,
+      ),
+    };
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+    try {
+      const splitViewId = useSplitViewStore.getState().createFromDrop({
+        sourceThreadId: THREAD_ID,
+        ownerProjectId: PROJECT_ID,
+        droppedThreadId: OTHER_THREAD_ID,
+        direction: "horizontal",
+        side: "second",
+      });
+      const split = useSplitViewStore.getState().splitViewsById[splitViewId]!;
+      const sourcePaneId = resolveSplitViewPaneIdForThread(split, THREAD_ID)!;
+      if (panes === 3)
+        useSplitViewStore.getState().dropThreadOnPane({
+          splitViewId,
+          targetPaneId: sourcePaneId,
+          threadId: thirdId,
+          direction: "vertical",
+          side: "first",
+        });
+      await mounted.router.navigate({
+        to: "/$threadId",
+        params: { threadId: THREAD_ID },
+        search: () => ({ splitViewId }),
+      });
+      await vi.waitFor(() =>
+        expect(document.querySelectorAll('[contenteditable="true"]')).toHaveLength(panes),
+      );
+      await waitForLayout();
+      const readySplit = useSplitViewStore.getState().splitViewsById[splitViewId]!;
+      const targetThreadId = closing === "source" ? thirdId : THREAD_ID;
+      const editorForThread = (threadId: ThreadId) => {
+        const scope = splitViewPaneScopeId(
+          splitViewId,
+          resolveSplitViewPaneIdForThread(readySplit, threadId)!,
+        );
+        return document.querySelector<HTMLElement>(
+          `[data-chat-pane-scope="${scope}"] [contenteditable="true"]`,
+        )!;
+      };
+      const retainedEditor = editorForThread(targetThreadId);
+      await userEvent.click(editorForThread(closingThreadId));
+      await vi.waitFor(() =>
+        expect(mounted.router.state.location.pathname).toBe(`/${closingThreadId}`),
+      );
+      const persistedSplit = () =>
+        JSON.parse(localStorage.getItem("synara:split-view-state:v1")!).state.splitViewsById[
+          splitViewId
+        ];
+      expect(persistedSplit()).toBeDefined();
+      await page.getByRole("button", { name: "Close selected Side", exact: true }).click();
+      await vi.waitFor(() => {
+        expect(mounted.router.state.location.pathname).toBe(`/${targetThreadId}`);
+        expect(mounted.router.state.location.search.splitViewId).toBe(
+          closing === "source" ? splitViewId : undefined,
+        );
+        expect(document.querySelectorAll('[contenteditable="true"]')).toHaveLength(
+          closing === "source" ? 2 : 1,
+        );
+        if (closing === "source") {
+          expect(useSplitViewStore.getState().splitViewsById[splitViewId]).toBeDefined();
+          expect(persistedSplit()).toBeDefined();
+          expect(persistedSplit().sourceThreadId).toBe(thirdId);
+        } else {
+          expect(useSplitViewStore.getState().splitViewsById[splitViewId]).toBeUndefined();
+          expect(persistedSplit()).toBeUndefined();
+        }
+      });
+      await waitForLayout();
+      expect(retainedEditor.isConnected).toBe(true);
+      expect(document.querySelectorAll('[contenteditable="true"]')).toContain(retainedEditor);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("opens one sidechat, preserves its draft on toggle, and restores composer focus", async () => {
     useRightDockStore.setState({ dockStateByThreadId: {} });
     const mainSnapshot = createSnapshotForTargetUser({
@@ -3814,7 +3974,7 @@ describe("ChatView transcript geometry (full app)", () => {
 
       const sendButton = await waitForSendButton();
       expect(sendButton.disabled).toBe(false);
-      sendButton.click();
+      await userEvent.click(sendButton);
 
       await vi.waitFor(
         async () => {
@@ -3833,6 +3993,142 @@ describe("ChatView transcript geometry (full app)", () => {
       restoreNativeApi();
     }
   });
+
+  it.each(["Enter", "send button", "plan follow-up"])(
+    "keeps sent messages at the bottom with anchoring disabled when using %s, and follows streaming text",
+    async (sendMethod) => {
+      localStorage.setItem(
+        "synara:app-settings:v1",
+        JSON.stringify({ anchorSentMessagesToTop: false }),
+      );
+      const restoreNativeApi = installDeterministicSendNativeApi();
+      let currentSnapshot =
+        sendMethod === "plan follow-up"
+          ? createSnapshotWithSettledPlanAwaitingFollowUp()
+          : createSnapshotForTargetUser({
+              targetMessageId: "msg-user-send-no-anchor" as MessageId,
+              targetText: "Previous conversation message",
+            });
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: currentSnapshot,
+      });
+
+      try {
+        const scrollContainer = await waitForElement(
+          () => document.querySelector<HTMLElement>("[data-chat-scroll-container='true']"),
+          "Unable to find message scroll container.",
+        );
+        // Sending must return to the live edge even if the reader was looking at history.
+        scrollContainer.scrollTop = 0;
+        scrollContainer.dispatchEvent(new Event("scroll"));
+        await waitForLayout();
+
+        const prompt = "Keep this message at the bottom";
+        if (sendMethod === "plan follow-up") {
+          useComposerDraftStore.getState().setInteractionMode(THREAD_ID, "plan");
+        }
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, prompt);
+        await vi.waitFor(async () => {
+          expect((await waitForComposerEditor()).textContent).toContain(prompt);
+        });
+        if (sendMethod !== "send button") {
+          await userEvent.click(await waitForComposerEditor());
+          await userEvent.keyboard("{Enter}");
+        } else {
+          const sendButton = await waitForSendButton();
+          expect(sendButton.disabled).toBe(false);
+          await userEvent.click(sendButton);
+        }
+
+        const findSentRow = () =>
+          Array.from(
+            document.querySelectorAll<HTMLElement>("[data-message-id][data-message-role='user']"),
+          ).find((row) => row.textContent?.includes(prompt));
+        await vi.waitFor(
+          () => {
+            const row = findSentRow();
+            expect(row, "sent user message missing").toBeTruthy();
+            expect(
+              row!.getBoundingClientRect().top - scrollContainer.getBoundingClientRect().top,
+              "sent user message moved to the viewport top",
+            ).toBeGreaterThan(scrollContainer.clientHeight / 2);
+            expect(getScrollContainerDistanceFromBottom(scrollContainer)).toBeLessThanOrEqual(2);
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+        if (sendMethod !== "plan follow-up") {
+          expect(document.activeElement).toBe(await waitForComposerEditor());
+        }
+
+        const sentMessageId = MessageId.makeUnsafe(findSentRow()!.dataset.messageId!);
+        const activeTurnId = TurnId.makeUnsafe("turn-no-anchor");
+        const streamingId = MessageId.makeUnsafe("msg-assistant-no-anchor");
+        for (const paragraphCount of [1, 20]) {
+          currentSnapshot = {
+            ...currentSnapshot,
+            snapshotSequence: currentSnapshot.snapshotSequence + 1,
+            threads: currentSnapshot.threads.map((thread) =>
+              thread.id !== THREAD_ID
+                ? thread
+                : {
+                    ...thread,
+                    messages: [
+                      ...thread.messages.filter(
+                        (message) => message.id !== streamingId && message.id !== sentMessageId,
+                      ),
+                      {
+                        id: sentMessageId,
+                        role: "user" as const,
+                        text: prompt,
+                        turnId: activeTurnId,
+                        streaming: false,
+                        source: "native" as const,
+                        createdAt: isoAt(1_300),
+                        updatedAt: isoAt(1_300),
+                      },
+                      {
+                        id: streamingId,
+                        role: "assistant" as const,
+                        text: "Streaming response paragraph.\n\n".repeat(paragraphCount),
+                        turnId: activeTurnId,
+                        streaming: true,
+                        source: "native" as const,
+                        createdAt: isoAt(1_302),
+                        updatedAt: isoAt(1_302 + paragraphCount),
+                      },
+                    ],
+                    latestTurn: {
+                      turnId: activeTurnId,
+                      state: "running" as const,
+                      requestedAt: isoAt(1_300),
+                      startedAt: isoAt(1_301),
+                      completedAt: null,
+                      assistantMessageId: streamingId,
+                    },
+                    session: thread.session
+                      ? { ...thread.session, status: "running" as const, activeTurnId }
+                      : null,
+                  },
+            ),
+            updatedAt: isoAt(1_302 + paragraphCount),
+          };
+          fixture = { ...fixture, snapshot: currentSnapshot };
+          useStore.getState().syncServerReadModel(currentSnapshot);
+          await vi.waitFor(
+            () => {
+              expect(document.body.textContent).toContain("Streaming response paragraph.");
+              expect(getScrollContainerDistanceFromBottom(scrollContainer)).toBeLessThanOrEqual(2);
+            },
+            { timeout: 8_000, interval: 16 },
+          );
+        }
+      } finally {
+        await mounted.cleanup();
+        restoreNativeApi();
+      }
+    },
+  );
 
   it("anchors a freshly sent user message at the top of the transcript viewport", async () => {
     const restoreNativeApi = installDeterministicSendNativeApi();
@@ -4025,6 +4321,26 @@ describe("ChatView transcript geometry (full app)", () => {
         Math.abs(scrollContainer.scrollTop - scrollTopBeforeTurnEnd),
         "scroll position jumped when the turn settled",
       ).toBeLessThanOrEqual(2);
+
+      const anchoredScrollHeight = scrollContainer.scrollHeight;
+      for (const enabled of [false, true]) {
+        const storedSettings = JSON.parse(localStorage.getItem("synara:app-settings:v1") ?? "{}");
+        localStorage.setItem(
+          "synara:app-settings:v1",
+          JSON.stringify({ ...storedSettings, anchorSentMessagesToTop: enabled }),
+        );
+        window.dispatchEvent(new StorageEvent("storage", { key: "synara:app-settings:v1" }));
+        await vi.waitFor(
+          () => {
+            expect(
+              scrollContainer.scrollHeight,
+              "disabling must release the reserve; re-enabling must not resurrect the old anchor",
+            ).toBeLessThan(anchoredScrollHeight - 50);
+          },
+          { timeout: 4_000, interval: 16 },
+        );
+        await waitForLayout();
+      }
     } finally {
       await mounted.cleanup();
       restoreNativeApi();
@@ -5674,7 +5990,19 @@ describe("ChatView transcript geometry (full app)", () => {
     }
   });
 
-  it("toggles plan mode with Shift+Tab only while the composer is focused", async () => {
+  it("cycles model effort with Shift+Tab in the existing model picker", async () => {
+    localStorage.setItem("synara:app-settings:v1", JSON.stringify({ composerEffortSlider: true }));
+    localStorage.setItem(
+      STARRED_MODELS_STORAGE_KEY,
+      JSON.stringify([
+        { provider: "codex", model: "gpt-5.4", effort: "medium", fastMode: true, thinking: null },
+      ]),
+    );
+    useComposerDraftStore.getState().setModelSelection(THREAD_ID, {
+      provider: "codex",
+      model: "gpt-5.4",
+      options: { reasoningEffort: "medium", fastMode: true },
+    });
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -5682,13 +6010,22 @@ describe("ChatView transcript geometry (full app)", () => {
         targetText: "hotkey target",
       }),
     });
+    const focusTarget = document.createElement("button");
+    focusTarget.type = "button";
+    focusTarget.textContent = "Focus sink";
+    document.body.appendChild(focusTarget);
 
     try {
+      await waitForServerConfigToApply();
       const readInteractionMode = () =>
         useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.interactionMode ?? "default";
+      const readModelSelection = () =>
+        useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelSelectionByProvider
+          .codex;
       expect(readInteractionMode()).toBe("default");
 
-      window.dispatchEvent(
+      focusTarget.focus();
+      focusTarget.dispatchEvent(
         new KeyboardEvent("keydown", {
           key: "Tab",
           shiftKey: true,
@@ -5699,7 +6036,143 @@ describe("ChatView transcript geometry (full app)", () => {
       await waitForLayout();
 
       expect(readInteractionMode()).toBe("default");
+      expect(readModelSelection()).toMatchObject({ options: { reasoningEffort: "medium" } });
+      expect(document.querySelector('[role="slider"][aria-label="Reasoning effort"]')).toBeNull();
 
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      const slider = page.getByRole("slider", { name: "Reasoning effort" });
+      const searchbox = page.getByRole("searchbox", { name: "Search models" });
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Tab",
+          shiftKey: true,
+          isComposing: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await waitForLayout();
+      expect(readModelSelection()).toMatchObject({ options: { reasoningEffort: "medium" } });
+      expect(document.querySelector('[role="slider"][aria-label="Reasoning effort"]')).toBeNull();
+      let shortcutTarget: HTMLElement = composerEditor;
+      for (const [effort, label] of [
+        ["high", "High"],
+        ["xhigh", "Extra High"],
+        ["low", "Low"],
+      ] as const) {
+        const event = new KeyboardEvent("keydown", {
+          key: "Tab",
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        });
+        shortcutTarget.dispatchEvent(event);
+        await expect.element(searchbox, { timeout: 1_000 }).toBeVisible();
+        await expect.element(page.getByRole("tablist", { name: "Model sources" })).toBeVisible();
+        await expect
+          .element(page.getByRole("tab", { name: "Starred", exact: true }))
+          .toHaveAttribute("aria-selected", "true");
+        await expect.element(page.getByRole("menuitem", { name: /^GPT-5\.4/u })).toBeVisible();
+        expect(
+          page.getByRole("dialog", { name: "Model effort", exact: true }).elements(),
+        ).toHaveLength(0);
+        await expect.element(slider).toHaveAttribute("aria-valuetext", label);
+        expect(event.defaultPrevented).toBe(true);
+        expect(readModelSelection()).toMatchObject({
+          provider: "codex",
+          model: "gpt-5.4",
+          options: { reasoningEffort: effort, fastMode: true },
+        });
+        expect(readInteractionMode()).toBe("default");
+        await vi.waitFor(() => expect(document.activeElement).toBe(searchbox.element()));
+        shortcutTarget = searchbox.element() as HTMLElement;
+      }
+
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('[data-slot="menu-popup"]')).toBeNull();
+        },
+        { timeout: 2_500, interval: 16 },
+      );
+      expect(readModelSelection()).toMatchObject({ options: { reasoningEffort: "low" } });
+      await vi.waitFor(() => expect(document.activeElement).toBe(composerEditor));
+    } finally {
+      focusTarget.remove();
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the model picker open for 1500ms after the latest Shift+Tab press", async () => {
+    localStorage.setItem("synara:app-settings:v1", JSON.stringify({ composerEffortSlider: true }));
+    useComposerDraftStore.getState().setModelSelection(THREAD_ID, {
+      provider: "codex",
+      model: "gpt-5.4",
+      options: { reasoningEffort: "low" },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-effort-preview-timer" as MessageId,
+        targetText: "effort preview timer",
+      }),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      let shortcutTarget: HTMLElement = composerEditor;
+      const pressShortcut = () =>
+        shortcutTarget.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Tab",
+            shiftKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      const slider = page.getByRole("slider", { name: "Reasoning effort" });
+      const searchbox = page.getByRole("searchbox", { name: "Search models" });
+      pressShortcut();
+      await expect.element(searchbox, { timeout: 1_000 }).toBeVisible();
+      await expect.element(slider).toHaveAttribute("aria-valuetext", "Medium");
+      await vi.waitFor(() => expect(document.activeElement).toBe(searchbox.element()));
+      shortcutTarget = searchbox.element() as HTMLElement;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 900));
+      pressShortcut();
+      await expect.element(slider).toHaveAttribute("aria-valuetext", "High");
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 900));
+      await expect.element(slider).toBeVisible();
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('[data-slot="menu-popup"]')).toBeNull();
+        },
+        { timeout: 1_500, interval: 16 },
+      );
+      await vi.waitFor(() => expect(document.activeElement).toBe(composerEditor));
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps a manually opened model picker open after the effort shortcut timer expires", async () => {
+    localStorage.setItem("synara:app-settings:v1", JSON.stringify({ composerEffortSlider: true }));
+    useComposerDraftStore.getState().setModelSelection(THREAD_ID, {
+      provider: "codex",
+      model: "gpt-5.4",
+      options: { reasoningEffort: "medium" },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-effort-preview-manual-picker" as MessageId,
+        targetText: "manual model picker",
+      }),
+    });
+
+    try {
+      await waitForServerConfigToApply();
       const composerEditor = await waitForComposerEditor();
       composerEditor.focus();
       composerEditor.dispatchEvent(
@@ -5710,18 +6183,42 @@ describe("ChatView transcript geometry (full app)", () => {
           cancelable: true,
         }),
       );
+      await expect
+        .element(page.getByRole("slider", { name: "Reasoning effort" }))
+        .toHaveAttribute("aria-valuetext", "High");
+      const searchbox = page.getByRole("searchbox", { name: "Search models" });
+      await expect.element(searchbox, { timeout: 1_000 }).toBeVisible();
+      await vi.waitFor(() => expect(document.activeElement).toBe(searchbox.element()));
+      dispatchComposerPickerShortcut(searchbox.element(), "m");
+      await waitForComposerPickerSurfaceOpen();
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 1_700));
+      await expect
+        .element(page.getByRole("searchbox", { name: "Search models" }), { timeout: 1_000 })
+        .toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
 
-      await vi.waitFor(
-        () => {
-          expect(readInteractionMode()).toBe("plan");
-          const planButton = Array.from(
-            document.querySelectorAll<HTMLButtonElement>("button"),
-          ).find((button) => button.textContent?.trim() === "Plan");
-          expect(planButton?.title).toContain("return to normal build mode");
-        },
-        { timeout: 8_000, interval: 16 },
-      );
+  it("keeps the existing slider menu open when choosing another model after Shift+Tab", async () => {
+    localStorage.setItem("synara:app-settings:v1", JSON.stringify({ composerEffortSlider: true }));
+    useComposerDraftStore.getState().setModelSelection(THREAD_ID, {
+      provider: "codex",
+      model: "gpt-5.4",
+      options: { reasoningEffort: "medium" },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-effort-shortcut-model-selection" as MessageId,
+        targetText: "choose model from effort shortcut",
+      }),
+    });
 
+    try {
+      await waitForServerConfigToApply();
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
       composerEditor.dispatchEvent(
         new KeyboardEvent("keydown", {
           key: "Tab",
@@ -5730,13 +6227,77 @@ describe("ChatView transcript geometry (full app)", () => {
           cancelable: true,
         }),
       );
+      const searchbox = page.getByRole("searchbox", { name: "Search models" });
+      const slider = page.getByRole("slider", { name: "Reasoning effort" });
+      await expect.element(searchbox, { timeout: 1_000 }).toBeVisible();
+      await expect.element(slider, { timeout: 1_000 }).toHaveAttribute("aria-valuetext", "High");
+      await page.getByRole("menuitem", { name: /^GPT-5\.5/u }).click();
+      await vi.waitFor(() => {
+        expect(
+          useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelSelectionByProvider
+            .codex,
+        ).toMatchObject({ model: "gpt-5.5" });
+      });
+      await waitForLayout();
+      await expect.element(searchbox, { timeout: 1_000 }).toBeVisible();
+      await expect.element(slider, { timeout: 1_000 }).toHaveAttribute("aria-valuetext", "High");
+      slider
+        .element()
+        .dispatchEvent(
+          new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }),
+        );
+      await expect.element(slider, { timeout: 1_000 }).toHaveAttribute("aria-valuetext", "Medium");
+      expect(
+        useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelSelectionByProvider
+          .codex,
+      ).toMatchObject({ model: "gpt-5.5", options: { reasoningEffort: "medium" } });
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 1_700));
+      await expect.element(searchbox, { timeout: 1_000 }).toBeVisible();
+      await expect.element(slider, { timeout: 1_000 }).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
 
-      await vi.waitFor(
-        () => {
-          expect(readInteractionMode()).toBe("default");
-        },
-        { timeout: 8_000, interval: 16 },
+  it("opens the existing model picker effort menu when its slider setting is disabled", async () => {
+    localStorage.setItem("synara:app-settings:v1", JSON.stringify({ composerEffortSlider: false }));
+    useComposerDraftStore.getState().setModelSelection(THREAD_ID, {
+      provider: "codex",
+      model: "gpt-5.4",
+      options: { reasoningEffort: "medium" },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-effort-shortcut-menu-setting" as MessageId,
+        targetText: "effort menu setting",
+      }),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Tab",
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
       );
+      expect(
+        useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelSelectionByProvider
+          .codex,
+      ).toMatchObject({ options: { reasoningEffort: "high" } });
+      await expect
+        .element(page.getByRole("searchbox", { name: "Search models" }), { timeout: 1_000 })
+        .toBeVisible();
+      await expect.element(page.getByRole("menuitem", { name: /^Effort.*High/u })).toBeVisible();
+      expect(page.getByRole("slider", { name: "Reasoning effort" }).elements()).toHaveLength(0);
+      expect(
+        page.getByRole("dialog", { name: "Model effort", exact: true }).elements(),
+      ).toHaveLength(0);
     } finally {
       await mounted.cleanup();
     }
@@ -5939,9 +6500,9 @@ describe("ChatView transcript geometry (full app)", () => {
             request._tag === WS_METHODS.providerListModels && request.provider === "claudeAgent",
         ),
       ).toEqual([]);
-      const refreshButton = page.getByRole("button", { name: "Refresh models", exact: true });
-      await expect.element(refreshButton).toBeEnabled();
-      await refreshButton.click();
+      expect(
+        page.getByRole("button", { name: "Refresh models", exact: true }).elements(),
+      ).toHaveLength(0);
       await vi.waitFor(() => {
         expect(wsRequests).toEqual(
           expect.arrayContaining([
@@ -5949,7 +6510,7 @@ describe("ChatView transcript geometry (full app)", () => {
               _tag: WS_METHODS.providerListModels,
               provider: "codex",
               instanceId: "codex",
-              refresh: "now",
+              refresh: "if-stale",
             }),
           ]),
         );

@@ -4,6 +4,7 @@ import type { ResolvedKeybindingRule, ServerKeybindingEdit } from "@synara/contr
 import { page, userEvent } from "vitest/browser";
 import { expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
+import { useState } from "react";
 
 import { buildShortcutEditorRows, type ShortcutEditorSource } from "~/keybindingEditor";
 import { resolveShortcutCommand } from "~/keybindings";
@@ -100,22 +101,31 @@ it("keeps a key that cannot be bound from being saved", async () => {
   expect(onApply).not.toHaveBeenCalled();
 });
 
-it("holds every shortcut back while it is recording", async () => {
+it("holds shortcuts while recording and resumes them after Escape cancels", async () => {
   const pressed = { key: "j", ctrlKey: true, metaKey: false, shiftKey: false, altKey: false };
   const options = { platform: SOURCE.platform };
   expect(resolveShortcutCommand(pressed, KEYBINDINGS, options)).toBe("terminal.toggle");
 
-  const screen = await render(
-    <ShortcutRecorderDialog
-      open
-      target={targetFor("terminal.toggle")}
-      onOpenChange={() => {}}
-      onApply={async () => true}
-    />,
-  );
+  const onApply = vi.fn(async () => true);
+  function RecorderHarness() {
+    const [open, setOpen] = useState(true);
+    return (
+      <ShortcutRecorderDialog
+        open={open}
+        target={targetFor("terminal.toggle")}
+        onOpenChange={setOpen}
+        onApply={onApply}
+      />
+    );
+  }
+  await render(<RecorderHarness />);
   await expect.element(page.getByRole("dialog")).toBeVisible();
   expect(resolveShortcutCommand(pressed, KEYBINDINGS, options)).toBeNull();
 
-  await screen.unmount();
+  await userEvent.keyboard("{Control>}k{/Control}");
+  await expect.element(page.getByRole("button", { name: "Save" })).toBeEnabled();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  expect(onApply).not.toHaveBeenCalled();
   expect(resolveShortcutCommand(pressed, KEYBINDINGS, options)).toBe("terminal.toggle");
 });

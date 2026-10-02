@@ -90,6 +90,9 @@ A turn is one cycle inside that task:
 A long task can contain many turns. Keep follow-ups connected to the same objective; create another
 task when the work needs a different owner, branch, or review boundary.
 
+Turn off **Settings → General → Move sent messages to top** to keep new messages at the bottom
+of the conversation and follow replies as they stream.
+
 For work that should continue across several turns, set a deliberate
 [thread goal](https://www.trysynara.com/docs/features/thread-goals). A goal can continue after a
 clean turn, but queued user work, approvals, questions, interruptions, failures, and pause rules
@@ -123,6 +126,10 @@ your projects: each project contributes the repository of its current branch rem
 GitHub remotes. Two projects on one repository share one list. Filters (kind, projects, state,
 involvement, labels) stay local and are remembered; GitHub is refreshed about every five minutes
 while the page is visible, on window focus, and with the refresh button.
+
+**Merged** narrows the loaded closed list to merged pull requests. Its counts reflect matching
+loaded rows, and its refresh uses the same closed cache. The first-50 cap applies to closed
+pull requests before this local filter, so it does not fetch a separate page of 50 merged items.
 
 Every item offers three actions:
 

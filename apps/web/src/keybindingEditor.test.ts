@@ -230,6 +230,15 @@ describe("evaluateRecordedShortcut", () => {
     ).toEqual({ status: "idle" });
   });
 
+  it("does not flag an unchanged shipped modifierless shortcut as invalid", () => {
+    const effort = rule("model.effort.next", "tab", { shiftKey: true }, id("composerFocus"));
+    const source = { ...sourceWith([effort]), defaultKeybindings: [effort] };
+
+    expect(record(source, "model.effort.next", effort.shortcut).recording).toEqual({
+      status: "idle",
+    });
+  });
+
   it("takes a shortcut from the command that holds it in an overlapping context", () => {
     const source = sourceWith();
     const { recording, replacing } = record(
