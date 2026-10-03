@@ -134,6 +134,7 @@ async function harness(
     await runtime.dispose();
     fs.rmSync(home, { recursive: true, force: true });
   });
+  await runtime.runPromise(TestClock.setTime(Date.now()).pipe(Effect.scoped));
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
   const repository = await runtime.runPromise(Effect.service(PullRequestAutoFixRepository));
   const snapshot = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
@@ -396,6 +397,65 @@ describe("Auto-fix service durable decisions", () => {
     expect(h.reads()).toBe(before);
     expect(await h.states()).toEqual([]);
   });
+  it.each(["same-head green", "propagated push", "no push"] as const)(
+    "waits for head propagation after a real fix turn, then handles %s",
+    async (outcome) => {
+      let observation: Observation = observed() as Observation;
+      const h = await harness({ state: row(), read: () => Effect.succeed(observation) });
+      await h.start();
+      await h.settled();
+      expect(await h.turns()).toHaveLength(1);
+      const fixing = (await h.states())[0]!;
+      const turnId = TurnId.makeUnsafe("completed-auto-fix");
+      for (const status of ["running", "ready"] as const) {
+        await h.runtime.runPromise(
+          h.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.makeUnsafe(`fix-${status}`),
+            threadId,
+            session: {
+              threadId,
+              status,
+              providerName: "codex",
+              runtimeMode: "approval-required",
+              activeTurnId: status === "running" ? turnId : null,
+              updatedAt: fixing.updatedAt,
+              lastError: null,
+            },
+            createdAt: fixing.updatedAt,
+          }),
+        );
+      }
+      observation = {
+        ...observation,
+        checks: [
+          {
+            name: "Lint",
+            status: outcome === "same-head green" ? "success" : "pending",
+            url: null,
+          },
+        ],
+      };
+      await h.tick();
+      expect((await h.states())[0]?.status).toBe(
+        outcome === "same-head green" ? "watching" : "fixing",
+      );
+      if (outcome === "propagated push") observation = { ...observation, headSha: "b".repeat(40) };
+      await h.tick();
+      expect(await h.turns()).toHaveLength(1);
+      expect(await h.states()).toEqual([
+        expect.objectContaining(
+          outcome === "no push"
+            ? { status: "paused", pauseReason: "no-push", attempts: 1 }
+            : {
+                status: "watching",
+                pauseReason: null,
+                attempts: outcome === "same-head green" ? 0 : 1,
+              },
+        ),
+      ]);
+    },
+  );
   it("persists a real accepted fix and does not dispatch it again after watcher restart", async () => {
     const h = await harness({ state: row() });
     await h.start();

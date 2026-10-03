@@ -18,7 +18,7 @@ import {
 } from "@synara/contracts";
 import { PULL_REQUEST_AUTO_FIX_BETA_FEATURE } from "@synara/shared/betaFeatures";
 import { normalizeGitHubPullRequestUrl } from "@synara/shared/githubRepository";
-import { Cause, Duration, Effect, Layer, Option, Schedule } from "effect";
+import { Cause, Clock, Duration, Effect, Layer, Option, Schedule } from "effect";
 import * as Semaphore from "effect/Semaphore";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts";
 import { ProviderService } from "../../provider/Services/ProviderService";
@@ -69,7 +69,7 @@ const fixCommandId = (state: PullRequestAutoFixState) =>
 const make = Effect.gen(function* () {
   const repository = yield* PullRequestAutoFixRepository;
   const receipts = yield* OrchestrationCommandReceiptRepository;
-  const provider = Option.getOrUndefined(yield* Effect.serviceOption(ProviderService));
+  const provider = yield* ProviderService;
   const mutations = yield* Semaphore.make(1);
   let lastRevision = 0;
   let intentRevision = 0;
@@ -78,7 +78,7 @@ const make = Effect.gen(function* () {
   const nextUpdatedAt = () =>
     new Date((lastRevision = Math.max(Date.now(), lastRevision + 1))).toISOString();
   const hasBackgroundWork = (threadId: ThreadId) =>
-    provider?.hasLiveRuntimeTasks?.({ threadId }) ?? Effect.succeed(false);
+    provider.hasLiveRuntimeTasks?.({ threadId }) ?? Effect.succeed(false);
   const snapshotQuery = yield* ProjectionSnapshotQuery;
   const gitCore = yield* GitCore;
   const gitHubCli = yield* GitHubCli;
@@ -347,6 +347,7 @@ const make = Effect.gen(function* () {
           return false;
         if ((freshThread ? yield* resolveThreadCwd(freshThread) : null) !== freshCwd) return false;
         const decision = decidePullRequestAutoFix({
+          now: yield* Clock.currentTimeMillis,
           state,
           thread: freshThread,
           checkout: freshCheckout,

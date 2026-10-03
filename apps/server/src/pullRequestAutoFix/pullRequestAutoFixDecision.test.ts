@@ -78,6 +78,7 @@ function decide(overrides: Partial<DecideInput> = {}) {
     thread: thread(),
     checkout: onBranch,
     pullRequest: pr(),
+    now: Date.parse(T1) + 60_001,
     ...overrides,
   });
 }
@@ -139,7 +140,11 @@ describe("decidePullRequestAutoFix", () => {
     expect(decide({ state: fixing, thread: thread({ latestTurn: finishedTurn(T0) }) })).toEqual({
       type: "wait",
     });
-    expect(decide({ state: fixing, thread: thread({ latestTurn: finishedTurn(T1) }) })).toEqual({
+    const finished = thread({ latestTurn: finishedTurn(T1) });
+    expect(decide({ state: fixing, thread: finished, now: Date.parse(T1) + 60_000 })).toEqual({
+      type: "wait",
+    });
+    expect(decide({ state: fixing, thread: finished })).toEqual({
       type: "pause",
       reason: "no-push",
     });

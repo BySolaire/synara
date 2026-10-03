@@ -85,6 +85,7 @@ export function decidePullRequestAutoFix(input: {
   readonly checkout: PullRequestAutoFixCheckout | null;
   readonly pullRequest: PullRequestAutoFixObservation;
   readonly maxAttempts?: number;
+  readonly now: number;
 }): PullRequestAutoFixDecision {
   const { state, thread, checkout, pullRequest } = input;
   const maxAttempts = input.maxAttempts ?? PULL_REQUEST_AUTO_FIX_MAX_ATTEMPTS;
@@ -100,30 +101,30 @@ export function decidePullRequestAutoFix(input: {
   }
 
   const pushedSinceLastFix = pullRequest.headSha !== state.lastHandledHeadSha;
-  if (state.status === "fixing" && !pushedSinceLastFix) {
-    // The fix turn ended without pushing a new commit: the agent decided the failure is not
-    // fixable from here (or failed). Pausing hands the decision back to the user.
-    return hasTurnFinishedSince(thread, state.updatedAt)
-      ? { type: "pause", reason: "no-push" }
-      : { type: "wait" };
-  }
-
   const checksSettled =
     pullRequest.checks.length > 0 &&
     pullRequest.checks.every((check) => check.status !== "pending");
-  if (!checksSettled) {
-    return state.status === "fixing"
-      ? { type: "update", status: "watching", attempts: state.attempts }
-      : { type: "wait" };
-  }
-
   const failed = pullRequest.checks.some(
     (check) => check.status === "failure" || check.status === "cancelled",
   );
-  if (!failed) {
-    // Green: the attempt budget is per failure streak, not per PR lifetime.
+  if (checksSettled && !failed) {
+    // A successful rerun can turn the same commit green without any push.
     return state.status === "fixing" || state.attempts > 0
       ? { type: "update", status: "watching", attempts: 0 }
+      : { type: "wait" };
+  }
+  if (state.status === "fixing" && !pushedSinceLastFix) {
+    // GitHub can briefly report the previous head after a successful push. Keep the
+    // attempt until one poll interval after completion; unresolved CI cannot wait forever.
+    if (!hasTurnFinishedSince(thread, state.updatedAt)) return { type: "wait" };
+    const completedAt = thread.latestTurn!.completedAt ?? thread.latestTurn!.requestedAt;
+    return input.now - Date.parse(completedAt) <= 60_000
+      ? { type: "wait" }
+      : { type: "pause", reason: "no-push" };
+  }
+  if (!checksSettled) {
+    return state.status === "fixing"
+      ? { type: "update", status: "watching", attempts: state.attempts }
       : { type: "wait" };
   }
   if (!pushedSinceLastFix) {

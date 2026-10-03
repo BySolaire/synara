@@ -124,8 +124,10 @@ using the chat's permissions. It waits for active turns, background tasks, appro
 questions, and Plan mode. Switching to another PR requires a clean working tree; the fix
 request names the canonical GitHub PR and asks the agent to verify its commit before
 editing and restore the original checkout afterwards. A failure streak allows three
-attempts. A turn that finishes without pushing, or an interrupted request with no accepted
-durable command receipt after restart, pauses the watch with a transcript notice. Turn it
+attempts. Green checks reset the attempt budget even after a rerun on the same commit.
+After a turn finishes, the watcher allows a minute for GitHub to report a pushed head.
+If the head still has not changed and CI is not green, or a request has no accepted durable
+command receipt after restart, it pauses with a transcript notice. Turn it
 on again to resume. Turning it off cancels pending watch decisions, and closed PRs stop
 being watched. Stable does not start this watcher or accept its RPC operations.
 
