@@ -142,6 +142,9 @@ import Migration0123 from "./Migrations/123_ScrubOrchestrationEventProviderOptio
 import Migration0124 from "./Migrations/124_ProjectionTurnsPendingMessageIndex.ts";
 import Migration0125 from "./Migrations/125_Todos.ts";
 import Migration0126 from "./Migrations/126_ProjectionThreadsSidechatContext.ts";
+import Migration0127 from "./Migrations/127_ProjectImportHistory.ts";
+import Migration0128 from "./Migrations/128_HubWork.ts";
+import Migration0129 from "./Migrations/129_ProjectionThreadsSnooze.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -284,6 +287,9 @@ export const migrationEntries = [
   [124, "ProjectionTurnsPendingMessageIndex", Migration0124],
   [125, "Todos", Migration0125],
   [126, "ProjectionThreadsSidechatContext", Migration0126],
+  [127, "ProjectImportHistory", Migration0127],
+  [128, "HubWork", Migration0128],
+  [129, "ProjectionThreadsSnooze", Migration0129],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

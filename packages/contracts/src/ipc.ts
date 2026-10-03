@@ -1,5 +1,7 @@
 import { Schema } from "effect";
 import type {
+  LoadProjectImportHistoryInput,
+  LoadProjectImportHistoryResult,
   ImportProjectInput,
   ImportProjectResult,
   ListProjectImportsInput,
@@ -293,6 +295,8 @@ import type {
   ServerStopLocalServerResult,
   ServerUpdateSettingsInput,
   ServerUpdateSettingsResult,
+  ServerEditKeybindingsInput,
+  ServerEditKeybindingsResult,
   ServerUpsertKeybindingInput,
   ServerUpsertKeybindingResult,
   ServerVoicePrewarmInput,
@@ -804,9 +808,17 @@ export interface DesktopComputerPreviewFrame {
 /** Sound the message trail follows: the Mac's audio output, the microphone, or both. */
 export type DesktopAudioLevelSource = "system" | "microphone" | "both";
 
+/** A Mac input device the message trail can listen to. `id` is the Core Audio UID. */
+export interface DesktopAudioInputDevice {
+  readonly id: string;
+  readonly name: string;
+  readonly bluetooth: boolean;
+  readonly default: boolean;
+}
+
 /**
  * Whether the desktop is reading audio levels. "unsupported" means this host
- * can never provide them (not macOS, or a Stable build); "unavailable" means
+ * can never provide them (not macOS); "unavailable" means
  * the reader failed, for example on macOS before 14.2 or without microphone
  * access.
  */
@@ -909,12 +921,18 @@ export interface DesktopBridge {
   };
   /**
    * Loudness of the Mac's audio output and/or the microphone, in 0..1, for the
-   * message trail. Beta desktop on macOS only; the main process refuses it
-   * elsewhere. Levels stream only while this window has a source set (`null`
-   * stops), and silence arrives once as 0.
+   * message trail. Desktop on macOS only, in Stable and Beta; the main process
+   * refuses it elsewhere. Levels stream only while this window has a source set
+   * (`null` stops), and silence arrives once as 0. `microphoneId` picks the
+   * input device by `DesktopAudioInputDevice.id`; omitted or `null` follows
+   * the Mac's default input.
    */
   audioLevel?: {
-    setSource: (source: DesktopAudioLevelSource | null) => Promise<DesktopAudioLevelStatus>;
+    setSource: (
+      source: DesktopAudioLevelSource | null,
+      microphoneId?: string | null,
+    ) => Promise<DesktopAudioLevelStatus>;
+    listMicrophones: () => Promise<readonly DesktopAudioInputDevice[]>;
     onLevel: (listener: (level: number) => void) => () => void;
   };
   onMenuAction: (listener: (action: string) => void) => () => void;
@@ -1201,6 +1219,7 @@ export interface NativeApi {
       input: ServerVoiceTranscriptionInput,
     ) => Promise<ServerVoiceTranscriptionResult>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
+    editKeybindings: (input: ServerEditKeybindingsInput) => Promise<ServerEditKeybindingsResult>;
   };
   stats: {
     getProfileStats: (input: StatsGetProfileStatsInput) => Promise<StatsGetProfileStatsResult>;
@@ -1234,6 +1253,9 @@ export interface NativeApi {
     ) => Promise<OrchestrationImportThreadResult>;
     listProjectImports: (input: ListProjectImportsInput) => Promise<ListProjectImportsResult>;
     importProject: (input: ImportProjectInput) => Promise<ImportProjectResult>;
+    loadProjectImportHistory: (
+      input: LoadProjectImportHistoryInput,
+    ) => Promise<LoadProjectImportHistoryResult>;
     regenerateThreadTitle: (
       input: OrchestrationRegenerateThreadTitleInput,
     ) => Promise<OrchestrationRegenerateThreadTitleResult>;

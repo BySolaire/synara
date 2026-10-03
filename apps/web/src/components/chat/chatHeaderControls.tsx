@@ -238,6 +238,7 @@ export function SurfaceTabChip({
   onSelect,
   onClose,
   onLabelDoubleClick,
+  onContextMenu,
   sortable,
 }: {
   icon: ReactNode;
@@ -256,6 +257,8 @@ export function SurfaceTabChip({
   onSelect?: (() => void) | undefined;
   onClose?: (() => void) | undefined;
   onLabelDoubleClick?: (() => void) | undefined;
+  /** Opens the tab's own menu at the pointer, in place of the default context menu. */
+  onContextMenu?: ((position: { x: number; y: number }) => void) | undefined;
   // Pointer activators only: dnd-kit's `attributes` would put a second role and tab stop
   // on a chip whose buttons already carry them, and advertise a keyboard drag.
   sortable?:
@@ -334,6 +337,14 @@ export function SurfaceTabChip({
               if (event.button !== 1) return;
               event.preventDefault();
               handleClose(event);
+            }
+          : undefined
+      }
+      onContextMenu={
+        onContextMenu
+          ? (event) => {
+              event.preventDefault();
+              onContextMenu({ x: event.clientX, y: event.clientY });
             }
           : undefined
       }
@@ -457,20 +468,20 @@ export function SurfaceTabStrip({
   }, [activeKey]);
 
   // Wheel mice only emit vertical deltas; route them sideways while the strip overflows.
-  // Registered natively because React's wheel listener is passive and cannot cancel the
-  // page scroll.
+  // The listener stays passive: a cancelable one makes every wheel event, sideways trackpad
+  // swipes included, wait for the main thread, so the strip stalls whenever a chat is
+  // rendering. Events that carry a sideways delta are a trackpad gesture the browser is
+  // already scrolling; adding their vertical drift on top would fight it.
   useEffect(() => {
     const strip = stripRef.current;
     if (!strip) {
       return;
     }
     const onWheel = (event: WheelEvent) => {
-      if (event.ctrlKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-      if (strip.scrollWidth <= strip.clientWidth) return;
-      event.preventDefault();
+      if (event.ctrlKey || event.deltaX !== 0 || event.deltaY === 0) return;
       strip.scrollLeft += event.deltaY;
     };
-    strip.addEventListener("wheel", onWheel, { passive: false });
+    strip.addEventListener("wheel", onWheel, { passive: true });
     return () => strip.removeEventListener("wheel", onWheel);
   }, []);
 
@@ -479,7 +490,7 @@ export function SurfaceTabStrip({
       ref={stripRef}
       {...props}
       className={cn(
-        "flex min-w-0 items-center gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:none] scroll-fade-x [--scroll-fade-size:1.5rem] [&::-webkit-scrollbar]:hidden",
+        "flex min-w-0 items-center gap-1 overflow-x-auto overflow-y-hidden overscroll-contain [scrollbar-width:none] scroll-fade-x [--scroll-fade-size:1.5rem] [&::-webkit-scrollbar]:hidden",
         dividers && "surface-tab-dividers",
         className,
       )}

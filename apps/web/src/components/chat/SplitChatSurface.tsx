@@ -14,7 +14,6 @@ import {
 import { Schema } from "effect";
 
 import { ProviderIcon } from "../ProviderIcon";
-import { ChatPaneDropOverlay } from "../chat-drop-overlay/ChatPaneDropOverlay";
 import { PanelStateMessage } from "./PanelStateMessage";
 import {
   ChatMountLoader,
@@ -42,7 +41,13 @@ import {
 import { splitViewPaneScopeId } from "../../lib/chatPaneScope";
 import { useRightDockStore } from "../../rightDockStore";
 import { resolveActiveSplitView } from "../../splitViewRoute";
-import { canSubdividePane, collectLeaves, findLeafPaneById } from "../../splitView.logic";
+import {
+  canSubdividePane,
+  collectLeaves,
+  findLeafPaneById,
+  layoutSplitPanes,
+  type PaneRect,
+} from "../../splitView.logic";
 import {
   resolveSplitViewFocusedThreadId,
   resolveSplitViewPaneIdForThread,
@@ -78,7 +83,7 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
-import { SidebarInset } from "../ui/sidebar";
+import { ChatPaneBody, KeptChatPane } from "./ChatPaneKeepAlive";
 import {
   CHAT_BACKGROUND_CLASS_NAME,
   CHAT_MAIN_CONTENT_SURFACE_CLASS_NAME,
@@ -303,6 +308,7 @@ function SplitPaneEmptyState(props: {
 function SplitDivider(props: {
   splitNodeId: PaneId;
   direction: SplitDirection;
+  ratio: number;
   onSetRatio: (nodeId: PaneId, ratio: number) => void;
 }) {
   const { onSetRatio, splitNodeId, direction } = props;
@@ -402,58 +408,66 @@ function SplitDivider(props: {
       data-split-node-id={splitNodeId}
       data-split-direction={direction}
       className={cn(
-        "relative z-10 shrink-0 bg-border/70",
+        "pointer-events-auto absolute z-10 bg-border/70",
         direction === "horizontal"
-          ? "w-px cursor-col-resize before:absolute before:inset-y-0 before:-left-1 before:w-2 before:bg-transparent"
-          : "h-px cursor-row-resize before:absolute before:inset-x-0 before:-top-1 before:h-2 before:bg-transparent",
+          ? "inset-y-0 w-px cursor-col-resize before:absolute before:inset-y-0 before:-left-1 before:w-2 before:bg-transparent"
+          : "inset-x-0 h-px cursor-row-resize before:absolute before:inset-x-0 before:-top-1 before:h-2 before:bg-transparent",
       )}
+      style={
+        direction === "horizontal"
+          ? { left: `${props.ratio * 100}%` }
+          : { top: `${props.ratio * 100}%` }
+      }
       onPointerDown={handlePointerDown}
     />
   );
 }
 
+function paneRectStyle(rect: PaneRect): CSSProperties {
+  return {
+    left: `${rect.left * 100}%`,
+    top: `${rect.top * 100}%`,
+    width: `${rect.width * 100}%`,
+    height: `${rect.height * 100}%`,
+  };
+}
+
+// Every leaf is a sibling keyed by its pane id and placed by absolute box, so adding, moving,
+// or closing a pane keeps the others mounted; nesting the tree would change their parent and
+// remount their chats (see layoutSplitPanes). Each split node gets a frame over its own box
+// that holds the divider, which reads that frame to turn a drag into a ratio.
 function PaneRenderer(props: {
   pane: Pane;
-  splitView: SplitView;
   renderLeaf: (input: { leaf: LeafPane }) => ReactNode;
   onSetRatio: (nodeId: PaneId, ratio: number) => void;
 }) {
-  if (props.pane.kind === "leaf") {
-    return <>{props.renderLeaf({ leaf: props.pane })}</>;
-  }
-  const node = props.pane;
-  const isRow = node.direction === "horizontal";
-  const firstBasis = `${node.ratio * 100}%`;
+  const layout = useMemo(() => layoutSplitPanes(props.pane), [props.pane]);
   return (
-    <div
-      data-split-container="true"
-      data-split-direction={node.direction}
-      className={cn("flex min-h-0 min-w-0 flex-1 overflow-hidden", isRow ? "flex-row" : "flex-col")}
-    >
-      <div
-        className="flex min-h-0 min-w-0 overflow-hidden"
-        style={{ flexBasis: firstBasis, flexGrow: 0, flexShrink: 1 }}
-      >
-        <PaneRenderer
-          pane={node.first}
-          splitView={props.splitView}
-          renderLeaf={props.renderLeaf}
-          onSetRatio={props.onSetRatio}
-        />
-      </div>
-      <SplitDivider
-        splitNodeId={node.id}
-        direction={node.direction}
-        onSetRatio={props.onSetRatio}
-      />
-      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
-        <PaneRenderer
-          pane={node.second}
-          splitView={props.splitView}
-          renderLeaf={props.renderLeaf}
-          onSetRatio={props.onSetRatio}
-        />
-      </div>
+    <div data-split-container="true" className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+      {layout.leaves.map(({ leaf, rect }) => (
+        <div
+          key={leaf.id}
+          className="absolute flex min-h-0 min-w-0 overflow-hidden"
+          style={{
+            ...paneRectStyle(rect),
+            // A leading edge inside the surface is a divider's line; leave it that pixel.
+            paddingLeft: rect.left > 0 ? 1 : 0,
+            paddingTop: rect.top > 0 ? 1 : 0,
+          }}
+        >
+          {props.renderLeaf({ leaf })}
+        </div>
+      ))}
+      {layout.splits.map(({ node, rect }) => (
+        <div key={node.id} className="pointer-events-none absolute" style={paneRectStyle(rect)}>
+          <SplitDivider
+            splitNodeId={node.id}
+            direction={node.direction}
+            ratio={node.ratio}
+            onSetRatio={props.onSetRatio}
+          />
+        </div>
+      ))}
     </div>
   );
 }
@@ -524,17 +538,23 @@ function SplitPaneSurface(props: {
       // unfocused panes stay undimmed so they never read as disabled.
       data-split-pane-focused={props.isFocused ? "true" : undefined}
     >
-      <ChatPaneDropOverlay
-        paneScopeId={paneScopeId}
-        canDropInDirection={props.canDropInDirection}
-        excludedThreadIds={props.excludedThreadIds}
-        onDrop={handleDrop}
-        className="flex min-h-0 min-w-0 flex-1"
-      >
-        <SidebarInset
-          className="min-h-0 min-w-0 overflow-hidden overscroll-y-none text-foreground"
-          surfaceClassName={CHAT_BACKGROUND_CLASS_NAME}
-          onMouseDown={props.onFocus}
+      {/* Kept alive across the swap with SingleChatSurface, and keyed by pane rather than by
+          thread so replacing a pane's thread still reuses its chat. */}
+      <KeptChatPane slotKey={paneScopeId} threadId={props.threadId}>
+        <ChatPaneBody
+          fileOpener={null}
+          dropOverlay={{
+            paneScopeId,
+            canDropInDirection: props.canDropInDirection,
+            excludedThreadIds: props.excludedThreadIds,
+            onDrop: handleDrop,
+            className: "flex min-h-0 min-w-0 flex-1",
+          }}
+          inset={{
+            className: "min-h-0 min-w-0 overflow-hidden overscroll-y-none text-foreground",
+            surfaceClassName: CHAT_BACKGROUND_CLASS_NAME,
+            onMouseDown: props.onFocus,
+          }}
         >
           {props.threadId ? (
             <DeferredChatView
@@ -570,8 +590,8 @@ function SplitPaneSurface(props: {
               onPopToSidebar={props.onPopFloatingBrowser}
             />
           ) : null}
-        </SidebarInset>
-      </ChatPaneDropOverlay>
+        </ChatPaneBody>
+      </KeptChatPane>
       <SplitPaneEmbeddedPanel
         splitViewId={props.splitView.id}
         paneId={props.paneId}
@@ -637,9 +657,9 @@ export function SplitChatSurface(props: { splitViewId: SplitViewId; routeThreadI
     const leaves = collectLeaves(activeSplitView.root);
     if (leaves.length <= 1) {
       const onlyThreadId = leaves[0]?.threadId ?? null;
-      removeSplitView(activeSplitView.id);
       const fallbackThreadId = onlyThreadId ?? props.routeThreadId;
       if (!fallbackThreadId) {
+        removeSplitView(activeSplitView.id);
         void handleNewChat();
         return;
       }
@@ -651,7 +671,7 @@ export function SplitChatSurface(props: { splitViewId: SplitViewId; routeThreadI
           ...stripDiffSearchParams(previous),
           splitViewId: undefined,
         }),
-      });
+      }).then(() => removeSplitView(activeSplitView.id));
       return;
     }
 
@@ -792,14 +812,15 @@ export function SplitChatSurface(props: { splitViewId: SplitViewId; routeThreadI
     });
 
     if (decision) {
-      removeSplitView(decision.splitViewIdToRemove);
+      // Keep the departing split until the route points at the retained thread;
+      // otherwise the single surface can claim a pane using the stale parameter.
       void navigate({
         to: "/$threadId",
         params: { threadId: decision.threadId },
         replace: true,
         search: () =>
           decision.panelState ? normalizeSingleSearchFromPane(decision.panelState) : {},
-      });
+      }).then(() => removeSplitView(decision.splitViewIdToRemove));
       return;
     }
 
@@ -814,12 +835,17 @@ export function SplitChatSurface(props: { splitViewId: SplitViewId; routeThreadI
       ? threads.find((thread) => thread.id === closingLeaf.threadId)
       : null;
 
-    if (closingThread?.sidechatSourceThreadId) {
+    // Returning to a source discards the entire split. Keep its tree intact until
+    // navigation commits, so publishing leftover leaves cannot race the exit.
+    if (
+      closingThread?.sidechatSourceThreadId ||
+      (closingLeaf?.threadId && closingLeaf.threadId !== activeSplitView.sourceThreadId)
+    ) {
       const decision = resolveSplitPaneCloseDecision({
         splitViewId: activeSplitView.id,
         sourceThreadId: activeSplitView.sourceThreadId,
         closingThreadId: closingLeaf?.threadId ?? null,
-        closingSidechatSourceThreadId: closingThread.sidechatSourceThreadId,
+        closingSidechatSourceThreadId: closingThread?.sidechatSourceThreadId ?? null,
         nextFocusedThreadId: null,
         nextLeafCount: 0,
       });
@@ -856,7 +882,6 @@ export function SplitChatSurface(props: { splitViewId: SplitViewId; routeThreadI
     });
 
     if (decision.kind === "single-thread") {
-      removeSplitView(decision.splitViewIdToRemove);
       void navigate({
         to: "/$threadId",
         params: { threadId: decision.threadId },
@@ -865,7 +890,7 @@ export function SplitChatSurface(props: { splitViewId: SplitViewId; routeThreadI
           ...stripDiffSearchParams(previous),
           splitViewId: undefined,
         }),
-      });
+      }).then(() => removeSplitView(decision.splitViewIdToRemove));
       return;
     }
 
@@ -1028,7 +1053,6 @@ export function SplitChatSurface(props: { splitViewId: SplitViewId; routeThreadI
       >
         <PaneRenderer
           pane={activeSplitView.root}
-          splitView={activeSplitView}
           renderLeaf={renderLeaf}
           onSetRatio={handleSetRatio}
         />

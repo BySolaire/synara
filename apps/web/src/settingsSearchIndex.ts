@@ -79,6 +79,13 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
       "After Archive's Undo period, remove a clean worktree only when its task has stopped and no other task uses it. Keep its branch for recovery. worktree archive cleanup disk space remove delete",
   },
   {
+    id: "general:move-sent-messages-to-top",
+    section: "general",
+    title: "Move sent messages to top",
+    keywords:
+      "Move each sent message to the top of the conversation. Turn off to keep it at the bottom and follow replies as they stream. chat enter send scroll anchor",
+  },
+  {
     id: "general:welcome-tour",
     section: "general",
     title: "Welcome tour",
@@ -365,6 +372,13 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
       "Choose whether messages sent during an active turn wait in the queue or steer the current run. Ctrl Cmd Enter opposite send",
   },
   {
+    id: "behavior:enter-while-dictating",
+    section: "behavior",
+    title: "Enter while dictating",
+    keywords:
+      "Choose what Enter does while a voice note is recording: stop and transcribe into the composer, or stop and send the message. voice dictation microphone transcribe",
+  },
+  {
     id: "behavior:assistant-output",
     section: "behavior",
     title: "Assistant output",
@@ -390,6 +404,13 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
     title: "Open pull requests and issues",
     keywords:
       "Choose where GitHub links in chats open. built-in review view in-app browser external browser destination pr issue",
+  },
+  {
+    id: "behavior:pull-request-diff-colors",
+    section: "behavior",
+    title: "Pull request diff colors",
+    keywords:
+      "Show additions in green and deletions in red in pull request summaries. pr diff stats green red",
   },
   {
     id: "behavior:include-fork-upstreams",
@@ -429,7 +450,7 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
     section: "shortcuts",
     title: "Keybindings",
     keywords:
-      "Every keyboard shortcut available in Synara, grouped by context. keybindings hotkeys key combo cmd ctrl reference",
+      "Every keyboard shortcut available in Synara: change, add, remove, or reset them. keybindings hotkeys key combo cmd ctrl customize rebind unassigned reset defaults",
     target: null,
   },
 
@@ -474,11 +495,18 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
       "Check Codex Claude and other provider CLIs for newer versions in the background. updates upgrade disable nags",
   },
   {
-    id: "providers:visible-providers",
+    id: "providers:enabled-providers",
     section: "providers",
-    title: "Visible providers",
+    title: "Enabled providers",
     keywords:
-      "Drag providers into your preferred picker order and hide the ones you don't use. visibility order",
+      "Allow background checks and new turns. Enabling a provider does not install it or sign it in. enable disable activity",
+  },
+  {
+    id: "providers:available-clis",
+    section: "providers",
+    title: "Available CLIs",
+    keywords:
+      "Show or hide installed providers in the picker and drag them into your preferred order. visible providers visibility order",
   },
   {
     id: "providers:provider-updates",

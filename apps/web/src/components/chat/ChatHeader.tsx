@@ -50,7 +50,6 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SidebarHeaderNavigationControls } from "../SidebarHeaderNavigationControls";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
 import { Toggle } from "../ui/toggle";
-import { useSidebar } from "../ui/sidebar";
 import { useAppSettings } from "../../appSettings";
 import { useStore } from "../../store";
 import { createSidebarDisplayThreadsSelector } from "../../storeSelectors";
@@ -61,7 +60,7 @@ import {
   useRecordOpenThreadTab,
 } from "../../hooks/useOpenThreadTabs";
 import { useOptimisticTabSelection } from "../../hooks/useOptimisticTabSelection";
-import { createOpenThreadTabCloseQueue } from "../../openThreadTabs.logic";
+import { closeOpenThreadTab, createOpenThreadTabCloseQueue } from "../../openThreadTabs.logic";
 import { useOpenThreadTabsStore } from "../../openThreadTabsStore";
 import { StatusDot } from "~/components/ui/status-chip";
 import { cn } from "~/lib/utils";
@@ -303,7 +302,7 @@ function EditorRailTabs(props: {
     // route has left it, so a guarded navigation keeps it in both places.
     void enqueueClose(() => {
       const openThreadIds = useOpenThreadTabsStore.getState().threadIds;
-      return {
+      return closeOpenThreadTab({
         tabs: chatTabs.filter((tab) => openThreadIds.includes(tab.threadId)),
         closedThreadId: threadId,
         activeThreadId: props.activeSurface === "chat" ? readRouteThreadId() : null,
@@ -317,7 +316,7 @@ function EditorRailTabs(props: {
             }
           : undefined,
         readRouteThreadId,
-      };
+      });
     });
   };
 
@@ -483,7 +482,6 @@ export function ChatHeader({
   const chatLayoutAction = chatLayoutActionProp ?? null;
   const changeThreadAction = changeThreadActionProp ?? null;
   const editorChatControls = editorChatControlsProp ?? null;
-  const { isMobile, state } = useSidebar();
   const headerRef = useRef<HTMLDivElement>(null);
   const [compact, setCompact] = useState(false);
   const {
@@ -609,10 +607,16 @@ export function ChatHeader({
         className={cn(
           "flex min-w-0 flex-1 items-center",
           editorChatControls ? "h-full overflow-visible" : "overflow-hidden",
-          !isMobile && state === "collapsed" ? "gap-4" : "gap-2 sm:gap-3",
+          "gap-2 sm:gap-3",
         )}
       >
-        {hideSidebarControls ? null : <SidebarHeaderNavigationControls />}
+        {hideSidebarControls ? null : (
+          // The extra end padding keeps the wider gap the collapsed header had (gap-4).
+          <SidebarHeaderNavigationControls
+            className="md:pe-1"
+            collapsedGapClassName="-me-2 sm:-me-3"
+          />
+        )}
         {threadTabs ? (
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {!minimalChrome && threadBreadcrumbs.length > 0 ? (
