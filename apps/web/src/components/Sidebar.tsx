@@ -32,6 +32,7 @@ import {
   TerminalIcon,
   Trash2,
   TriangleAlertIcon,
+  UpdateDownloadIcon,
   WorktreeIcon,
   XIcon,
 } from "~/lib/icons";
@@ -327,7 +328,6 @@ import {
   getArm64IntelBuildWarningDescription,
   getDesktopUpdateActionError,
   getDesktopUpdateAlreadyCurrentNotice,
-  getDesktopUpdateButtonPresentation,
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateDownloadPercent,
   getDesktopUpdateErrorSignature,
@@ -6289,27 +6289,13 @@ export default function Sidebar() {
   const desktopUpdateButtonAction = desktopUpdateState
     ? resolveDesktopUpdateButtonAction(desktopUpdateState)
     : "none";
-  const desktopUpdateButtonPresentation = getDesktopUpdateButtonPresentation(desktopUpdateState, {
-    installing: installingDesktopUpdate,
-  });
   const showArm64IntelBuildWarning =
     isElectron && shouldShowArm64IntelBuildWarning(desktopUpdateState);
   const arm64IntelBuildWarningDescription =
     desktopUpdateState && showArm64IntelBuildWarning
       ? getArm64IntelBuildWarningDescription(desktopUpdateState)
       : null;
-  const desktopUpdateButtonInteractivityClasses = desktopUpdateButtonDisabled
-    ? "cursor-not-allowed opacity-60"
-    : "hover:brightness-110";
-  const desktopUpdateButtonHasSecondaryLabel =
-    desktopUpdateButtonPresentation.secondaryLabel !== null;
   const desktopUpdateDownloadPercent = getDesktopUpdateDownloadPercent(desktopUpdateState);
-  const desktopUpdateRowButtonClasses = cn(
-    "inline-flex h-6 shrink-0 items-center justify-center gap-1.5 rounded-full px-2.5 font-system-ui text-ui-xs font-medium leading-none text-white transition-colors",
-    isBetaDesktopFlavor ? "bg-[image:var(--beta-gradient)]" : "bg-[var(--info)]",
-    desktopUpdateButtonHasSecondaryLabel && "min-h-6 py-0.5",
-    desktopUpdateButtonInteractivityClasses,
-  );
   const searchPaletteProjects = useMemo<SidebarSearchProject[]>(
     () =>
       projects.map((project) => ({
@@ -6932,6 +6918,45 @@ export default function Sidebar() {
   const projectContextMenuHasOpenServer =
     projectContextMenuServer !== null && firstLocalServerUrl(projectContextMenuServer) !== null;
 
+  // The rail keeps its box and hover; the filled disc inside carries the update colour, and
+  // swaps the download glyph for the percentage while the update downloads.
+  const desktopUpdateRailButton = showDesktopUpdateButton ? (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={desktopUpdateTooltip}
+            aria-disabled={desktopUpdateButtonDisabled || undefined}
+            disabled={desktopUpdateButtonDisabled}
+            className={cn(
+              "inline-flex items-center justify-center",
+              appRailButtonClassName(false),
+              desktopUpdateButtonDisabled && "cursor-not-allowed",
+            )}
+            onClick={handleDesktopUpdateButtonClick}
+          >
+            <span
+              className={cn(
+                "inline-flex size-7 items-center justify-center rounded-full text-white",
+                isBetaDesktopFlavor ? "bg-[image:var(--beta-gradient)]" : "bg-[var(--info)]",
+              )}
+            >
+              {desktopUpdateDownloadPercent !== null ? (
+                <span className="text-ui-2xs font-semibold leading-none tabular-nums">
+                  {desktopUpdateDownloadPercent}%
+                </span>
+              ) : (
+                <UpdateDownloadIcon className="size-4" />
+              )}
+            </span>
+          </button>
+        }
+      />
+      <TooltipPopup side="right">{desktopUpdateTooltip}</TooltipPopup>
+    </Tooltip>
+  ) : null;
+
   const appRailProps = {
     items: railItems,
     shortcuts: railShortcutItems,
@@ -6945,6 +6970,7 @@ export default function Sidebar() {
           }}
         />
         <SidebarHelpMenu inRail {...sidebarHelpMenuProps} />
+        {desktopUpdateRailButton}
       </>
     ),
     onContextMenu: handleNavContextMenu,
@@ -7444,7 +7470,7 @@ export default function Sidebar() {
           </SidebarContent>
 
           <SidebarFooter
-            // Help lives in the rail, so the footer only carries the update pill.
+            // Help and the update button live in the rail; the footer only carries debug tools.
             className="gap-2 border-sidebar-border border-t-0 p-2 pt-0 font-system-ui"
           >
             <SidebarMenu>
@@ -7455,41 +7481,6 @@ export default function Sidebar() {
                       <DebugFeatureFlagsMenu />
                     </Suspense>
                   ) : null}
-                  <div className="flex items-center gap-2">
-                    {showDesktopUpdateButton ? (
-                      <Tooltip>
-                        <TooltipTrigger
-                          render={
-                            <button
-                              type="button"
-                              aria-label={desktopUpdateTooltip}
-                              aria-disabled={desktopUpdateButtonDisabled || undefined}
-                              disabled={desktopUpdateButtonDisabled}
-                              className={desktopUpdateRowButtonClasses}
-                              onClick={handleDesktopUpdateButtonClick}
-                            >
-                              <span className="flex min-w-0 flex-1 items-center justify-between gap-1.5 leading-tight">
-                                <span className="min-w-0 truncate text-center">
-                                  {desktopUpdateButtonPresentation.label}
-                                </span>
-                                {desktopUpdateButtonPresentation.secondaryLabel ? (
-                                  <span className="min-w-0 truncate text-center text-ui-xs text-white/80">
-                                    {desktopUpdateButtonPresentation.secondaryLabel}
-                                  </span>
-                                ) : null}
-                              </span>
-                              {desktopUpdateDownloadPercent !== null ? (
-                                <span className="rounded-full bg-white/20 px-1.5 py-0.5 text-ui-2xs font-semibold tabular-nums text-white/95">
-                                  {desktopUpdateDownloadPercent}%
-                                </span>
-                              ) : null}
-                            </button>
-                          }
-                        />
-                        <TooltipPopup side="top">{desktopUpdateTooltip}</TooltipPopup>
-                      </Tooltip>
-                    ) : null}
-                  </div>
                 </div>
               </SidebarMenuItem>
             </SidebarMenu>
