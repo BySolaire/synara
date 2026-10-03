@@ -10,3 +10,9 @@ Browser screenshots at 1000 x 660 of the actual Synara transcript components, us
 | Before | After |
 | --- | --- |
 | ![Before](before.png) | ![After](after.png) |
+
+## Additional Claude status rows
+
+`claude-status.png` captures the real transcript components with controlled tool-summary, retry, and authentication-error events on implementation commit `b53e9a275`. It is fixture-based evidence, not a live provider session.
+
+![Tool summary, retry, and authentication](claude-status.png)
