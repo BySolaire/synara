@@ -32,7 +32,6 @@ import {
   TerminalIcon,
   Trash2,
   TriangleAlertIcon,
-  UpdateDownloadIcon,
   WorktreeIcon,
   XIcon,
 } from "~/lib/icons";
@@ -274,6 +273,7 @@ import {
   SidebarActivityView,
   SidebarSnoozedThreadsSection,
 } from "./SidebarActivityView";
+import { DesktopUpdateRailButton } from "./DesktopUpdateRailButton";
 import { SidebarIconButton, sidebarIconButtonSlotClass } from "./SidebarIconButton";
 import { SidebarLeadingIcon } from "./SidebarLeadingIcon";
 import { SidebarPrimaryAction } from "./SidebarPrimaryAction";
@@ -328,8 +328,6 @@ import {
   getArm64IntelBuildWarningDescription,
   getDesktopUpdateActionError,
   getDesktopUpdateAlreadyCurrentNotice,
-  getDesktopUpdateButtonTooltip,
-  getDesktopUpdateDownloadPercent,
   getDesktopUpdateErrorSignature,
   isDesktopUpdateButtonDisabled,
   isDesktopUpdateInstallInFlight,
@@ -6278,12 +6276,6 @@ export default function Sidebar() {
   const showDesktopUpdateButton = isElectron && shouldShowDesktopUpdateButton(desktopUpdateState);
   const isBetaDesktopFlavor = desktopUpdateState?.flavor === "beta";
 
-  const desktopUpdateTooltip = desktopUpdateState
-    ? getDesktopUpdateButtonTooltip(desktopUpdateState, {
-        installing: installingDesktopUpdate,
-      })
-    : "Update available";
-
   const desktopUpdateButtonDisabled =
     isDesktopUpdateButtonDisabled(desktopUpdateState) || installingDesktopUpdate;
   const desktopUpdateButtonAction = desktopUpdateState
@@ -6295,7 +6287,6 @@ export default function Sidebar() {
     desktopUpdateState && showArm64IntelBuildWarning
       ? getArm64IntelBuildWarningDescription(desktopUpdateState)
       : null;
-  const desktopUpdateDownloadPercent = getDesktopUpdateDownloadPercent(desktopUpdateState);
   const searchPaletteProjects = useMemo<SidebarSearchProject[]>(
     () =>
       projects.map((project) => ({
@@ -6918,45 +6909,6 @@ export default function Sidebar() {
   const projectContextMenuHasOpenServer =
     projectContextMenuServer !== null && firstLocalServerUrl(projectContextMenuServer) !== null;
 
-  // The rail keeps its box and hover; the filled disc inside carries the update colour, and
-  // swaps the download glyph for the percentage while the update downloads.
-  const desktopUpdateRailButton = showDesktopUpdateButton ? (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <button
-            type="button"
-            aria-label={desktopUpdateTooltip}
-            aria-disabled={desktopUpdateButtonDisabled || undefined}
-            disabled={desktopUpdateButtonDisabled}
-            className={cn(
-              "inline-flex items-center justify-center",
-              appRailButtonClassName(false),
-              desktopUpdateButtonDisabled && "cursor-not-allowed",
-            )}
-            onClick={handleDesktopUpdateButtonClick}
-          >
-            <span
-              className={cn(
-                "inline-flex size-7 items-center justify-center rounded-full text-white",
-                isBetaDesktopFlavor ? "bg-[image:var(--beta-gradient)]" : "bg-[var(--info)]",
-              )}
-            >
-              {desktopUpdateDownloadPercent !== null ? (
-                <span className="text-ui-2xs font-semibold leading-none tabular-nums">
-                  {desktopUpdateDownloadPercent}%
-                </span>
-              ) : (
-                <UpdateDownloadIcon className="size-4" />
-              )}
-            </span>
-          </button>
-        }
-      />
-      <TooltipPopup side="right">{desktopUpdateTooltip}</TooltipPopup>
-    </Tooltip>
-  ) : null;
-
   const appRailProps = {
     items: railItems,
     shortcuts: railShortcutItems,
@@ -6970,7 +6922,13 @@ export default function Sidebar() {
           }}
         />
         <SidebarHelpMenu inRail {...sidebarHelpMenuProps} />
-        {desktopUpdateRailButton}
+        {showDesktopUpdateButton && desktopUpdateState ? (
+          <DesktopUpdateRailButton
+            state={desktopUpdateState}
+            installing={installingDesktopUpdate}
+            onClick={handleDesktopUpdateButtonClick}
+          />
+        ) : null}
       </>
     ),
     onContextMenu: handleNavContextMenu,
