@@ -6156,6 +6156,20 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
           } as unknown as SDKMessage);
         }
 
+        for (const attempt of [1, 2]) {
+          harness.query.emit({
+            type: "system",
+            subtype: "api_retry",
+            attempt,
+            max_retries: 3,
+            retry_delay_ms: 1500,
+            error_status: 503,
+            error: "overloaded",
+            session_id: "sdk-session-retry",
+            uuid: `retry-${attempt}`,
+          } as SDKMessage);
+        }
+
         // Two distinct unknown subtypes, each emitted twice — each must surface
         // exactly one warning (per-kind de-dup), so two warnings in total.
         for (const subtype of ["future_unknown_subtype", "another_unknown_subtype"]) {
@@ -6185,7 +6199,11 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
           event.type === "runtime.warning" ? [event.payload.message] : [],
         );
 
-        assert.equal(warningMessages.length, 2);
+        assert.equal(warningMessages.length, 4);
+        assert.deepEqual(
+          warningMessages.filter((message) => message.includes("Request retry")),
+          ["Request retry 1/3 in 2s (HTTP 503).", "Request retry 2/3 in 2s (HTTP 503)."],
+        );
         assert.equal(
           warningMessages.some((message) => message.includes("thinking_tokens")),
           false,

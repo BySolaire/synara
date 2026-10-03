@@ -4769,6 +4769,17 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               },
             });
             return;
+          case "api_retry": {
+            const delaySeconds = Math.ceil(message.retry_delay_ms / 1000);
+            const reason =
+              message.error_status === null ? "connection error" : `HTTP ${message.error_status}`;
+            yield* emitRuntimeWarning(
+              context,
+              `Request retry ${message.attempt}/${message.max_retries} in ${delaySeconds}s (${reason}).`,
+              message,
+            );
+            return;
+          }
           case "permission_denied": {
             const reason =
               message.decision_reason?.trim() ||
@@ -5113,11 +5124,13 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         if (message.type === "tool_use_summary") {
+          const summary = message.summary.trim();
+          if (!summary) return;
           yield* offerRuntimeEvent(context, {
             ...base,
             type: "tool.summary",
             payload: {
-              summary: message.summary,
+              summary,
               ...(message.preceding_tool_use_ids.length > 0
                 ? { precedingToolUseIds: message.preceding_tool_use_ids }
                 : {}),

@@ -40,6 +40,10 @@ Claude's readable reasoning appears as compact progress text between tool action
 Open a reasoning row to read its available detail. This text comes from the running provider;
 Synara does not make another model request to generate it. Models that do not return readable
 reasoning continue to show their normal tool activity and assistant messages.
+Claude's tool-use summaries also appear as expandable text between tool groups. API retries
+show their attempt count and reported delay. Authentication displays its latest state, including
+between turns, with a Settings hint when attention is required; raw login output is not shown.
+These rows use events already supplied by the provider and do not trigger extra model requests.
 
 The Environment panel's Usage section shows enabled provider accounts, with a separate
 row and detail menu for each account. Providers with multiple accounts show account names

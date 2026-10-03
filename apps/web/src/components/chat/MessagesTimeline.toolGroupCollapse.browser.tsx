@@ -141,69 +141,75 @@ describe("MessagesTimeline tool group collapse", () => {
     document.body.innerHTML = "";
   });
 
-  it("keeps identified reasoning between tool runs and reveals its complete text on click", async () => {
-    const host = createTimelineHost();
-    const onOpenAgentActivity = vi.fn();
-    const reasoning: TimelineEntry = {
-      id: "reasoning-row",
-      kind: "work",
-      createdAt: "2026-03-17T19:12:28.000Z",
-      entry: {
+  it.each(["reasoning", "tool summary"] as const)(
+    "keeps %s between tool runs and reveals its complete text on click",
+    async (kind) => {
+      const host = createTimelineHost();
+      const onOpenAgentActivity = vi.fn();
+      const reasoning: TimelineEntry = {
         id: "reasoning-row",
+        kind: "work",
         createdAt: "2026-03-17T19:12:28.000Z",
-        label: "Reasoning trace",
-        tone: "tool",
-        toolCallId: "reasoning-item",
-        toolStatus: "running",
-        detail: "First inspect the provider boundary.\n\nThen verify cancellation.",
-      },
-    };
-    const screen = await render(
-      <ToolGroupCollapseTimeline
-        timelineEntries={[
-          ...SETTLED_COMMANDS.map((command, index) => commandEntry(`before-${index}`, command)),
-          reasoning,
-          ...LIVE_COMMANDS.map((command, index) => commandEntry(`after-${index}`, command)),
-        ]}
-        onOpenAgentActivity={onOpenAgentActivity}
-      />,
-      { container: host },
-    );
-
-    try {
-      await expect.poll(() => findSummaryTrigger("Ran 4 commands") !== null).toBe(true);
-      await expectLiveRunFoldedToNewestCall();
-      expect(isVisibleOutsideClosedDisclosure("Then verify cancellation.")).toBe(true);
-      expect(document.body.textContent).not.toContain("First inspect the provider boundary.");
-      const row = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
-        button.textContent?.includes("Then verify cancellation."),
-      );
-      expect(row).toBeDefined();
-      expect(row!.closest("[data-tool-group-live='true']")).toBeNull();
-      row!.click();
-      expect(onOpenAgentActivity).toHaveBeenCalledWith("reasoning-row");
-      const detail = deriveAgentActivityTimelineState([reasoning.entry]).detailById.get(
-        "reasoning-row",
-      )!;
-      await screen.rerender(
-        <AgentActivityDetailView
-          detail={detail}
-          chatFontSizePx={13}
-          markdownCwd={undefined}
-          onBack={() => {}}
-          onImageExpand={() => {}}
-          timestampFormat="locale"
+        entry: {
+          id: "reasoning-row",
+          createdAt: "2026-03-17T19:12:28.000Z",
+          label: kind === "reasoning" ? "Reasoning trace" : "Tool summary",
+          tone: kind === "reasoning" ? "tool" : "info",
+          ...(kind === "reasoning"
+            ? { toolCallId: "reasoning-item", toolStatus: "running" as const }
+            : { activityKind: "tool.summary" }),
+          detail: "First inspect the provider boundary.\n\nThen verify cancellation.",
+        },
+      };
+      const screen = await render(
+        <ToolGroupCollapseTimeline
+          timelineEntries={[
+            ...SETTLED_COMMANDS.map((command, index) => commandEntry(`before-${index}`, command)),
+            reasoning,
+            ...LIVE_COMMANDS.map((command, index) => commandEntry(`after-${index}`, command)),
+          ]}
+          onOpenAgentActivity={onOpenAgentActivity}
         />,
+        { container: host },
       );
-      await expect
-        .poll(() => host.textContent?.includes("First inspect the provider boundary."))
-        .toBe(true);
-      expect(host.textContent).toContain("Then verify cancellation.");
-    } finally {
-      await screen.unmount();
-      host.remove();
-    }
-  });
+
+      try {
+        await expect.poll(() => findSummaryTrigger("Ran 4 commands") !== null).toBe(true);
+        await expectLiveRunFoldedToNewestCall();
+        expect(isVisibleOutsideClosedDisclosure("Then verify cancellation.")).toBe(true);
+        if (kind === "reasoning") {
+          expect(document.body.textContent).not.toContain("First inspect the provider boundary.");
+        }
+        const row = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+          button.textContent?.includes("Then verify cancellation."),
+        );
+        expect(row).toBeDefined();
+        expect(row!.closest("[data-tool-group-live='true']")).toBeNull();
+        row!.click();
+        expect(onOpenAgentActivity).toHaveBeenCalledWith("reasoning-row");
+        const detail = deriveAgentActivityTimelineState([reasoning.entry]).detailById.get(
+          "reasoning-row",
+        )!;
+        await screen.rerender(
+          <AgentActivityDetailView
+            detail={detail}
+            chatFontSizePx={13}
+            markdownCwd={undefined}
+            onBack={() => {}}
+            onImageExpand={() => {}}
+            timestampFormat="locale"
+          />,
+        );
+        await expect
+          .poll(() => host.textContent?.includes("First inspect the provider boundary."))
+          .toBe(true);
+        expect(host.textContent).toContain("Then verify cancellation.");
+      } finally {
+        await screen.unmount();
+        host.remove();
+      }
+    },
+  );
 
   it("keeps the latest status above tool calls and reveals the other entries on expansion", async () => {
     const host = createTimelineHost();

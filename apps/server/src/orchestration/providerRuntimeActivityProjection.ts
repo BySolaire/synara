@@ -805,6 +805,7 @@ export function projectProviderRuntimeActivities(
       // line ("Moved to background: <work>"), not as a runtime warning.
       const detailSubtype = asString(asObject(event.payload.detail)?.subtype);
       const isBackgroundMove = detailSubtype === "background_tasks_changed";
+      const isClaudeRetry = event.provider === "claudeAgent" && detailSubtype === "api_retry";
       const isPiInfoNotification =
         event.provider === "pi" &&
         raw?.method === "extension/ui/notify" &&
@@ -821,17 +822,19 @@ export function projectProviderRuntimeActivities(
           kind: "runtime.warning",
           summary: isPiInfoNotification
             ? "Pi extension"
-            : isBackgroundMove
-              ? "Moved to background"
-              : event.provider === "opencode" &&
-                  (nativeType === "session.next.retried" || nativeType === "session.status")
-                ? "OpenCode retrying"
-                : "Runtime warning",
+            : isClaudeRetry
+              ? message
+              : isBackgroundMove
+                ? "Moved to background"
+                : event.provider === "opencode" &&
+                    (nativeType === "session.next.retried" || nativeType === "session.status")
+                  ? "OpenCode retrying"
+                  : "Runtime warning",
           // Keep the user-visible message even when raw detail is structured.
           payload: toActivityPayload({
             message,
             detail: message,
-            ...(isBackgroundMove
+            ...(isBackgroundMove || isClaudeRetry
               ? { nativeEventType: detailSubtype }
               : nativeType
                 ? { nativeEventType: nativeType }
@@ -1169,6 +1172,60 @@ export function projectProviderRuntimeActivities(
             ...(itemTitle ? { title: itemTitle } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...activityDataField(event.payload.data),
+          }),
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "tool.summary": {
+      if (event.provider !== "claudeAgent") return [];
+      const summary = nonEmptyTrimmed(event.payload.summary);
+      if (!summary) return [];
+      const precedingToolUseIds = event.payload.precedingToolUseIds;
+      const lastToolUseId = precedingToolUseIds?.at(-1);
+      return [
+        {
+          id: lastToolUseId
+            ? EventId.makeUnsafe(
+                `provider-tool-summary:${event.provider}:${event.threadId}:${event.turnId ?? "session"}:${lastToolUseId}`,
+              )
+            : event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "tool.summary",
+          summary: "Tool summary",
+          payload: toActivityPayload({
+            detail: truncateDetail(summary, MAX_REASONING_DETAIL_CHARS),
+            ...(precedingToolUseIds ? { data: { precedingToolUseIds } } : {}),
+          }),
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "auth.status": {
+      if (event.provider !== "claudeAgent") return [];
+      const failed = Boolean(nonEmptyTrimmed(event.payload.error));
+      if (!failed && event.payload.isAuthenticating === undefined) return [];
+      // Login output and errors can contain credentials or one-time URLs. Only
+      // project the state; raw provider output stays out of the transcript.
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: failed ? "error" : "info",
+          kind: "auth.status",
+          summary: failed
+            ? "Claude authentication needs attention."
+            : event.payload.isAuthenticating
+              ? "Claude authentication started"
+              : "Claude authentication finished",
+          payload: toActivityPayload({
+            provider: event.provider,
+            ...(failed ? { detail: "Check your Claude account in Settings." } : {}),
           }),
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
