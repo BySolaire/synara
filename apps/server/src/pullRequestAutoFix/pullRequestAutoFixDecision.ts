@@ -15,6 +15,7 @@ import {
 export interface PullRequestAutoFixObservation {
   readonly state: "open" | "closed" | "merged";
   readonly url: string;
+  readonly headBranch: string | null;
   readonly headSha: string | null;
   readonly checks: ReadonlyArray<GitPullRequestCheck>;
 }
@@ -36,8 +37,14 @@ export type PullRequestAutoFixDecision =
 
 type ThreadActivity = Pick<
   OrchestrationThreadShell,
-  "archivedAt" | "session" | "latestTurn" | "hasPendingApprovals" | "hasPendingUserInput"
+  "archivedAt" | "branch" | "session" | "latestTurn" | "hasPendingApprovals" | "hasPendingUserInput"
 >;
+
+// A chat working a stack moves between branches. A fix turn edits whatever is checked out,
+// so it only starts while the chat sits on the watched PR's branch.
+function isOnPullRequestBranch(thread: ThreadActivity, headBranch: string | null): boolean {
+  return thread.branch === null || headBranch === null || thread.branch === headBranch;
+}
 
 // A thread that is working or waiting on the user is left alone: fixes queue behind nothing
 // and never race an approval prompt.
@@ -74,7 +81,12 @@ export function decidePullRequestAutoFix(input: {
   if (pullRequest.state !== "open") {
     return { type: "disable", reason: "pull-request-closed" };
   }
-  if (state.status === "paused" || isThreadBusyForAutoFix(thread) || pullRequest.headSha === null) {
+  if (
+    state.status === "paused" ||
+    isThreadBusyForAutoFix(thread) ||
+    !isOnPullRequestBranch(thread, pullRequest.headBranch) ||
+    pullRequest.headSha === null
+  ) {
     return { type: "wait" };
   }
 

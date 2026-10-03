@@ -23,5 +23,6 @@ export {
   pullRequestCommentMutationOptions,
   pullRequestMutationKeys,
   pullRequestsForceRefreshMutationOptions,
+  pullRequestSetAutoFixMutationOptions,
   pullRequestSetPinnedMutationOptions,
 } from "./pullRequestMutationOptions";

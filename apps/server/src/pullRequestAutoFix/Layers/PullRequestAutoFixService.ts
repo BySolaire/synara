@@ -207,10 +207,17 @@ const make = Effect.gen(function* () {
         ? {
             state: observed.summary.state ?? "open",
             url: observed.summary.url,
+            headBranch: observed.summary.headRefName,
             headSha: observed.headSha,
             checks: observed.checks,
           }
-        : { state: "open", url: state.pullRequestUrl, headSha: null, checks: [] },
+        : {
+            state: "open",
+            url: state.pullRequestUrl,
+            headBranch: null,
+            headSha: null,
+            checks: [],
+          },
     });
 
     switch (decision.type) {

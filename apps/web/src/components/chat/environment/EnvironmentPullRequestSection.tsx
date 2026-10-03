@@ -76,11 +76,12 @@ import {
   PageTextIcon,
   RefreshCwIcon,
 } from "~/lib/icons";
+import { useAppSettings } from "~/appSettings";
 import {
   pullRequestActionMutationOptions,
   pullRequestAutoFixQueryOptions,
   pullRequestDetailQueryOptions,
-  pullRequestQueryKeys,
+  pullRequestSetAutoFixMutationOptions,
 } from "~/lib/pullRequestReactQuery";
 import { type PullRequestContextScope } from "~/lib/pullRequestContext";
 import { formatRelativeTime } from "~/lib/relativeTime";
@@ -359,23 +360,26 @@ export function EnvironmentPullRequestSection({
   const autoFixQuery = useQuery(
     pullRequestAutoFixQueryOptions(activeThreadId, enabled && autoFixAvailable),
   );
-  const autoFixMutation = useMutation({
-    mutationFn: (input: { threadId: ThreadId; enabled: boolean; pullRequestUrl: string }) =>
-      ensureNativeApi().pullRequests.setAutoFix(
-        input.enabled ? input : { threadId: input.threadId, enabled: false },
-      ),
-    onSuccess: (result, input) => {
-      queryClient.setQueryData(pullRequestQueryKeys.autoFix(input.threadId), result);
-    },
-    onError: (error: unknown) => {
-      toastManager.add({
-        type: "error",
-        timeout: DEFAULT_TOAST_TIMEOUT_MS,
-        title: "Couldn't update Auto-fix CI",
-        description: error instanceof Error ? error.message : undefined,
-      });
-    },
-  });
+  const { updateSettings } = useAppSettings();
+  const autoFixMutation = useMutation(pullRequestSetAutoFixMutationOptions(queryClient));
+  const setAutoFix = (threadId: ThreadId, enabled: boolean, pullRequestUrl: string) =>
+    autoFixMutation.mutate(
+      { threadId, enabled, pullRequestUrl },
+      {
+        // Once someone finds the checkbox, the composer hint has done its job.
+        onSuccess: () => {
+          if (enabled) updateSettings({ dismissedPullRequestAutoFixHint: true });
+        },
+        onError: (error) => {
+          toastManager.add({
+            type: "error",
+            timeout: DEFAULT_TOAST_TIMEOUT_MS,
+            title: "Couldn't update Auto-fix CI",
+            description: error instanceof Error ? error.message : undefined,
+          });
+        },
+      },
+    );
 
   if (!displayPr) {
     return null;
@@ -785,13 +789,7 @@ export function EnvironmentPullRequestSection({
                   closeOnClick={false}
                   title={autoFixDisplay.title}
                   data-testid="pr-auto-fix-ci"
-                  onCheckedChange={(checked) =>
-                    autoFixMutation.mutate({
-                      threadId: activeThreadId,
-                      enabled: checked,
-                      pullRequestUrl: displayPr.url,
-                    })
-                  }
+                  onCheckedChange={(checked) => setAutoFix(activeThreadId, checked, displayPr.url)}
                 >
                   <MenuRowLabel
                     icon={null}

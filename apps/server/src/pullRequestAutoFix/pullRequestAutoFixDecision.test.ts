@@ -37,6 +37,7 @@ type Thread = NonNullable<Parameters<typeof decidePullRequestAutoFix>[0]["thread
 function thread(overrides: Partial<Thread> = {}): Thread {
   return {
     archivedAt: null,
+    branch: "feature/a",
     session: null,
     latestTurn: null,
     hasPendingApprovals: false,
@@ -60,6 +61,7 @@ function pr(overrides: Partial<PullRequestAutoFixObservation> = {}): PullRequest
   return {
     state: "open",
     url: "https://github.com/o/r/pull/1",
+    headBranch: "feature/a",
     headSha: "sha-1",
     checks: [passing, failing],
     ...overrides,
@@ -164,6 +166,16 @@ describe("decidePullRequestAutoFix", () => {
         pullRequest: pr({ headSha: "sha-2" }),
       }),
     ).toEqual({ type: "fix", headSha: "sha-2", attempt: 2 });
+  });
+
+  it("waits while the chat is on another branch, e.g. the next PR in a stack", () => {
+    expect(
+      decidePullRequestAutoFix({
+        state: state(),
+        thread: thread({ branch: "feature/b" }),
+        pullRequest: pr(),
+      }),
+    ).toEqual({ type: "wait" });
   });
 
   it("turns itself off when the PR closes or the thread goes away", () => {

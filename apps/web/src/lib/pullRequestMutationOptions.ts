@@ -2,6 +2,7 @@ import type {
   GitHubInboxState,
   GitHubInboxSort,
   PullRequestActionInput,
+  PullRequestAutoFixSetInput,
   PullRequestCommentInput,
   PullRequestSetPinnedInput,
   PullRequestState,
@@ -415,6 +416,17 @@ export function pullRequestsForceRefreshMutationOptions(queryClient: QueryClient
     },
     onSettled: (_result, _error, _input, context) => {
       finishPullRequestRefresh(queryClient, context);
+    },
+  });
+}
+
+/** Auto-fix CI switch (Beta); shared by the PR menu checkbox and the composer hint. */
+export function pullRequestSetAutoFixMutationOptions(queryClient: QueryClient) {
+  return mutationOptions({
+    mutationFn: (input: PullRequestAutoFixSetInput) =>
+      ensureNativeApi().pullRequests.setAutoFix(input),
+    onSuccess: (result, input) => {
+      queryClient.setQueryData(pullRequestQueryKeys.autoFix(input.threadId), result);
     },
   });
 }
