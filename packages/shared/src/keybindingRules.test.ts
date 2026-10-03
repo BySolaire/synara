@@ -76,6 +76,12 @@ describe("keybindingRuleIdentity", () => {
     );
   });
 
+  it("treats every spelling of the unassigned marker as one rule", () => {
+    expect(keybindingRuleIdentity({ command: "terminal.toggle", key: "shift+unassigned" })).toBe(
+      keybindingRuleIdentity({ command: "terminal.toggle", key: "unassigned" }),
+    );
+  });
+
   it("is null for a rule that does not compile", () => {
     expect(keybindingRuleIdentity({ command: "chat.new", key: "mod+a+b" })).toBeNull();
     expect(keybindingRuleIdentity({ command: "chat.new", key: "mod+n", when: "a &&" })).toBeNull();

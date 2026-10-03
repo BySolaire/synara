@@ -419,6 +419,9 @@ export function applyKeybindingEdits(
         if (!isValidAssignableKeybindingRule(rule)) {
           return { _tag: "failure", reason: "invalid", detail: KEYBINDING_INVALID_RULE_DETAIL };
         }
+        if (replacing && compileResolvedKeybindingRule(replacing) === null) {
+          return { _tag: "failure", reason: "invalid", detail: KEYBINDING_INVALID_RULE_DETAIL };
+        }
         if (replacing && replacing.command !== rule.command) {
           return {
             _tag: "failure",
@@ -441,6 +444,9 @@ export function applyKeybindingEdits(
       }
       case "remove": {
         const { rule } = edit;
+        if (compileResolvedKeybindingRule(rule) === null) {
+          return { _tag: "failure", reason: "invalid", detail: KEYBINDING_INVALID_RULE_DETAIL };
+        }
         next = materializeShippedKeybindingRules(next, rule.command);
         if (!hasResolvedKeybindingRule(next, rule)) {
           return STALE_KEYBINDING_EDIT;
@@ -794,6 +800,39 @@ function migrateNumberedTerminalWorkspaceDefaults(rules: readonly KeybindingRule
   return { rules: next, migratedCount };
 }
 
+/**
+ * Every rewrite of an outdated shipped default, in the order the loader applies them.
+ * Writes go through it too, so a rule the editor records in an old default's shape
+ * (Cmd+K for sidebar search) is saved, cached, and reloaded the same way.
+ */
+function migrateOutdatedDefaultKeybindingRules(rules: readonly KeybindingRule[]): {
+  readonly rules: readonly KeybindingRule[];
+  readonly migratedCount: number;
+} {
+  let migratedCount = 0;
+  const perRule = rules.map((rule) => {
+    const migrated = migrateOutdatedDefaultKeybindingRule(rule);
+    if (migrated.migrated) migratedCount += 1;
+    return migrated.rule;
+  });
+  const sidebarSearch = migrateOutdatedSidebarSearchDefault(perRule);
+  const relaxed = relaxCreationCommandTerminalGuards(sidebarSearch.rules);
+  const numberedWorkspace = migrateNumberedTerminalWorkspaceDefaults(relaxed.rules);
+  // An expansion can recreate a rule the config already holds; keep its later copy.
+  const identities = numberedWorkspace.rules.map(keybindingRuleIdentity);
+  return {
+    rules: numberedWorkspace.rules.filter((_rule, index) => {
+      const identity = identities[index] ?? null;
+      return identity === null || !identities.includes(identity, index + 1);
+    }),
+    migratedCount:
+      migratedCount +
+      sidebarSearch.migratedCount +
+      relaxed.migratedCount +
+      numberedWorkspace.migratedCount,
+  };
+}
+
 function decodeKeybindingEntry(
   entry: unknown,
 ):
@@ -971,7 +1010,6 @@ const makeKeybindings = Effect.gen(function* () {
     const keybindings: KeybindingRule[] = [];
     const invalidEntries: InvalidKeybindingEntry[] = [];
     let migratedLegacyCommandCount = 0;
-    let migratedDefaultRuleCount = 0;
     for (const [index, entry] of decodedEntries.entries.entries()) {
       const command = readKeybindingEntryCommand(entry);
       if (command !== null && isRetiredLegacyKeybindingCommand(command)) {
@@ -994,28 +1032,16 @@ const makeKeybindings = Effect.gen(function* () {
         });
         continue;
       }
-      const migratedDefaultRule = migrateOutdatedDefaultKeybindingRule(decoded.rule);
-      if (migratedDefaultRule.migrated) {
-        migratedDefaultRuleCount += 1;
-      }
-      keybindings.push(migratedDefaultRule.rule);
+      keybindings.push(decoded.rule);
     }
 
-    const sidebarSearchMigration = migrateOutdatedSidebarSearchDefault(keybindings);
-    migratedDefaultRuleCount += sidebarSearchMigration.migratedCount;
-    const relaxed = relaxCreationCommandTerminalGuards(sidebarSearchMigration.rules);
-    migratedDefaultRuleCount += relaxed.migratedCount;
-    const numberedTerminalWorkspaceMigration = migrateNumberedTerminalWorkspaceDefaults(
-      relaxed.rules,
-    );
-    migratedDefaultRuleCount += numberedTerminalWorkspaceMigration.migratedCount;
-
+    const migrated = migrateOutdatedDefaultKeybindingRules(keybindings);
     return {
       _tag: "loaded",
-      rules: numberedTerminalWorkspaceMigration.rules,
+      rules: migrated.rules,
       invalidEntries,
       migratedLegacyCommandCount,
-      migratedDefaultRuleCount,
+      migratedDefaultRuleCount: migrated.migratedCount,
       migratedConfigShape: decodedEntries.migratedShape,
     };
   });
@@ -1150,8 +1176,9 @@ const makeKeybindings = Effect.gen(function* () {
           reason: "shortcut context already used by existing rule",
         });
       }
-      // Shipped commands stay live through the merge with the defaults, so a config at the
-      // cap simply goes without the backfill instead of losing its oldest rules.
+      // A config at the cap goes without the backfill instead of losing its oldest rules.
+      // The missing commands still get their defaults in the merged runtime list, unless
+      // that list is itself over the cap: it keeps the file's rules and drops defaults.
       const backfillExceedsLimit =
         missingDefaults.length > 0 &&
         exceedsKeybindingLimit(customConfig.length, customConfig.length + missingDefaults.length);
@@ -1276,8 +1303,9 @@ const makeKeybindings = Effect.gen(function* () {
 
   const persistCustomKeybindings = Effect.fn(function* (
     current: CustomKeybindingsConfig,
-    nextRules: readonly KeybindingRule[],
+    editedRules: readonly KeybindingRule[],
   ): Effect.fn.Return<ResolvedKeybindingsConfig, KeybindingsWriteError> {
+    const nextRules = migrateOutdatedDefaultKeybindingRules(editedRules).rules;
     if (exceedsKeybindingLimit(current.rules.length, nextRules.length)) {
       return yield* new KeybindingsEditRejectedError({
         reason: "limit",

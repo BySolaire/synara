@@ -195,6 +195,34 @@ it("does not call a refetch of the same bindings a change", async () => {
   await expect.element(page.getByRole("button", { name: "Save" })).toBeEnabled();
 });
 
+it("does not close a newer dialog when an earlier save finishes late", async () => {
+  let finishSave: (applied: boolean) => void = () => {};
+  const onApply = vi.fn(
+    () =>
+      new Promise<boolean>((resolve) => {
+        finishSave = resolve;
+      }),
+  );
+  const onOpenChange = vi.fn();
+  const props = { source: SOURCE, onOpenChange, onApply };
+  const first = targetFor("terminal.toggle");
+  const screen = await render(<ShortcutRecorderDialog open target={first} {...props} />);
+  await userEvent.keyboard("{Control>}k{/Control}");
+  await userEvent.keyboard("{Enter}");
+  await vi.waitFor(() => expect(onApply).toHaveBeenCalledTimes(1));
+
+  // Escape closed it mid-save, and the user opened another row.
+  await screen.rerender(<ShortcutRecorderDialog open={false} target={first} {...props} />);
+  await screen.rerender(
+    <ShortcutRecorderDialog open target={targetFor("sidebar.toggle")} {...props} />,
+  );
+  finishSave(true);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  expect(onOpenChange).not.toHaveBeenCalled();
+  await expect.element(page.getByRole("dialog")).toHaveTextContent("Toggle sidebar");
+});
+
 it("says which shortcut a reset takes back before doing it", async () => {
   // Toggle sidebar picked up Toggle terminal's shipped Ctrl+J, leaving it unassigned.
   const unassigned = modRule("terminal.toggle", "unassigned");

@@ -1471,6 +1471,48 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
     }).pipe(Effect.provide(makeKeybindingsLayer())),
   );
 
+  it.effect("saves a recorded rule in the shape the next load gives it", () =>
+    Effect.gen(function* () {
+      const { keybindingsConfigPath } = yield* ServerConfig;
+      yield* writeKeybindingsConfig(keybindingsConfigPath, [
+        { key: "cmd+k", command: "sidebar.search" },
+        { key: "ctrl+k", command: "sidebar.search", when: "!isMac" },
+      ]);
+      const keybindings = yield* Keybindings;
+
+      // Cmd+K recorded on macOS arrives as the old portable default, `mod+k`.
+      yield* keybindings.editKeybindings([
+        {
+          type: "set",
+          rule: { key: "mod+k", command: "sidebar.search" },
+          replacing: { key: "cmd+k", command: "sidebar.search" },
+        },
+      ]);
+      assert.deepEqual(yield* readKeybindingsConfig(keybindingsConfigPath), [
+        { key: "cmd+k", command: "sidebar.search" },
+        { key: "ctrl+k", command: "sidebar.search", when: "!isMac" },
+      ]);
+
+      // What was cached matches the file, so the next edit is not refused as stale.
+      yield* keybindings.editKeybindings([
+        { type: "remove", rule: { key: "cmd+k", command: "sidebar.search" } },
+      ]);
+      assert.deepEqual(yield* readKeybindingsConfig(keybindingsConfigPath), [
+        { key: "ctrl+k", command: "sidebar.search", when: "!isMac" },
+      ]);
+    }).pipe(Effect.provide(makeKeybindingsLayer())),
+  );
+
+  it("refuses an edit naming a rule that does not compile as invalid, not stale", () => {
+    const rules = [{ key: "mod+j", command: "terminal.toggle" }] as const;
+    const result = applyKeybindingEdits(rules, [
+      { type: "remove", rule: { key: "mod+j+k", command: "terminal.toggle" } },
+    ]);
+
+    assert.equal(result._tag, "failure");
+    assert.equal(result._tag === "failure" ? result.reason : null, "invalid");
+  });
+
   it.effect("edits the migrated rules the runtime shows", () =>
     Effect.gen(function* () {
       const { keybindingsConfigPath } = yield* ServerConfig;

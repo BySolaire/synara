@@ -300,7 +300,10 @@ export function encodeKeybindingRule(rule: ResolvedKeybindingRule): KeybindingRu
  * the config spelled them (`cmd` or `meta`, `esc` or `escape`, extra parentheses).
  */
 export function resolvedKeybindingRuleIdentity(rule: ResolvedKeybindingRule): string {
-  const key = encodeKeybindingShortcut(rule.shortcut) ?? rule.shortcut.key;
+  // Every spelling of the marker is the same rule, as encodeKeybindingRule writes it.
+  const key = isUnassignedKeybindingShortcut(rule.shortcut)
+    ? UNASSIGNED_KEYBINDING_KEY
+    : (encodeKeybindingShortcut(rule.shortcut) ?? rule.shortcut.key);
   const when = rule.whenAst ? encodeKeybindingWhen(rule.whenAst) : "";
   return `${rule.command}\u0000${key}\u0000${when}`;
 }

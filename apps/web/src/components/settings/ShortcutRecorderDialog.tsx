@@ -78,9 +78,11 @@ function typedCharacter(
   shortcut: KeybindingShortcut,
   platform: string,
 ): string | null {
+  // Shift alone changes "1" to "!" on every layout; that is not a character the
+  // chord takes away.
   const charChord = isMacPlatform(platform)
-    ? event.altKey && !event.metaKey && !event.ctrlKey
-    : event.altKey && event.ctrlKey && !event.metaKey;
+    ? event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey
+    : event.altKey && event.ctrlKey && !event.metaKey && !event.shiftKey;
   if (!charChord || !/^[\x21-\x7e]$/.test(event.key)) return null;
   return event.key.toLowerCase() === shortcut.key ? null : event.key;
 }
@@ -172,6 +174,7 @@ function ShortcutRecorder({
   );
   const [character, setCharacter] = useState<string | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const liveRef = useRef(true);
   const [heldModifiers, setHeldModifiers] = useState<ShortcutModifiers>(NO_MODIFIERS);
   // Held modifiers preview the next shortcut until a key lands; after that the recorded
   // keys stay up while the modifiers are still down.
@@ -190,6 +193,8 @@ function ShortcutRecorder({
   const canSave = recording.status === "ready" && !unsupportedKey && !isSaving && !stale;
   const canReset = !row.isDefault && source.defaultKeybindings !== undefined && !stale;
   const resetTakeovers = canReset ? shortcutResetTakeovers(source, row) : [];
+  // Only while there is still something to warn about: the bindings can change under it.
+  const confirmReset = confirmingReset && resetTakeovers.length > 0;
   const isPreviewing = hasModifier(heldModifiers) && !capturedSinceModifiers;
 
   const shortcutLabel = (shortcut: KeybindingShortcut) =>
@@ -201,19 +206,24 @@ function ShortcutRecorder({
     if (isSaving) return;
     setIsSaving(true);
     setFrozenView(view);
-    if (await onApply(edits)) {
+    const applied = await onApply(edits);
+    // Closed (Escape) or replaced by a newer open while the save was in flight: that
+    // dialog is no longer this one to close or update.
+    if (!liveRef.current) return;
+    if (applied) {
       onClose();
       return;
     }
     setFrozenView(null);
     setIsSaving(false);
+    setConfirmingReset(false);
   };
   const save = () => {
     if (recording.status === "ready" && canSave) void apply(shortcutSaveEdits(recording, binding));
   };
   // Resetting can take a shortcut from another command; say so once before doing it.
   const reset = () => {
-    if (resetTakeovers.length > 0 && !confirmingReset) {
+    if (resetTakeovers.length > 0 && !confirmReset) {
       setConfirmingReset(true);
       return;
     }
@@ -262,6 +272,13 @@ function ShortcutRecorder({
   });
 
   useEffect(() => {
+    liveRef.current = active;
+    return () => {
+      liveRef.current = false;
+    };
+  }, [active]);
+
+  useEffect(() => {
     if (!active) return;
     // While recording, no shortcut fires, so every key reaches the recorder.
     const resume = suspendShortcutDispatch();
@@ -289,7 +306,7 @@ function ShortcutRecorder({
         : null;
   const conflicts = recording.status === "ready" && !unsupportedKey ? recording.conflicts : [];
   const resetWarning =
-    confirmingReset && !problem
+    confirmReset && !problem
       ? `Resetting takes back ${joinPhrases(
           resetTakeovers.map(
             ({ rule, label }) => `${formatShortcutLabel(rule.shortcut, platform)} from “${label}”`,
@@ -402,9 +419,12 @@ function ShortcutRecorder({
             variant="ghost"
             className="-ml-2 font-normal"
             disabled={isSaving}
-            onClick={reset}
+            // A double click would land its second click on "Reset anyway".
+            onClick={(event) => {
+              if (event.detail <= 1) reset();
+            }}
           >
-            {confirmingReset ? "Reset anyway" : "Reset to default"}
+            {confirmReset ? "Reset anyway" : "Reset to default"}
           </Button>
         ) : null}
         <div className="flex-1" />
