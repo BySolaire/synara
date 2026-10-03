@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { SIDECHAT_INACTIVITY_EXPIRY_MS, createSidechatExpiryTimer } from "./sidechatExpiry";
+import {
+  SIDECHAT_INACTIVITY_EXPIRY_MS,
+  createSidechatExpiryTimer,
+  sidechatExpiryMs,
+} from "./sidechatExpiry";
 
 function makeClock(startAtMs = 0) {
   let nowMs = startAtMs;
@@ -50,6 +54,25 @@ describe("sidechat expiry timer", () => {
     expect(onExpire).not.toHaveBeenCalled();
 
     clock.advanceTo(1_000 + SIDECHAT_INACTIVITY_EXPIRY_MS);
+    expect(onExpire).toHaveBeenCalledWith("sidechat-1", 1_000);
+  });
+
+  it("re-times idle sidechats when the configured window changes", () => {
+    const clock = makeClock(1_000);
+    const onExpire = vi.fn();
+    const timer = createSidechatExpiryTimer({ ...clock, expiryMs: null, onExpire });
+    timer.restore({
+      threadId: "sidechat-1",
+      lastActivityAtMs: 1_000,
+      running: false,
+      expired: false,
+    });
+
+    clock.advanceTo(1_000 + 30 * SIDECHAT_INACTIVITY_EXPIRY_MS);
+    expect(onExpire).not.toHaveBeenCalled();
+
+    timer.setExpiryMs(sidechatExpiryMs("24h"));
+    clock.advanceTo(clock.now());
     expect(onExpire).toHaveBeenCalledWith("sidechat-1", 1_000);
   });
 
