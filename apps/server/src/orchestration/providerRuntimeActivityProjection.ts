@@ -21,6 +21,7 @@ import {
 
 const MAX_ACTIVITY_DATA_JSON_CHARS = 16_000;
 const MAX_ACTIVITY_DATA_STRING_CHARS = 2_000;
+const MAX_REASONING_DETAIL_CHARS = 8_000;
 const MAX_ACTIVITY_DATA_ARRAY_ITEMS = 24;
 const MAX_ACTIVITY_DATA_OBJECT_KEYS = 64;
 const ACTIVITY_DATA_TRUNCATION_MARKER = "__synaraTruncated";
@@ -656,13 +657,13 @@ export function projectProviderRuntimeActivities(
     typeof sessionSequence === "number" && Number.isInteger(sessionSequence) && sessionSequence >= 0
       ? { sequence: sessionSequence }
       : {};
-  // Codex and Antigravity only render completed reasoning items with a readable summary.
-  // Empty starts/completions are private/encrypted reasoning boundaries, not
-  // transcript rows. Waiting for the authoritative completion also avoids
-  // per-token activity writes and transcript height churn.
+  // Claude previews are coalesced by ingestion; other providers publish their
+  // readable reasoning only at completion. Empty/encrypted boundaries stay hidden.
   if (
-    (event.provider === "codex" || event.provider === "antigravity") &&
-    event.type === "item.completed" &&
+    (((event.provider === "codex" || event.provider === "antigravity") &&
+      event.type === "item.completed") ||
+      (event.provider === "claudeAgent" &&
+        (event.type === "item.updated" || event.type === "item.completed"))) &&
     event.payload.itemType === "reasoning" &&
     event.itemId !== undefined &&
     readableReasoningDetail(event.payload.detail) !== undefined
@@ -678,7 +679,12 @@ export function projectProviderRuntimeActivities(
         summary: "Reasoning trace",
         payload: toActivityPayload({
           ...(event.payload.status ? { status: event.payload.status } : {}),
-          detail: truncateDetail(reasoningDetail, MAX_ACTIVITY_DATA_STRING_CHARS),
+          detail: truncateDetail(
+            reasoningDetail,
+            event.provider === "claudeAgent"
+              ? MAX_REASONING_DETAIL_CHARS
+              : MAX_ACTIVITY_DATA_STRING_CHARS,
+          ),
           data: { toolCallId: reasoningItemId },
         }),
         turnId: toTurnId(event.turnId) ?? null,
@@ -1418,6 +1424,13 @@ export function providerActivityUpdateDedupeKey(
 
   const payload = asObject(activity.payload);
   if (activity.kind === "task.progress") {
+    if (
+      (event.type === "item.updated" || event.type === "item.completed") &&
+      event.payload.itemType === "reasoning" &&
+      event.itemId
+    ) {
+      return `${prefix}:reasoning:${event.itemId}`;
+    }
     const taskId = asString(payload?.taskId);
     return taskId ? `${prefix}:${taskId}` : undefined;
   }

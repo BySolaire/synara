@@ -36,6 +36,11 @@ Synara provides the shared operating surface around each provider:
 - Provider handoffs
 - Usage information where the provider exposes it
 
+Claude's readable reasoning appears as compact progress text between tool actions while it works.
+Open a reasoning row to read its available detail. This text comes from the running provider;
+Synara does not make another model request to generate it. Models that do not return readable
+reasoning continue to show their normal tool activity and assistant messages.
+
 ## What remains provider-owned
 
 The provider still controls:
