@@ -256,10 +256,6 @@
       "types": "./src/path.ts",
       "import": "./src/path.ts"
     },
-    "./pullRequestFixPrompts": {
-      "types": "./src/pullRequestFixPrompts.ts",
-      "import": "./src/pullRequestFixPrompts.ts"
-    },
     "./text": {
       "types": "./src/text.ts",
       "import": "./src/text.ts"

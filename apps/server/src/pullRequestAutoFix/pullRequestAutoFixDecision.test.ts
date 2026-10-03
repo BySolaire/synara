@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from "vitest";
 
 import {
+  buildPullRequestAutoFixPrompt,
   decidePullRequestAutoFix,
   type PullRequestAutoFixObservation,
 } from "./pullRequestAutoFixDecision";
@@ -69,7 +70,7 @@ describe("decidePullRequestAutoFix", () => {
   it("starts the first fix when checks settle red on a new commit", () => {
     expect(
       decidePullRequestAutoFix({ state: state(), thread: thread(), pullRequest: pr() }),
-    ).toEqual({ type: "fix", headSha: "sha-1", attempt: 1, failingChecks: [failing] });
+    ).toEqual({ type: "fix", headSha: "sha-1", attempt: 1 });
   });
 
   it("waits while checks are still running or none were reported", () => {
@@ -162,7 +163,7 @@ describe("decidePullRequestAutoFix", () => {
         thread: thread(),
         pullRequest: pr({ headSha: "sha-2" }),
       }),
-    ).toEqual({ type: "fix", headSha: "sha-2", attempt: 2, failingChecks: [failing] });
+    ).toEqual({ type: "fix", headSha: "sha-2", attempt: 2 });
   });
 
   it("turns itself off when the PR closes or the thread goes away", () => {
@@ -184,5 +185,21 @@ describe("decidePullRequestAutoFix", () => {
         pullRequest: pr(),
       }),
     ).toEqual({ type: "disable", reason: "thread-unavailable" });
+  });
+});
+
+describe("buildPullRequestAutoFixPrompt", () => {
+  it("stays two lines: the PR, commit and attempt, then how to act", () => {
+    expect(
+      buildPullRequestAutoFixPrompt({
+        prNumber: 7,
+        prUrl: "https://github.com/o/r/pull/7",
+        headSha: "abc1234def",
+        attempt: 2,
+      }),
+    ).toBe(
+      "Auto-fix CI (attempt 2/3): CI failed on PR #7 (https://github.com/o/r/pull/7) at abc1234.\n" +
+        "Check `gh pr checks 7`, fix the cause, and push only a verified fix. If the failure isn't caused by this PR, say why and don't push.",
+    );
   });
 });

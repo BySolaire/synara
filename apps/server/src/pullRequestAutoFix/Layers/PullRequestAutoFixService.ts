@@ -15,7 +15,6 @@ import {
   type ThreadId,
 } from "@synara/contracts";
 import { PULL_REQUEST_AUTO_FIX_BETA_FEATURE } from "@synara/shared/betaFeatures";
-import { buildAutoFixFailingChecksPrompt } from "@synara/shared/pullRequestFixPrompts";
 import { Cause, Duration, Effect, Layer, Option, Schedule } from "effect";
 
 import { isServerBetaFeatureEnabled } from "../../betaFeatureGate.ts";
@@ -25,6 +24,7 @@ import { OrchestrationEngineService } from "../../orchestration/Services/Orchest
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { PullRequestAutoFixRepository } from "../../persistence/Services/PullRequestAutoFixRepository.ts";
 import {
+  buildPullRequestAutoFixPrompt,
   decidePullRequestAutoFix,
   isThreadBusyForAutoFix,
   type PullRequestAutoFixDecision,
@@ -146,7 +146,6 @@ const make = Effect.gen(function* () {
     readonly thread: OrchestrationThreadShell;
     readonly decision: Extract<PullRequestAutoFixDecision, { type: "fix" }>;
     readonly prNumber: number;
-    readonly headBranch: string;
   }) {
     const { state, decision } = input;
     const now = new Date().toISOString();
@@ -168,14 +167,11 @@ const make = Effect.gen(function* () {
         message: {
           messageId: MessageId.makeUnsafe(autoFixId(state.threadId, "message")),
           role: "user",
-          text: buildAutoFixFailingChecksPrompt({
+          text: buildPullRequestAutoFixPrompt({
             prNumber: input.prNumber,
             prUrl: state.pullRequestUrl,
-            headBranch: input.headBranch,
             headSha: decision.headSha,
-            checks: decision.failingChecks,
             attempt: decision.attempt,
-            maxAttempts: PULL_REQUEST_AUTO_FIX_MAX_ATTEMPTS,
           }),
           attachments: [],
         },
@@ -256,7 +252,6 @@ const make = Effect.gen(function* () {
           thread,
           decision,
           prNumber: observed.summary.number,
-          headBranch: observed.summary.headRefName,
         });
         return;
     }

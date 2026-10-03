@@ -1,6 +1,7 @@
 // FILE: pullRequestAutoFixDecision.ts
-// Purpose: The Auto-fix CI watcher's per-poll decision for one thread, as a pure function:
-//          given the stored state, the thread, and the PR's checks, what to do next.
+// Purpose: The Auto-fix CI watcher's per-poll decision for one thread, as a pure function
+//          (given the stored state, the thread, and the PR's checks, what to do next), and
+//          the message that starts a fix turn.
 // Layer: Server domain logic (no Effect, no I/O)
 
 import {
@@ -10,7 +11,6 @@ import {
   type PullRequestAutoFixPauseReason,
   type PullRequestAutoFixState,
 } from "@synara/contracts";
-import { failingPullRequestChecks } from "@synara/shared/pullRequestFixPrompts";
 
 export interface PullRequestAutoFixObservation {
   readonly state: "open" | "closed" | "merged";
@@ -32,12 +32,7 @@ export type PullRequestAutoFixDecision =
       readonly attempts: number;
     }
   /** Start fix turn number `attempt` for the failing checks on `headSha`. */
-  | {
-      readonly type: "fix";
-      readonly headSha: string;
-      readonly attempt: number;
-      readonly failingChecks: ReadonlyArray<GitPullRequestCheck>;
-    };
+  | { readonly type: "fix"; readonly headSha: string; readonly attempt: number };
 
 type ThreadActivity = Pick<
   OrchestrationThreadShell,
@@ -101,8 +96,10 @@ export function decidePullRequestAutoFix(input: {
       : { type: "wait" };
   }
 
-  const failingChecks = failingPullRequestChecks(pullRequest.checks);
-  if (failingChecks.length === 0) {
+  const failed = pullRequest.checks.some(
+    (check) => check.status === "failure" || check.status === "cancelled",
+  );
+  if (!failed) {
     // Green: the attempt budget is per failure streak, not per PR lifetime.
     return state.status === "fixing" || state.attempts > 0
       ? { type: "update", status: "watching", attempts: 0 }
@@ -114,10 +111,19 @@ export function decidePullRequestAutoFix(input: {
   if (state.attempts >= maxAttempts) {
     return { type: "pause", reason: "attempt-limit" };
   }
-  return {
-    type: "fix",
-    headSha: pullRequest.headSha,
-    attempt: state.attempts + 1,
-    failingChecks,
-  };
+  return { type: "fix", headSha: pullRequest.headSha, attempt: state.attempts + 1 };
+}
+
+// Deliberately short: the agent reads the failures itself with `gh`, so the message only
+// names the PR and commit and says when to push or stop.
+export function buildPullRequestAutoFixPrompt(input: {
+  readonly prNumber: number;
+  readonly prUrl: string;
+  readonly headSha: string;
+  readonly attempt: number;
+}): string {
+  return [
+    `Auto-fix CI (attempt ${input.attempt}/${PULL_REQUEST_AUTO_FIX_MAX_ATTEMPTS}): CI failed on PR #${input.prNumber} (${input.prUrl}) at ${input.headSha.slice(0, 7)}.`,
+    `Check \`gh pr checks ${input.prNumber}\`, fix the cause, and push only a verified fix. If the failure isn't caused by this PR, say why and don't push.`,
+  ].join("\n");
 }
