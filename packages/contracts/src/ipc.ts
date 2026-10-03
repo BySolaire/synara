@@ -176,6 +176,11 @@ import type {
   PullRequestSetPinnedResult,
 } from "./pullRequests";
 import type {
+  PullRequestAutoFixGetInput,
+  PullRequestAutoFixResult,
+  PullRequestAutoFixSetInput,
+} from "./pullRequestAutoFix";
+import type {
   GitHubInboxListInput,
   GitHubInboxListResult,
   GitHubIssueCommentInput,
@@ -1141,6 +1146,8 @@ export interface NativeApi {
     action: (input: PullRequestActionInput) => Promise<PullRequestActionResult>;
     comment: (input: PullRequestCommentInput) => Promise<PullRequestActionResult>;
     setPinned: (input: PullRequestSetPinnedInput) => Promise<PullRequestSetPinnedResult>;
+    getAutoFix: (input: PullRequestAutoFixGetInput) => Promise<PullRequestAutoFixResult>;
+    setAutoFix: (input: PullRequestAutoFixSetInput) => Promise<PullRequestAutoFixResult>;
   };
   contextMenu: {
     show: <T extends string>(

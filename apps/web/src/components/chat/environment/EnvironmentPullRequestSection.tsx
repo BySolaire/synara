@@ -2,8 +2,9 @@
 // Purpose: "Pull request" section of the Environment panel — one row (state glyph, title,
 //          live check status) that opens the PR action menu: view / code changes, the
 //          checks and review-comment lists, Repair (hands comments, failing checks, or
-//          conflicts to the composer as context cards), Merge, Status (draft / ready /
-//          close / reopen), and Add to chat. Copy link and Open in GitHub ride on the View PR row.
+//          conflicts to the composer as context cards), Auto-fix CI (Beta), Merge, Status
+//          (draft / ready / close / reopen), and Add to chat. Copy link and Open in GitHub
+//          ride on the View PR row.
 // Layer: Environment panel section
 // Depends on: git status/PR-snapshot React Query helpers, the pull request action mutation,
 //             and the shared Environment row skin.
@@ -26,6 +27,7 @@ import { ComposerPickerMenuPopup, ComposerPickerMenuSubPopup } from "../Composer
 import { MENU_ICON_CLASS_NAME } from "../composerPickerStyles";
 import {
   Menu,
+  MenuCheckboxItem,
   MenuItem,
   MenuRadioGroup,
   MenuRadioItem,
@@ -53,6 +55,7 @@ import {
   assessPullRequestStack,
   pullRequestMergeBlocker,
 } from "../../pullRequest/pullRequestStack.logic";
+import { PULL_REQUEST_AUTO_FIX_ON } from "~/betaFeatures";
 import { addChatPullRequestContext } from "~/lib/chatReferences";
 import { gitPullRequestSnapshotQueryOptions, gitStatusQueryOptions } from "~/lib/gitReactQuery";
 import {
@@ -75,7 +78,9 @@ import {
 } from "~/lib/icons";
 import {
   pullRequestActionMutationOptions,
+  pullRequestAutoFixQueryOptions,
   pullRequestDetailQueryOptions,
+  pullRequestQueryKeys,
 } from "~/lib/pullRequestReactQuery";
 import { type PullRequestContextScope } from "~/lib/pullRequestContext";
 import { formatRelativeTime } from "~/lib/relativeTime";
@@ -91,6 +96,7 @@ import {
 } from "./EnvironmentRow";
 import {
   buildPullRequestContextCard,
+  describePullRequestAutoFix,
   describePullRequestComment,
   PULL_REQUEST_CHECK_STATUS_LABELS,
   PULL_REQUEST_CHECKS_TONE_TEXT_CLASS,
@@ -348,11 +354,35 @@ export function EnvironmentPullRequestSection({
   });
   const actionMutation = useMutation(pullRequestActionMutationOptions(queryClient));
 
+  const autoFixAvailable =
+    PULL_REQUEST_AUTO_FIX_ON && activeThreadId !== null && displayPr?.state === "open";
+  const autoFixQuery = useQuery(
+    pullRequestAutoFixQueryOptions(activeThreadId, enabled && autoFixAvailable),
+  );
+  const autoFixMutation = useMutation({
+    mutationFn: (input: { threadId: ThreadId; enabled: boolean; pullRequestUrl: string }) =>
+      ensureNativeApi().pullRequests.setAutoFix(
+        input.enabled ? input : { threadId: input.threadId, enabled: false },
+      ),
+    onSuccess: (result, input) => {
+      queryClient.setQueryData(pullRequestQueryKeys.autoFix(input.threadId), result);
+    },
+    onError: (error: unknown) => {
+      toastManager.add({
+        type: "error",
+        timeout: DEFAULT_TOAST_TIMEOUT_MS,
+        title: "Couldn't update Auto-fix CI",
+        description: error instanceof Error ? error.message : undefined,
+      });
+    },
+  });
+
   if (!displayPr) {
     return null;
   }
 
   const settledState = displayPr.state !== "open" ? displayPr.state : null;
+  const autoFixDisplay = describePullRequestAutoFix(autoFixQuery.data?.state ?? null);
   const diffStat = summarizePullRequestDiffStat(displayPr);
   const checks = snapshotQuery.data?.checks ?? [];
   const comments = snapshotQuery.data?.comments ?? [];
@@ -744,6 +774,32 @@ export function EnvironmentPullRequestSection({
                   </MenuItem>
                 </ComposerPickerMenuSubPopup>
               </MenuSub>
+
+              {/* Beta-only: the server watches this PR's checks and starts a fix turn in this
+                  chat when they fail. Stays open on toggle so the new state is visible. */}
+              {autoFixAvailable && activeThreadId ? (
+                <MenuCheckboxItem
+                  variant="checkbox"
+                  checked={autoFixDisplay.checked}
+                  disabled={autoFixQuery.isPending || autoFixMutation.isPending}
+                  closeOnClick={false}
+                  title={autoFixDisplay.title}
+                  data-testid="pr-auto-fix-ci"
+                  onCheckedChange={(checked) =>
+                    autoFixMutation.mutate({
+                      threadId: activeThreadId,
+                      enabled: checked,
+                      pullRequestUrl: displayPr.url,
+                    })
+                  }
+                >
+                  <MenuRowLabel
+                    icon={null}
+                    label="Auto-fix CI"
+                    trailing={autoFixDisplay.trailing}
+                  />
+                </MenuCheckboxItem>
+              ) : null}
 
               {canRunActions ? (
                 <MenuSub keepOpenOnFocusOut>

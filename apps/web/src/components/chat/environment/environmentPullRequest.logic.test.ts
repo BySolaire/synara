@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import type { GitPullRequestComment, PullRequestComment } from "@synara/contracts";
+import {
+  ThreadId,
+  type GitPullRequestComment,
+  type PullRequestAutoFixState,
+  type PullRequestComment,
+} from "@synara/contracts";
 
 import {
+  describePullRequestAutoFix,
   buildFixFailingChecksPrompt,
   buildFixReviewCommentsPrompt,
   buildFixFindingsPrompt,
@@ -21,6 +27,37 @@ import {
   summarizePullRequestDiffStat,
   withStableCheckKeys,
 } from "./environmentPullRequest.logic";
+
+describe("describePullRequestAutoFix", () => {
+  const base: PullRequestAutoFixState = {
+    threadId: ThreadId.makeUnsafe("thread"),
+    pullRequestUrl: "https://github.com/o/r/pull/1",
+    status: "watching",
+    pauseReason: null,
+    attempts: 0,
+    lastHandledHeadSha: null,
+    updatedAt: "2026-10-03T10:00:00.000Z",
+  };
+
+  it("is unchecked while off and checked while watching or fixing", () => {
+    expect(describePullRequestAutoFix(null)).toMatchObject({ checked: false, trailing: null });
+    expect(describePullRequestAutoFix(base)).toMatchObject({ checked: true, trailing: null });
+    expect(describePullRequestAutoFix({ ...base, status: "fixing", attempts: 2 })).toMatchObject({
+      checked: true,
+      trailing: "Fixing 2/3",
+    });
+  });
+
+  it("reads as unchecked when paused so ticking it resumes, and explains why", () => {
+    const paused = describePullRequestAutoFix({
+      ...base,
+      status: "paused",
+      pauseReason: "no-push",
+    });
+    expect(paused).toMatchObject({ checked: false, trailing: "Paused" });
+    expect(paused.title).toContain("did not push");
+  });
+});
 
 function makeComment(overrides: Partial<GitPullRequestComment> = {}): GitPullRequestComment {
   return {

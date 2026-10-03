@@ -9,6 +9,7 @@ export {
 } from "./githubInboxQueryOptions";
 
 export {
+  pullRequestAutoFixQueryOptions,
   pullRequestDetailQueryOptions,
   pullRequestDiffQueryOptions,
   pullRequestQueryErrorState,
