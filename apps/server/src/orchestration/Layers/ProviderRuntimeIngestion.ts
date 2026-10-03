@@ -938,6 +938,16 @@ const make = Effect.gen(function* () {
     timeToLive: BUFFERED_REASONING_SUMMARY_BY_KEY_TTL,
     lookup: () => Effect.succeed(undefined),
   });
+  // Keep row identity after the text buffer is consumed. On a cache miss the
+  // durable activity restores ordering and terminal state across recovery.
+  const claudeReasoningActivityById = yield* Cache.make<
+    string,
+    OrchestrationThreadActivity | undefined
+  >({
+    capacity: BUFFERED_REASONING_SUMMARY_BY_KEY_CACHE_CAPACITY,
+    timeToLive: BUFFERED_REASONING_SUMMARY_BY_KEY_TTL,
+    lookup: () => Effect.succeed(undefined),
+  });
   // Display paths of generated images completed during a still-running turn, keyed by
   // providerTurnKey. Flushed into the turn's terminal assistant message when the turn
   // settles, so the visible final row owns the image instead of collapsed narration.
@@ -993,6 +1003,32 @@ const make = Effect.gen(function* () {
     threadId: ThreadId,
     activity: OrchestrationThreadActivity,
   ) {
+    const isClaudeReasoning =
+      event.provider === "claudeAgent" &&
+      (event.type === "item.updated" || event.type === "item.completed") &&
+      event.payload.itemType === "reasoning";
+    if (isClaudeReasoning) {
+      const cached = Option.getOrUndefined(
+        yield* Cache.getOption(claudeReasoningActivityById, activity.id),
+      );
+      const previous =
+        cached ??
+        Option.getOrUndefined(
+          yield* projectionSnapshotQuery.getThreadDetailById(threadId),
+        )?.activities.find((row) => row.id === activity.id);
+      if (previous) {
+        yield* Cache.set(claudeReasoningActivityById, activity.id, previous);
+        // Interruption/failure is final; a delayed delta must not reopen a
+        // completed block either. Completed snapshots may refine its detail.
+        if (
+          asObject(previous.payload)?.status === "failed" ||
+          (asObject(previous.payload)?.status === "completed" &&
+            asObject(activity.payload)?.status !== "completed")
+        )
+          return;
+        activity = { ...activity, createdAt: previous.createdAt, sequence: previous.sequence };
+      }
+    }
     const key = providerActivityUpdateDedupeKey(event, threadId, activity);
     const fingerprint = key ? providerActivityUpdateFingerprint(activity) : undefined;
     if (key && fingerprint) {
@@ -1013,6 +1049,9 @@ const make = Effect.gen(function* () {
       activity,
       createdAt: activity.createdAt,
     });
+    if (isClaudeReasoning) {
+      yield* Cache.set(claudeReasoningActivityById, activity.id, activity);
+    }
     if (key && fingerprint) {
       yield* Cache.set(latestActivityUpdateFingerprintByKey, key, fingerprint);
     }

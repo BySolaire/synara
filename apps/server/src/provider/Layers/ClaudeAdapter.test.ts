@@ -2264,7 +2264,9 @@ describe("ClaudeAdapterLive", () => {
           message: {
             id: "thinking-message",
             role: "assistant",
-            content: [{ type: "thinking", thinking: "First Let", signature: "never-display" }],
+            content: [
+              { type: "thinking", thinking: "First Let us check", signature: "never-display" },
+            ],
           },
         } as unknown as SDKMessage);
       }
@@ -2295,6 +2297,13 @@ describe("ClaudeAdapterLive", () => {
         },
       } as unknown as SDKMessage);
       harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tool-streams",
+        uuid: "second-thinking-stop",
+        parent_tool_use_id: null,
+        event: { type: "content_block_stop", index: 2 },
+      } as unknown as SDKMessage);
+      harness.query.emit({
         type: "assistant",
         session_id: "sdk-session-tool-streams",
         uuid: "second-thinking-snapshot",
@@ -2302,15 +2311,8 @@ describe("ClaudeAdapterLive", () => {
         message: {
           id: "second-message",
           role: "assistant",
-          content: [{ type: "thinking", thinking: "Next", signature: "never-display" }],
+          content: [{ type: "thinking", thinking: "Next revised", signature: "never-display" }],
         },
-      } as unknown as SDKMessage);
-      harness.query.emit({
-        type: "stream_event",
-        session_id: "sdk-session-tool-streams",
-        uuid: "second-thinking-stop",
-        parent_tool_use_id: null,
-        event: { type: "content_block_stop", index: 2 },
       } as unknown as SDKMessage);
       for (const uuid of ["snapshot-only", "snapshot-only-repeat"]) {
         harness.query.emit({
@@ -2410,8 +2412,11 @@ describe("ClaudeAdapterLive", () => {
           "item.started",
           "content.delta",
           "content.delta",
+          "content.delta",
           "item.completed",
           "item.started",
+          "content.delta",
+          "item.completed",
           "content.delta",
           "item.completed",
           "item.started",
@@ -2443,7 +2448,7 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(reasoningDelta?.itemId, reasoningStarted?.itemId);
       assert.equal(reasoningCompleted?.itemId, reasoningStarted?.itemId);
       if (reasoningCompleted?.type === "item.completed") {
-        assert.equal(reasoningCompleted.payload.detail, "First Let");
+        assert.equal(reasoningCompleted.payload.detail, "First Let us check");
       }
       const completedReasoning = runtimeEvents.filter(
         (event): event is Extract<ProviderRuntimeEvent, { type: "item.completed" }> =>
@@ -2451,7 +2456,7 @@ describe("ClaudeAdapterLive", () => {
       );
       assert.deepEqual(
         completedReasoning.map((event) => event.payload.detail),
-        ["First Let", "Next", "Snapshot only"],
+        ["First Let us check", "Next", "Next revised", "Snapshot only"],
       );
       assert.equal(new Set(completedReasoning.map((event) => event.itemId)).size, 3);
       const toolStarted = runtimeEvents.find(

@@ -2980,6 +2980,30 @@ describe("ProviderRuntimeIngestion", () => {
       } as ProviderRuntimeEvent),
     );
     await harness.drain();
+    // The turn is already settled when a queued provider completion arrives.
+    await Effect.runPromise(
+      harness.runtimeEventRepository.append({
+        ...base,
+        type: "item.completed",
+        eventId: asEventId("claude-late-reasoning-completion"),
+        itemId: asItemId("recovered-thought"),
+        createdAt: "2026-10-03T10:01:02.000Z",
+        payload: { itemType: "reasoning", status: "completed", detail: "Late completion" },
+      }),
+    );
+    await harness.drain();
+    // A still-later delta must not reopen the terminal row.
+    await Effect.runPromise(
+      harness.runtimeEventRepository.append({
+        ...base,
+        type: "content.delta",
+        eventId: asEventId("claude-late-reasoning-delta"),
+        itemId: asItemId("recovered-thought"),
+        createdAt: "2026-10-03T10:01:03.000Z",
+        payload: { streamKind: "reasoning_text", delta: "Late delta" },
+      }),
+    );
+    await harness.drain();
     const thoughts = (await harness.readProjectedThread())?.activities.filter(
       (activity) => activity.id === "provider-reasoning:thread-1:recovered-thought",
     );
@@ -2987,8 +3011,52 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thoughts?.[0]).toMatchObject({
       createdAt: base.createdAt,
       sequence: persisted.sequence,
-      payload: { status: terminal.status, detail: "Checking the remaining cases." },
+      payload: {
+        status: terminal.status,
+        detail:
+          terminal.status === "completed" ? "Late completion" : "Checking the remaining cases.",
+      },
     });
+  });
+
+  it("preserves durable failed Claude reasoning when ingestion receives a late completion", async () => {
+    const harness = await createHarness({ startIngestion: false });
+    const createdAt = "2026-10-03T10:02:00.000Z";
+    const activity = {
+      id: asEventId("provider-reasoning:thread-1:persisted-thought"),
+      tone: "tool" as const,
+      kind: "task.progress",
+      summary: "Reasoning trace",
+      payload: { status: "failed", detail: "Interrupted thought" },
+      turnId: asTurnId("persisted-turn"),
+      createdAt,
+      sequence: 1,
+    };
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.makeUnsafe("seed-settled-reasoning"),
+        threadId: asThreadId("thread-1"),
+        activity,
+        createdAt,
+      }),
+    );
+    const persisted = (await harness.readProjectedThread())?.activities[0];
+    await Effect.runPromise(
+      harness.runtimeEventRepository.append({
+        type: "item.completed",
+        provider: "claudeAgent",
+        eventId: asEventId("late-persisted-thought-completion"),
+        threadId: asThreadId("thread-1"),
+        turnId: activity.turnId,
+        itemId: asItemId("persisted-thought"),
+        createdAt: "2026-10-03T10:02:01.000Z",
+        payload: { itemType: "reasoning", status: "completed", detail: "Late success" },
+      }),
+    );
+    await harness.startIngestion();
+    await harness.drain();
+    expect((await harness.readProjectedThread())?.activities).toEqual([persisted]);
   });
 
   it("projects only completed Codex reasoning with a readable summary", async () => {

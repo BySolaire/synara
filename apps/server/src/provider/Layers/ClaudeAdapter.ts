@@ -236,7 +236,10 @@ interface ClaudeTurnState {
   compactionInProgress?: boolean;
   readonly items: Array<unknown>;
   readonly assistantTextBlocks: Map<number, AssistantTextBlockState>;
-  readonly reasoningBlocks: Map<string, { itemId: string; text: string; completed: boolean }>;
+  readonly reasoningBlocks: Map<
+    string,
+    { itemId: string; text: string; completed: boolean; snapshotReceived?: boolean }
+  >;
   reasoningMessageId?: string;
   readonly assistantTextBlockOrder: Array<AssistantTextBlockState>;
   readonly capturedProposedPlanKeys: Set<string>;
@@ -3658,14 +3661,18 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       index: number,
       text: string,
       complete: boolean,
-      messageId?: string,
+      snapshot?: { key: string },
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         const turn = context.turnState;
         if (!turn) return;
-        const key = `${messageId ?? turn.reasoningMessageId ?? "partial"}:${index}`;
+        const key = snapshot?.key ?? `${turn.reasoningMessageId ?? "partial"}:${index}`;
         let block = turn.reasoningBlocks.get(key);
-        if (block?.completed || (!block && text.length === 0)) return;
+        if ((!snapshot && block?.completed) || (!block && text.length === 0)) return;
+        if (snapshot && block) {
+          block.snapshotReceived = true;
+          if (block.completed && block.text === text.slice(0, 8_000)) return;
+        }
         if (!block) {
           block = { itemId: yield* Random.nextUUIDv4, text: "", completed: false };
           turn.reasoningBlocks.set(key, block);
@@ -3681,9 +3688,20 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             providerRefs: nativeProviderRefs(context),
           });
         }
-        const delta = text.slice(0, Math.max(0, 8_000 - block.text.length));
-        if (delta.length > 0) {
+        const snapshotText = snapshot ? text.slice(0, 8_000) : undefined;
+        const delta =
+          snapshotText !== undefined
+            ? snapshotText.startsWith(block.text)
+              ? snapshotText.slice(block.text.length)
+              : ""
+            : text.slice(0, Math.max(0, 8_000 - block.text.length));
+        if (snapshotText !== undefined) {
+          block.text = snapshotText;
+          block.snapshotReceived = true;
+        } else {
           block.text += delta;
+        }
+        if (delta.length > 0) {
           const stamp = yield* makeEventStamp();
           yield* offerRuntimeEvent(context, {
             type: "content.delta",
@@ -4282,23 +4300,26 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             for (const [index, block] of content.entries()) {
               if (block.type !== "thinking" || typeof block.thinking !== "string") continue;
               const messageId = message.message.id ?? message.uuid;
-              // SDK assistant snapshots can contain one block at position zero,
-              // rather than the full API message. Match streamed content within
-              // that message instead of treating snapshot position as stream index.
-              const alreadyReceived = Array.from(context.turnState.reasoningBlocks.entries()).some(
-                ([key, value]) =>
-                  (key.startsWith(`${messageId}:`) || key.startsWith(`snapshot:${messageId}:`)) &&
-                  value.text === block.thinking.slice(0, 8_000),
+              // Singleton snapshots omit the stream index. Reconcile them in
+              // streamed block order, including blocks that have already stopped.
+              // A repeated snapshot then matches its already-reconciled text.
+              const candidates = Array.from(context.turnState.reasoningBlocks.entries()).filter(
+                ([key]) => key.startsWith(`${messageId}:`),
               );
-              if (!alreadyReceived) {
-                yield* emitReasoning(
-                  context,
-                  index,
-                  block.thinking,
-                  true,
-                  `snapshot:${messageId}:${message.uuid}`,
-                );
-              }
+              const exact =
+                candidates.find(
+                  ([, value]) =>
+                    !value.snapshotReceived && value.text === block.thinking.slice(0, 8_000),
+                ) ?? candidates.find(([, value]) => value.text === block.thinking.slice(0, 8_000));
+              const streamed = candidates.find(([, value]) => !value.snapshotReceived);
+              yield* emitReasoning(context, index, block.thinking, true, {
+                key:
+                  content.length > 1
+                    ? `${messageId}:${index}`
+                    : (exact?.[0] ??
+                      streamed?.[0] ??
+                      `${messageId}:snapshot:${message.uuid}:${index}`),
+              });
             }
           }
           yield* backfillAssistantTextBlocksFromSnapshot(context, message);
