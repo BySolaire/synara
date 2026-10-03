@@ -229,6 +229,7 @@ import {
 } from "./pullRequests";
 import {
   PullRequestAutoFixGetInput,
+  PullRequestAutoFixListResult,
   PullRequestAutoFixResult,
   PullRequestAutoFixSetInput,
 } from "./pullRequestAutoFix";
@@ -1145,7 +1146,7 @@ export const WsPullRequestsSetPinnedRpc = Rpc.make(WS_METHODS.pullRequestsSetPin
 
 export const WsPullRequestsGetAutoFixRpc = Rpc.make(WS_METHODS.pullRequestsGetAutoFix, {
   payload: PullRequestAutoFixGetInput,
-  success: PullRequestAutoFixResult,
+  success: PullRequestAutoFixListResult,
   error: WsRpcError,
 });
 

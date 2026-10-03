@@ -36,6 +36,7 @@ import {
   MenuSubTrigger,
   MenuTrigger,
 } from "../../ui/menu";
+import { Checkbox } from "../../ui/checkbox";
 import { toastManager } from "../../ui/toast";
 import { DEFAULT_TOAST_TIMEOUT_MS } from "../../ui/toast.logic";
 import { PullRequestAvatar } from "../../pullRequest/PullRequestAvatar";
@@ -99,6 +100,7 @@ import {
   buildPullRequestContextCard,
   describePullRequestAutoFix,
   describePullRequestComment,
+  findPullRequestAutoFixState,
   PULL_REQUEST_CHECK_STATUS_LABELS,
   PULL_REQUEST_CHECKS_TONE_TEXT_CLASS,
   summarizePullRequestChecks,
@@ -346,17 +348,18 @@ export function EnvironmentPullRequestSection({
     displayPr && projectId && pullRequestRepository && repositoryBelongsToProject
       ? { projectId, repository: pullRequestRepository, number: displayPr.number }
       : null;
+  const autoFixAvailable =
+    PULL_REQUEST_AUTO_FIX_ON && activeThreadId !== null && displayPr?.state === "open";
   // Merge capabilities (allowed methods, stack state) and the merged/closed timestamps only
   // live on the detail query. Fetch it lazily while the menu is open so the row itself stays
-  // as cheap as before.
+  // as cheap as before. With Auto-fix CI (Beta) it also loads once while the panel is open,
+  // because the stack rows and their checkboxes come from its stack entries.
   const detailQuery = useQuery({
     ...pullRequestDetailQueryOptions(actionInput, { pollingEnabled: false }),
-    enabled: actionInput !== null && menuOpen,
+    enabled: actionInput !== null && (menuOpen || (enabled && autoFixAvailable)),
   });
   const actionMutation = useMutation(pullRequestActionMutationOptions(queryClient));
 
-  const autoFixAvailable =
-    PULL_REQUEST_AUTO_FIX_ON && activeThreadId !== null && displayPr?.state === "open";
   const autoFixQuery = useQuery(
     pullRequestAutoFixQueryOptions(activeThreadId, enabled && autoFixAvailable),
   );
@@ -386,7 +389,15 @@ export function EnvironmentPullRequestSection({
   }
 
   const settledState = displayPr.state !== "open" ? displayPr.state : null;
-  const autoFixDisplay = describePullRequestAutoFix(autoFixQuery.data?.state ?? null);
+  const autoFixStates = autoFixQuery.data?.states ?? [];
+  const autoFixDisplay = describePullRequestAutoFix(
+    findPullRequestAutoFixState(autoFixStates, displayPr.url),
+  );
+  // The other PRs of this PR's stack, each with its own Auto-fix CI checkbox (Beta).
+  const stackRows =
+    autoFixAvailable && detailQuery.data?.stack
+      ? detailQuery.data.stack.entries.filter((entry) => entry.number !== displayPr.number)
+      : [];
   const diffStat = summarizePullRequestDiffStat(displayPr);
   const checks = snapshotQuery.data?.checks ?? [];
   const comments = snapshotQuery.data?.comments ?? [];
@@ -555,7 +566,7 @@ export function EnvironmentPullRequestSection({
         : checksSummary.label;
 
   return (
-    <EnvironmentLabeledSection label="Pull request">
+    <EnvironmentLabeledSection label={stackRows.length > 0 ? "Pull requests" : "Pull request"}>
       <Menu open={menuOpen} onOpenChange={setMenuOpen} keepOpenOnSubmenuInteraction>
         <MenuTrigger
           render={<button type="button" className={ENVIRONMENT_ROW_CLASS_NAME} title={rowTitle} />}
@@ -900,6 +911,53 @@ export function EnvironmentPullRequestSection({
           ) : null}
         </ComposerPickerMenuPopup>
       </Menu>
+
+      {/* The rest of the stack, like Claude Code's PR list: each open PR gets its own
+          Auto-fix CI checkbox. Fixes still run in this chat, one at a time. */}
+      {stackRows.map((entry) => {
+        const presentation = resolvePrStatePresentation(entry);
+        const EntryIcon = PR_STATE_PRESENTATION_ICONS[presentation.iconKind];
+        const entryAutoFix = describePullRequestAutoFix(
+          findPullRequestAutoFixState(autoFixStates, entry.url),
+        );
+        const label = `#${entry.number} ${entry.title}`;
+        return (
+          <div
+            key={entry.url}
+            className={cn(ENVIRONMENT_ROW_CLASS_NAME, "cursor-default")}
+            title={label}
+            data-testid="pr-stack-row"
+          >
+            <EnvironmentRowBody
+              icon={
+                <EntryIcon
+                  className={cn(ENVIRONMENT_ROW_ICON_CLASS_NAME, presentation.colorClass)}
+                  aria-hidden
+                />
+              }
+              label={<span className="truncate">{label}</span>}
+              trailing={
+                entry.state === "open" && activeThreadId ? (
+                  <span className="flex shrink-0 items-center gap-2">
+                    {entryAutoFix.trailing ? (
+                      <span className="text-ui-sm text-muted-foreground">
+                        {entryAutoFix.trailing}
+                      </span>
+                    ) : null}
+                    <Checkbox
+                      aria-label={`Auto-fix CI for #${entry.number}`}
+                      title={entryAutoFix.title}
+                      checked={entryAutoFix.checked}
+                      disabled={autoFixMutation.isPending}
+                      onCheckedChange={(checked) => setAutoFix(activeThreadId, checked, entry.url)}
+                    />
+                  </span>
+                ) : null
+              }
+            />
+          </div>
+        );
+      })}
 
       <PullRequestConfirmActionDialog
         action={confirmAction}

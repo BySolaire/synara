@@ -1,7 +1,7 @@
 // FILE: pullRequestAutoFixDecision.ts
-// Purpose: The Auto-fix CI watcher's per-poll decision for one thread, as a pure function
-//          (given the stored state, the thread, and the PR's checks, what to do next), and
-//          the message that starts a fix turn.
+// Purpose: The Auto-fix CI watcher's per-poll decision for one watched PR of a chat, as a
+//          pure function (given the stored state, the chat, its checkout, and the PR's checks,
+//          what to do next), and the message that starts a fix turn.
 // Layer: Server domain logic (no Effect, no I/O)
 
 import {
@@ -32,18 +32,27 @@ export type PullRequestAutoFixDecision =
       readonly status: "watching";
       readonly attempts: number;
     }
-  /** Start fix turn number `attempt` for the failing checks on `headSha`. */
-  | { readonly type: "fix"; readonly headSha: string; readonly attempt: number };
+  /**
+   * Start fix turn number `attempt` for the failing checks on `headSha`. `switchBranch` is set
+   * when the chat sits on another branch: the turn switches to the PR's branch first and back
+   * to `returnBranch` (null for a detached HEAD) afterwards.
+   */
+  | {
+      readonly type: "fix";
+      readonly headSha: string;
+      readonly attempt: number;
+      readonly switchBranch: { readonly to: string; readonly returnBranch: string | null } | null;
+    };
 
 type ThreadActivity = Pick<
   OrchestrationThreadShell,
-  "archivedAt" | "branch" | "session" | "latestTurn" | "hasPendingApprovals" | "hasPendingUserInput"
+  "archivedAt" | "session" | "latestTurn" | "hasPendingApprovals" | "hasPendingUserInput"
 >;
 
-// A chat working a stack moves between branches. A fix turn edits whatever is checked out,
-// so it only starts while the chat sits on the watched PR's branch.
-function isOnPullRequestBranch(thread: ThreadActivity, headBranch: string | null): boolean {
-  return thread.branch === null || headBranch === null || thread.branch === headBranch;
+/** The chat's working tree, read once per poll. `null` when git status could not be read. */
+export interface PullRequestAutoFixCheckout {
+  readonly branch: string | null;
+  readonly clean: boolean;
 }
 
 // A thread that is working or waiting on the user is left alone: fixes queue behind nothing
@@ -69,10 +78,11 @@ function hasTurnFinishedSince(thread: ThreadActivity, since: string): boolean {
 export function decidePullRequestAutoFix(input: {
   readonly state: PullRequestAutoFixState;
   readonly thread: ThreadActivity | null;
+  readonly checkout: PullRequestAutoFixCheckout | null;
   readonly pullRequest: PullRequestAutoFixObservation;
   readonly maxAttempts?: number;
 }): PullRequestAutoFixDecision {
-  const { state, thread, pullRequest } = input;
+  const { state, thread, checkout, pullRequest } = input;
   const maxAttempts = input.maxAttempts ?? PULL_REQUEST_AUTO_FIX_MAX_ATTEMPTS;
 
   if (thread === null || thread.archivedAt != null) {
@@ -81,12 +91,7 @@ export function decidePullRequestAutoFix(input: {
   if (pullRequest.state !== "open") {
     return { type: "disable", reason: "pull-request-closed" };
   }
-  if (
-    state.status === "paused" ||
-    isThreadBusyForAutoFix(thread) ||
-    !isOnPullRequestBranch(thread, pullRequest.headBranch) ||
-    pullRequest.headSha === null
-  ) {
+  if (state.status === "paused" || isThreadBusyForAutoFix(thread) || pullRequest.headSha === null) {
     return { type: "wait" };
   }
 
@@ -123,14 +128,48 @@ export function decidePullRequestAutoFix(input: {
   if (state.attempts >= maxAttempts) {
     return { type: "pause", reason: "attempt-limit" };
   }
-  return { type: "fix", headSha: pullRequest.headSha, attempt: state.attempts + 1 };
+
+  // A fix edits whatever is checked out. On the PR's own branch it runs as is; on another
+  // branch (e.g. the next PR of a stack) the agent switches over, but only from a clean
+  // working tree so in-progress edits are never carried along or lost.
+  if (checkout === null) return { type: "wait" };
+  const headBranch = pullRequest.headBranch;
+  if (headBranch === null || checkout.branch === headBranch) {
+    return {
+      type: "fix",
+      headSha: pullRequest.headSha,
+      attempt: state.attempts + 1,
+      switchBranch: null,
+    };
+  }
+  if (!checkout.clean) return { type: "wait" };
+  return {
+    type: "fix",
+    headSha: pullRequest.headSha,
+    attempt: state.attempts + 1,
+    switchBranch: { to: headBranch, returnBranch: checkout.branch },
+  };
 }
 
+// Branch names land inside code spans; keep them on one line and free of backticks.
+const inlineCode = (value: string) => `\`${value.replace(/[`\s]+/g, "")}\``;
+
 // A one-line notice, like Claude Code's CI event: the agent reads the failures itself with
-// `gh`, so the message only names the PR and commit and says when to push or stop.
+// `gh`, so the message only names the PR and commit, any branch switch, and when to push.
 export function buildPullRequestAutoFixPrompt(input: {
   readonly prNumber: number;
   readonly headSha: string;
+  readonly switchBranch: { readonly to: string; readonly returnBranch: string | null } | null;
 }): string {
-  return `Auto-fix CI: CI failed on PR #${input.prNumber} at ${input.headSha.slice(0, 7)}. Check \`gh pr checks ${input.prNumber}\` and push only a verified fix; if this PR didn't cause it, say why and don't push.`;
+  const { prNumber, switchBranch } = input;
+  const commit = input.headSha.slice(0, 7);
+  const act = `push only a verified fix; if this PR didn't cause it, say why and don't push.`;
+  if (switchBranch === null) {
+    return `Auto-fix CI: CI failed on PR #${prNumber} at ${commit}. Check \`gh pr checks ${prNumber}\` and ${act}`;
+  }
+  const back =
+    switchBranch.returnBranch === null
+      ? ""
+      : ` Then switch back to ${inlineCode(switchBranch.returnBranch)}.`;
+  return `Auto-fix CI: CI failed on PR #${prNumber} (${inlineCode(switchBranch.to)}) at ${commit}. Switch to ${inlineCode(switchBranch.to)}, check \`gh pr checks ${prNumber}\`, and ${act}${back}`;
 }

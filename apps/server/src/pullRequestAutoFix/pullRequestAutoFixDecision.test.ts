@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildPullRequestAutoFixPrompt,
   decidePullRequestAutoFix,
+  type PullRequestAutoFixCheckout,
   type PullRequestAutoFixObservation,
 } from "./pullRequestAutoFixDecision";
 
@@ -18,6 +19,9 @@ const T1 = "2026-10-03T10:05:00.000Z";
 const failing: GitPullRequestCheck = { name: "Lint", status: "failure", url: null };
 const passing: GitPullRequestCheck = { name: "Build", status: "success", url: null };
 const pending: GitPullRequestCheck = { name: "Test", status: "pending", url: null };
+
+type DecideInput = Parameters<typeof decidePullRequestAutoFix>[0];
+type Thread = NonNullable<DecideInput["thread"]>;
 
 function state(overrides: Partial<PullRequestAutoFixState> = {}): PullRequestAutoFixState {
   return {
@@ -32,12 +36,9 @@ function state(overrides: Partial<PullRequestAutoFixState> = {}): PullRequestAut
   };
 }
 
-type Thread = NonNullable<Parameters<typeof decidePullRequestAutoFix>[0]["thread"]>;
-
 function thread(overrides: Partial<Thread> = {}): Thread {
   return {
     archivedAt: null,
-    branch: "feature/a",
     session: null,
     latestTurn: null,
     hasPendingApprovals: false,
@@ -68,52 +69,58 @@ function pr(overrides: Partial<PullRequestAutoFixObservation> = {}): PullRequest
   };
 }
 
+const onBranch: PullRequestAutoFixCheckout = { branch: "feature/a", clean: false };
+
+function decide(overrides: Partial<DecideInput> = {}) {
+  return decidePullRequestAutoFix({
+    state: state(),
+    thread: thread(),
+    checkout: onBranch,
+    pullRequest: pr(),
+    ...overrides,
+  });
+}
+
+const fix = (headSha: string, attempt: number) => ({
+  type: "fix",
+  headSha,
+  attempt,
+  switchBranch: null,
+});
+
 describe("decidePullRequestAutoFix", () => {
   it("starts the first fix when checks settle red on a new commit", () => {
-    expect(
-      decidePullRequestAutoFix({ state: state(), thread: thread(), pullRequest: pr() }),
-    ).toEqual({ type: "fix", headSha: "sha-1", attempt: 1 });
+    expect(decide()).toEqual(fix("sha-1", 1));
   });
 
   it("waits while checks are still running or none were reported", () => {
     for (const checks of [[failing, pending], []]) {
-      expect(
-        decidePullRequestAutoFix({ state: state(), thread: thread(), pullRequest: pr({ checks }) }),
-      ).toEqual({ type: "wait" });
+      expect(decide({ pullRequest: pr({ checks }) })).toEqual({ type: "wait" });
     }
   });
 
   it("never fixes the same commit twice", () => {
-    expect(
-      decidePullRequestAutoFix({
-        state: state({ lastHandledHeadSha: "sha-1", attempts: 1 }),
-        thread: thread(),
-        pullRequest: pr(),
-      }),
-    ).toEqual({ type: "wait" });
+    expect(decide({ state: state({ lastHandledHeadSha: "sha-1", attempts: 1 }) })).toEqual({
+      type: "wait",
+    });
   });
 
-  it("waits while the thread is busy or waiting on the user", () => {
+  it("waits while the chat is busy or waiting on the user", () => {
     const busyThreads: Thread[] = [
       thread({ latestTurn: { ...finishedTurn(T0)!, state: "running" } }),
       thread({ hasPendingApprovals: true }),
       thread({ hasPendingUserInput: true }),
     ];
     for (const busy of busyThreads) {
-      expect(decidePullRequestAutoFix({ state: state(), thread: busy, pullRequest: pr() })).toEqual(
-        { type: "wait" },
-      );
+      expect(decide({ thread: busy })).toEqual({ type: "wait" });
     }
   });
 
   it("pauses at the attempt limit instead of starting another fix", () => {
-    expect(
-      decidePullRequestAutoFix({
-        state: state({ attempts: 3, lastHandledHeadSha: "sha-0" }),
-        thread: thread(),
-        pullRequest: pr(),
-      }),
-    ).toEqual({ type: "pause", reason: "attempt-limit" });
+    expect(decide({ state: state({ attempts: 3, lastHandledHeadSha: "sha-0" }) })).toEqual({
+      type: "pause",
+      reason: "attempt-limit",
+    });
   });
 
   it("pauses when the fix turn finished without pushing", () => {
@@ -124,86 +131,74 @@ describe("decidePullRequestAutoFix", () => {
       updatedAt: T1,
     });
     // The fix turn has not started yet: the latest turn predates the dispatch.
-    expect(
-      decidePullRequestAutoFix({
-        state: fixing,
-        thread: thread({ latestTurn: finishedTurn(T0) }),
-        pullRequest: pr(),
-      }),
-    ).toEqual({ type: "wait" });
-    expect(
-      decidePullRequestAutoFix({
-        state: fixing,
-        thread: thread({ latestTurn: finishedTurn(T1) }),
-        pullRequest: pr(),
-      }),
-    ).toEqual({ type: "pause", reason: "no-push" });
+    expect(decide({ state: fixing, thread: thread({ latestTurn: finishedTurn(T0) }) })).toEqual({
+      type: "wait",
+    });
+    expect(decide({ state: fixing, thread: thread({ latestTurn: finishedTurn(T1) }) })).toEqual({
+      type: "pause",
+      reason: "no-push",
+    });
   });
 
   it("goes back to watching after a push and resets the budget once CI is green", () => {
     const fixing = state({ status: "fixing", attempts: 2, lastHandledHeadSha: "sha-1" });
     expect(
-      decidePullRequestAutoFix({
-        state: fixing,
-        thread: thread(),
-        pullRequest: pr({ headSha: "sha-2", checks: [pending] }),
-      }),
+      decide({ state: fixing, pullRequest: pr({ headSha: "sha-2", checks: [pending] }) }),
     ).toEqual({ type: "update", status: "watching", attempts: 2 });
     expect(
-      decidePullRequestAutoFix({
-        state: fixing,
-        thread: thread(),
-        pullRequest: pr({ headSha: "sha-2", checks: [passing] }),
-      }),
+      decide({ state: fixing, pullRequest: pr({ headSha: "sha-2", checks: [passing] }) }),
     ).toEqual({ type: "update", status: "watching", attempts: 0 });
   });
 
   it("starts the next attempt when the pushed fix fails again", () => {
     expect(
-      decidePullRequestAutoFix({
+      decide({
         state: state({ status: "fixing", attempts: 1, lastHandledHeadSha: "sha-1" }),
-        thread: thread(),
         pullRequest: pr({ headSha: "sha-2" }),
       }),
-    ).toEqual({ type: "fix", headSha: "sha-2", attempt: 2 });
+    ).toEqual(fix("sha-2", 2));
   });
 
-  it("waits while the chat is on another branch, e.g. the next PR in a stack", () => {
-    expect(
-      decidePullRequestAutoFix({
-        state: state(),
-        thread: thread({ branch: "feature/b" }),
-        pullRequest: pr(),
-      }),
-    ).toEqual({ type: "wait" });
+  it("fixes another PR of a stack by switching branch, only from a clean working tree", () => {
+    expect(decide({ checkout: { branch: "feature/b", clean: true } })).toEqual({
+      ...fix("sha-1", 1),
+      switchBranch: { to: "feature/a", returnBranch: "feature/b" },
+    });
+    expect(decide({ checkout: { branch: "feature/b", clean: false } })).toEqual({ type: "wait" });
+    expect(decide({ checkout: null })).toEqual({ type: "wait" });
   });
 
-  it("turns itself off when the PR closes or the thread goes away", () => {
-    expect(
-      decidePullRequestAutoFix({
-        state: state(),
-        thread: thread(),
-        pullRequest: pr({ state: "merged" }),
-      }),
-    ).toEqual({ type: "disable", reason: "pull-request-closed" });
-    expect(decidePullRequestAutoFix({ state: state(), thread: null, pullRequest: pr() })).toEqual({
+  it("turns itself off when the PR closes or the chat goes away", () => {
+    expect(decide({ pullRequest: pr({ state: "merged" }) })).toEqual({
+      type: "disable",
+      reason: "pull-request-closed",
+    });
+    expect(decide({ thread: null })).toEqual({ type: "disable", reason: "thread-unavailable" });
+    expect(decide({ thread: thread({ archivedAt: T0 }) })).toEqual({
       type: "disable",
       reason: "thread-unavailable",
     });
-    expect(
-      decidePullRequestAutoFix({
-        state: state(),
-        thread: thread({ archivedAt: T0 }),
-        pullRequest: pr(),
-      }),
-    ).toEqual({ type: "disable", reason: "thread-unavailable" });
   });
 });
 
 describe("buildPullRequestAutoFixPrompt", () => {
   it("is a one-line notice naming the PR and short commit", () => {
-    expect(buildPullRequestAutoFixPrompt({ prNumber: 7, headSha: "abc1234def" })).toBe(
+    expect(
+      buildPullRequestAutoFixPrompt({ prNumber: 7, headSha: "abc1234def", switchBranch: null }),
+    ).toBe(
       "Auto-fix CI: CI failed on PR #7 at abc1234. Check `gh pr checks 7` and push only a verified fix; if this PR didn't cause it, say why and don't push.",
+    );
+  });
+
+  it("adds the branch switch there and back for another PR of a stack", () => {
+    expect(
+      buildPullRequestAutoFixPrompt({
+        prNumber: 7,
+        headSha: "abc1234def",
+        switchBranch: { to: "feature/a", returnBranch: "feature/b" },
+      }),
+    ).toBe(
+      "Auto-fix CI: CI failed on PR #7 (`feature/a`) at abc1234. Switch to `feature/a`, check `gh pr checks 7`, and push only a verified fix; if this PR didn't cause it, say why and don't push. Then switch back to `feature/b`.",
     );
   });
 });

@@ -5,6 +5,7 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
 import { toPersistenceSqlOrDecodeError } from "../Errors.ts";
 import {
+  PullRequestAutoFixKey,
   PullRequestAutoFixRepository,
   type PullRequestAutoFixRepositoryShape,
   PullRequestAutoFixThreadInput,
@@ -13,7 +14,7 @@ import {
 const makePullRequestAutoFixRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
-  const getRow = SqlSchema.findOneOption({
+  const listThreadRows = SqlSchema.findAll({
     Request: PullRequestAutoFixThreadInput,
     Result: PullRequestAutoFixState,
     execute: ({ threadId }) => sql`
@@ -27,6 +28,7 @@ const makePullRequestAutoFixRepository = Effect.gen(function* () {
         updated_at AS "updatedAt"
       FROM pull_request_auto_fix
       WHERE thread_id = ${threadId}
+      ORDER BY pull_request_url ASC
     `,
   });
 
@@ -44,7 +46,7 @@ const makePullRequestAutoFixRepository = Effect.gen(function* () {
         updated_at AS "updatedAt"
       FROM pull_request_auto_fix
       WHERE status <> 'paused'
-      ORDER BY thread_id ASC
+      ORDER BY thread_id ASC, pull_request_url ASC
     `,
   });
 
@@ -69,8 +71,7 @@ const makePullRequestAutoFixRepository = Effect.gen(function* () {
         ${state.lastHandledHeadSha},
         ${state.updatedAt}
       )
-      ON CONFLICT (thread_id) DO UPDATE SET
-        pull_request_url = excluded.pull_request_url,
+      ON CONFLICT (thread_id, pull_request_url) DO UPDATE SET
         status = excluded.status,
         pause_reason = excluded.pause_reason,
         attempts = excluded.attempts,
@@ -80,19 +81,20 @@ const makePullRequestAutoFixRepository = Effect.gen(function* () {
   });
 
   const deleteRow = SqlSchema.void({
-    Request: PullRequestAutoFixThreadInput,
-    execute: ({ threadId }) => sql`
+    Request: PullRequestAutoFixKey,
+    execute: ({ threadId, pullRequestUrl }) => sql`
       DELETE FROM pull_request_auto_fix
       WHERE thread_id = ${threadId}
+        AND pull_request_url = ${pullRequestUrl}
     `,
   });
 
-  const get: PullRequestAutoFixRepositoryShape["get"] = (input) =>
-    getRow(input).pipe(
+  const listByThread: PullRequestAutoFixRepositoryShape["listByThread"] = (input) =>
+    listThreadRows(input).pipe(
       Effect.mapError(
         toPersistenceSqlOrDecodeError(
-          "PullRequestAutoFixRepository.get:query",
-          "PullRequestAutoFixRepository.get:decodeRow",
+          "PullRequestAutoFixRepository.listByThread:query",
+          "PullRequestAutoFixRepository.listByThread:decodeRows",
         ),
       ),
     );
@@ -128,7 +130,7 @@ const makePullRequestAutoFixRepository = Effect.gen(function* () {
     );
 
   return {
-    get,
+    listByThread,
     listActive,
     upsert,
     delete: deleteState,

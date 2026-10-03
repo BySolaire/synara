@@ -177,6 +177,7 @@ import type {
 } from "./pullRequests";
 import type {
   PullRequestAutoFixGetInput,
+  PullRequestAutoFixListResult,
   PullRequestAutoFixResult,
   PullRequestAutoFixSetInput,
 } from "./pullRequestAutoFix";
@@ -1146,7 +1147,7 @@ export interface NativeApi {
     action: (input: PullRequestActionInput) => Promise<PullRequestActionResult>;
     comment: (input: PullRequestCommentInput) => Promise<PullRequestActionResult>;
     setPinned: (input: PullRequestSetPinnedInput) => Promise<PullRequestSetPinnedResult>;
-    getAutoFix: (input: PullRequestAutoFixGetInput) => Promise<PullRequestAutoFixResult>;
+    getAutoFix: (input: PullRequestAutoFixGetInput) => Promise<PullRequestAutoFixListResult>;
     setAutoFix: (input: PullRequestAutoFixSetInput) => Promise<PullRequestAutoFixResult>;
   };
   contextMenu: {

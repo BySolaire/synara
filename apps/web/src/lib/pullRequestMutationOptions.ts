@@ -2,6 +2,7 @@ import type {
   GitHubInboxState,
   GitHubInboxSort,
   PullRequestActionInput,
+  PullRequestAutoFixListResult,
   PullRequestAutoFixSetInput,
   PullRequestCommentInput,
   PullRequestSetPinnedInput,
@@ -425,8 +426,21 @@ export function pullRequestSetAutoFixMutationOptions(queryClient: QueryClient) {
   return mutationOptions({
     mutationFn: (input: PullRequestAutoFixSetInput) =>
       ensureNativeApi().pullRequests.setAutoFix(input),
+    // Swap this PR's entry in the chat's list so every row and the composer tip update at once.
     onSuccess: (result, input) => {
-      queryClient.setQueryData(pullRequestQueryKeys.autoFix(input.threadId), result);
+      queryClient.setQueryData<PullRequestAutoFixListResult>(
+        pullRequestQueryKeys.autoFix(input.threadId),
+        (current) => ({
+          states: [
+            ...(current?.states ?? []).filter(
+              (state) =>
+                state.pullRequestUrl !== input.pullRequestUrl &&
+                state.pullRequestUrl !== result.state?.pullRequestUrl,
+            ),
+            ...(result.state ? [result.state] : []),
+          ],
+        }),
+      );
     },
   });
 }

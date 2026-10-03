@@ -1,5 +1,6 @@
 import type {
   PullRequestAutoFixGetInput,
+  PullRequestAutoFixListResult,
   PullRequestAutoFixResult,
   PullRequestAutoFixSetInput,
 } from "@synara/contracts";
@@ -12,14 +13,14 @@ export class PullRequestAutoFixError extends Schema.TaggedErrorClass<PullRequest
 ) {}
 
 /**
- * Auto-fix CI (Beta-only): the per-thread switch behind the Environment panel's PR menu.
- * The live layer also runs the watcher that polls each watched PR's checks and starts a
- * fix turn on the thread when they fail.
+ * Auto-fix CI (Beta-only): the per-PR switches behind the Environment panel's pull request
+ * rows. The live layer also runs the watcher that polls each watched PR's checks and starts a
+ * fix turn in the chat when one fails.
  */
 export interface PullRequestAutoFixServiceShape {
   readonly get: (
     input: PullRequestAutoFixGetInput,
-  ) => Effect.Effect<PullRequestAutoFixResult, PullRequestAutoFixError>;
+  ) => Effect.Effect<PullRequestAutoFixListResult, PullRequestAutoFixError>;
   readonly set: (
     input: PullRequestAutoFixSetInput,
   ) => Effect.Effect<PullRequestAutoFixResult, PullRequestAutoFixError>;

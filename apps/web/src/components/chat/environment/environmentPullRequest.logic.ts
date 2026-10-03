@@ -439,6 +439,14 @@ export interface PullRequestAutoFixDisplay {
   title: string;
 }
 
+/** A chat watches each PR separately; a PR missing from the list has auto-fix off. */
+export function findPullRequestAutoFixState(
+  states: ReadonlyArray<PullRequestAutoFixState>,
+  pullRequestUrl: string | null | undefined,
+): PullRequestAutoFixState | null {
+  return states.find((state) => state.pullRequestUrl === pullRequestUrl) ?? null;
+}
+
 // A paused auto-fix reads as unchecked: ticking it again is how the user resumes.
 export function describePullRequestAutoFix(
   state: PullRequestAutoFixState | null,

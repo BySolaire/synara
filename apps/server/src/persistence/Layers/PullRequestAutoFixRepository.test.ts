@@ -1,6 +1,6 @@
 import { ThreadId, type PullRequestAutoFixState } from "@synara/contracts";
 import { assert, it } from "@effect/vitest";
-import { Effect, Layer, Option } from "effect";
+import { Effect, Layer } from "effect";
 
 import { PullRequestAutoFixRepository } from "../Services/PullRequestAutoFixRepository";
 import { PullRequestAutoFixRepositoryLive } from "./PullRequestAutoFixRepository";
@@ -10,13 +10,17 @@ const layer = it.layer(
   PullRequestAutoFixRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
 );
 
+const PR_1 = "https://github.com/o/r/pull/1";
+const PR_2 = "https://github.com/o/r/pull/2";
+
 function state(
   threadId: string,
+  pullRequestUrl: string,
   overrides: Partial<PullRequestAutoFixState> = {},
 ): PullRequestAutoFixState {
   return {
     threadId: ThreadId.makeUnsafe(threadId),
-    pullRequestUrl: "https://github.com/o/r/pull/1",
+    pullRequestUrl,
     status: "watching",
     pauseReason: null,
     attempts: 0,
@@ -27,34 +31,37 @@ function state(
 }
 
 layer("PullRequestAutoFixRepository", (it) => {
-  it.effect("round-trips, updates in place, lists only active rows, and deletes", () =>
+  it.effect("keeps one row per PR of a chat, updates in place, lists active rows, deletes", () =>
     Effect.gen(function* () {
       const repository = yield* PullRequestAutoFixRepository;
       const threadId = ThreadId.makeUnsafe("thread-a");
 
-      assert.isTrue(Option.isNone(yield* repository.get({ threadId })));
-
-      yield* repository.upsert(state("thread-a"));
+      yield* repository.upsert(state("thread-a", PR_1));
+      yield* repository.upsert(state("thread-a", PR_2));
       yield* repository.upsert(
-        state("thread-b", { status: "paused", pauseReason: "attempt-limit", attempts: 3 }),
+        state("thread-b", PR_1, { status: "paused", pauseReason: "attempt-limit", attempts: 3 }),
       );
       yield* repository.upsert(
-        state("thread-a", { status: "fixing", attempts: 1, lastHandledHeadSha: "abc123" }),
+        state("thread-a", PR_1, { status: "fixing", attempts: 1, lastHandledHeadSha: "abc123" }),
       );
 
+      assert.deepStrictEqual(yield* repository.listByThread({ threadId }), [
+        state("thread-a", PR_1, { status: "fixing", attempts: 1, lastHandledHeadSha: "abc123" }),
+        state("thread-a", PR_2),
+      ]);
       assert.deepStrictEqual(
-        yield* repository.get({ threadId }),
-        Option.some(
-          state("thread-a", { status: "fixing", attempts: 1, lastHandledHeadSha: "abc123" }),
-        ),
-      );
-      assert.deepStrictEqual(
-        (yield* repository.listActive()).map((row) => row.threadId),
-        [threadId],
+        (yield* repository.listActive()).map((row) => [row.threadId, row.pullRequestUrl]),
+        [
+          [threadId, PR_1],
+          [threadId, PR_2],
+        ],
       );
 
-      yield* repository.delete({ threadId });
-      assert.isTrue(Option.isNone(yield* repository.get({ threadId })));
+      yield* repository.delete({ threadId, pullRequestUrl: PR_1 });
+      assert.deepStrictEqual(
+        (yield* repository.listByThread({ threadId })).map((row) => row.pullRequestUrl),
+        [PR_2],
+      );
     }),
   );
 });

@@ -22,6 +22,7 @@ import {
   shouldShowPullRequestAutoFixHint,
 } from "./ComposerPullRequestAutoFixHint.logic";
 import { COMPOSER_STACKED_PANEL_ICON_CLASS_NAME } from "./composerStackedPanelStyles";
+import { findPullRequestAutoFixState } from "./environment/environmentPullRequest.logic";
 import { ComposerTipRow } from "./ComposerTipRow";
 
 interface ComposerPullRequestAutoFixHintProps {
@@ -70,7 +71,9 @@ export function ComposerPullRequestAutoFixHint({
     pullRequestState: pullRequest?.state ?? null,
     dismissed,
     isWorking,
-    autoFixState: autoFixQuery.data?.state,
+    autoFixState: autoFixQuery.data
+      ? findPullRequestAutoFixState(autoFixQuery.data.states, pullRequest?.url)
+      : undefined,
   });
   if (!visible || !pullRequest) return null;
 

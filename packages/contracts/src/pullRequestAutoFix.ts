@@ -1,7 +1,8 @@
 // FILE: pullRequestAutoFix.ts
-// Purpose: Per-thread "Auto-fix CI" state: the server watches the thread's open pull
-//          request and starts a fix turn when its checks fail. Beta-only.
-// Layer: Shared contracts (server watcher, WS RPCs, Environment panel PR menu)
+// Purpose: "Auto-fix CI" state per chat and pull request: the server watches every PR a
+//          chat turned it on for (e.g. each PR of a stack) and starts a fix turn in that chat
+//          when one fails, one fix at a time. Beta-only.
+// Layer: Shared contracts (server watcher, WS RPCs, Environment panel PR section)
 
 import { Schema } from "effect";
 
@@ -25,9 +26,9 @@ export type PullRequestAutoFixStatus = typeof PullRequestAutoFixStatus.Type;
 export const PullRequestAutoFixPauseReason = Schema.Literals(["attempt-limit", "no-push"]);
 export type PullRequestAutoFixPauseReason = typeof PullRequestAutoFixPauseReason.Type;
 
+/** One watched pull request of one chat. */
 export const PullRequestAutoFixState = Schema.Struct({
   threadId: ThreadId,
-  /** The PR being watched. Auto-fix turns off when the thread's PR changes. */
   pullRequestUrl: TrimmedNonEmptyString,
   status: PullRequestAutoFixStatus,
   pauseReason: Schema.NullOr(PullRequestAutoFixPauseReason),
@@ -44,19 +45,21 @@ export const PullRequestAutoFixGetInput = Schema.Struct({
 });
 export type PullRequestAutoFixGetInput = typeof PullRequestAutoFixGetInput.Type;
 
-/**
- * `pullRequestUrl` is required to turn auto-fix on: it is the PR the Environment panel shows
- * for the thread's checked-out branch. Turning it on again after a pause resumes with a
- * fresh attempt count.
- */
+/** Every pull request the chat watches; a PR missing from the list has auto-fix off. */
+export const PullRequestAutoFixListResult = Schema.Struct({
+  states: Schema.Array(PullRequestAutoFixState),
+});
+export type PullRequestAutoFixListResult = typeof PullRequestAutoFixListResult.Type;
+
+/** Turning it on again after a pause resumes with a fresh attempt count. */
 export const PullRequestAutoFixSetInput = Schema.Struct({
   threadId: ThreadId,
+  pullRequestUrl: TrimmedNonEmptyString,
   enabled: Schema.Boolean,
-  pullRequestUrl: Schema.optional(TrimmedNonEmptyString),
 });
 export type PullRequestAutoFixSetInput = typeof PullRequestAutoFixSetInput.Type;
 
-/** `state` is null while auto-fix is off for the thread. */
+/** `state` is null once auto-fix is off for that pull request. */
 export const PullRequestAutoFixResult = Schema.Struct({
   state: Schema.NullOr(PullRequestAutoFixState),
 });

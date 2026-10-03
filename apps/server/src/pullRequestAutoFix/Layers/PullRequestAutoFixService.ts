@@ -1,7 +1,9 @@
 // FILE: PullRequestAutoFixService.ts (layer)
-// Purpose: Auto-fix CI. Stores the per-thread switch and, every minute, polls the checks of
-//          each watched PR; when they settle red on a new commit it starts a fix turn on the
-//          thread. All decisions live in `pullRequestAutoFixDecision.ts`.
+// Purpose: Auto-fix CI. Stores which pull requests each chat watches and, every minute,
+//          polls their checks; when one settles red on a new commit it starts a fix turn in
+//          that chat, one fix per chat at a time (like Claude Code's CI monitor, which wakes
+//          the one session for every bound PR). All decisions live in
+//          `pullRequestAutoFixDecision.ts`.
 // Layer: Server background service (Beta-only; the loop never starts on Stable)
 
 import {
@@ -19,6 +21,7 @@ import { Cause, Duration, Effect, Layer, Option, Schedule } from "effect";
 
 import { isServerBetaFeatureEnabled } from "../../betaFeatureGate.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
+import { GitCore } from "../../git/Services/GitCore.ts";
 import { GitHubCli } from "../../git/Services/GitHubCli.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -27,6 +30,7 @@ import {
   buildPullRequestAutoFixPrompt,
   decidePullRequestAutoFix,
   isThreadBusyForAutoFix,
+  type PullRequestAutoFixCheckout,
   type PullRequestAutoFixDecision,
 } from "../pullRequestAutoFixDecision.ts";
 import {
@@ -37,18 +41,26 @@ import {
 
 /** Matches the Environment panel's own PR poll, so auto-fix adds no extra GitHub cadence. */
 const PULL_REQUEST_AUTO_FIX_POLL_INTERVAL = Duration.seconds(60);
+/** Chats polled side by side; GitHub reads still go through the shared read queue. */
+const PULL_REQUEST_AUTO_FIX_THREAD_CONCURRENCY = 4;
 
 const PAUSE_SUMMARIES: Record<PullRequestAutoFixPauseReason, string> = {
-  "attempt-limit": `Auto-fix CI paused: checks still fail after ${PULL_REQUEST_AUTO_FIX_MAX_ATTEMPTS} fix attempts`,
-  "no-push": "Auto-fix CI paused: the fix turn ended without pushing a commit",
+  "attempt-limit": `checks still fail after ${PULL_REQUEST_AUTO_FIX_MAX_ATTEMPTS} fix attempts`,
+  "no-push": "the fix turn ended without pushing a commit",
 };
 
 const autoFixId = (threadId: ThreadId, label: string) =>
   `pull-request-auto-fix:${threadId}:${label}:${crypto.randomUUID()}`;
 
+const pullRequestLabel = (url: string) => {
+  const number = /\/pull\/(\d+)/.exec(url)?.[1];
+  return number ? `PR #${number}` : "the pull request";
+};
+
 const make = Effect.gen(function* () {
   const repository = yield* PullRequestAutoFixRepository;
   const snapshotQuery = yield* ProjectionSnapshotQuery;
+  const gitCore = yield* GitCore;
   const gitHubCli = yield* GitHubCli;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const enabled = isServerBetaFeatureEnabled(PULL_REQUEST_AUTO_FIX_BETA_FEATURE);
@@ -70,8 +82,8 @@ const make = Effect.gen(function* () {
 
   const get: PullRequestAutoFixServiceShape["get"] = (input) =>
     requireEnabled.pipe(
-      Effect.andThen(repository.get({ threadId: input.threadId })),
-      Effect.map((state) => ({ state: Option.getOrNull(state) })),
+      Effect.andThen(repository.listByThread({ threadId: input.threadId })),
+      Effect.map((states) => ({ states })),
       Effect.mapError(toError("Failed to read Auto-fix CI.")),
     );
 
@@ -79,11 +91,11 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       yield* requireEnabled;
       if (!input.enabled) {
-        yield* repository.delete({ threadId: input.threadId });
+        yield* repository.delete({
+          threadId: input.threadId,
+          pullRequestUrl: input.pullRequestUrl,
+        });
         return { state: null };
-      }
-      if (!input.pullRequestUrl) {
-        return yield* fail("Choose the pull request to auto-fix.");
       }
       const thread = Option.getOrUndefined(yield* snapshotQuery.getThreadShellById(input.threadId));
       if (!thread || thread.archivedAt != null) {
@@ -170,6 +182,7 @@ const make = Effect.gen(function* () {
           text: buildPullRequestAutoFixPrompt({
             prNumber: input.prNumber,
             headSha: decision.headSha,
+            switchBranch: decision.switchBranch,
           }),
           attachments: [],
         },
@@ -187,13 +200,25 @@ const make = Effect.gen(function* () {
       );
   });
 
-  const pollThread = Effect.fnUntraced(function* (state: PullRequestAutoFixState) {
-    const thread = Option.getOrNull(yield* snapshotQuery.getThreadShellById(state.threadId));
-    // A busy thread is skipped before touching GitHub: nothing can happen until it idles.
-    if (thread && thread.archivedAt == null && isThreadBusyForAutoFix(thread)) return;
+  const readCheckout = (cwd: string) =>
+    gitCore.statusDetails(cwd).pipe(
+      Effect.map(
+        (details): PullRequestAutoFixCheckout => ({
+          branch: details.branch,
+          clean: !details.hasWorkingTreeChanges,
+        }),
+      ),
+      Effect.orElseSucceed(() => null),
+    );
 
-    const cwd = thread ? yield* resolveThreadCwd(thread) : null;
-    if (thread && !cwd) return;
+  /** Applies one PR's decision; returns true when it started a fix turn. */
+  const pollPullRequest = Effect.fnUntraced(function* (input: {
+    readonly state: PullRequestAutoFixState;
+    readonly thread: OrchestrationThreadShell | null;
+    readonly cwd: string | null;
+    readonly checkout: PullRequestAutoFixCheckout | null;
+  }) {
+    const { state, thread, cwd, checkout } = input;
     const observed = cwd
       ? yield* gitHubCli.withRead(
           gitHubCli.getPullRequestWithChecks({ cwd, reference: state.pullRequestUrl }),
@@ -203,6 +228,7 @@ const make = Effect.gen(function* () {
     const decision = decidePullRequestAutoFix({
       state,
       thread,
+      checkout,
       pullRequest: observed
         ? {
             state: observed.summary.state ?? "open",
@@ -211,28 +237,23 @@ const make = Effect.gen(function* () {
             headSha: observed.headSha,
             checks: observed.checks,
           }
-        : {
-            state: "open",
-            url: state.pullRequestUrl,
-            headBranch: null,
-            headSha: null,
-            checks: [],
-          },
+        : { state: "open", url: state.pullRequestUrl, headBranch: null, headSha: null, checks: [] },
     });
 
+    const key = { threadId: state.threadId, pullRequestUrl: state.pullRequestUrl };
     switch (decision.type) {
       case "wait":
-        return;
+        return false;
       case "disable":
-        yield* repository.delete({ threadId: state.threadId });
+        yield* repository.delete(key);
         if (decision.reason === "pull-request-closed") {
           yield* appendActivity(
             state.threadId,
             "stopped",
-            "Auto-fix CI turned off: the pull request was closed",
+            `Auto-fix CI turned off: ${pullRequestLabel(state.pullRequestUrl)} was closed`,
           );
         }
-        return;
+        return false;
       case "pause":
         yield* repository.upsert({
           ...state,
@@ -240,8 +261,12 @@ const make = Effect.gen(function* () {
           pauseReason: decision.reason,
           updatedAt: new Date().toISOString(),
         });
-        yield* appendActivity(state.threadId, "paused", PAUSE_SUMMARIES[decision.reason]);
-        return;
+        yield* appendActivity(
+          state.threadId,
+          "paused",
+          `Auto-fix CI paused on ${pullRequestLabel(state.pullRequestUrl)}: ${PAUSE_SUMMARIES[decision.reason]}`,
+        );
+        return false;
       case "update":
         yield* repository.upsert({
           ...state,
@@ -249,35 +274,63 @@ const make = Effect.gen(function* () {
           attempts: decision.attempts,
           updatedAt: new Date().toISOString(),
         });
-        return;
+        return false;
       case "fix":
-        if (!observed || !thread) return;
-        yield* startFixTurn({
-          state,
-          thread,
-          decision,
-          prNumber: observed.summary.number,
-        });
-        return;
+        if (!observed || !thread) return false;
+        yield* startFixTurn({ state, thread, decision, prNumber: observed.summary.number });
+        return true;
+    }
+  });
+
+  // Every watched PR of a chat is checked each poll, but a chat runs one turn at a time:
+  // once a fix starts, the rest wait for the next poll (the chat is busy until it ends).
+  const pollThread = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    states: ReadonlyArray<PullRequestAutoFixState>,
+  ) {
+    const thread = Option.getOrNull(yield* snapshotQuery.getThreadShellById(threadId));
+    // A busy chat is skipped before touching git or GitHub: nothing can start until it idles.
+    if (thread && thread.archivedAt == null && isThreadBusyForAutoFix(thread)) return;
+    const cwd = thread ? yield* resolveThreadCwd(thread) : null;
+    if (thread && !cwd) return;
+    const checkout = cwd ? yield* readCheckout(cwd) : null;
+
+    for (const state of states) {
+      const started = yield* pollPullRequest({ state, thread, cwd, checkout }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("auto-fix CI poll failed", {
+            threadId,
+            pullRequestUrl: state.pullRequestUrl,
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as(false)),
+        ),
+      );
+      if (started) return;
     }
   });
 
   const pollAll = repository.listActive().pipe(
-    Effect.flatMap((states) =>
-      Effect.forEach(
-        states,
-        (state) =>
-          pollThread(state).pipe(
+    Effect.flatMap((states) => {
+      const byThread = new Map<ThreadId, PullRequestAutoFixState[]>();
+      for (const state of states) {
+        const group = byThread.get(state.threadId);
+        if (group) group.push(state);
+        else byThread.set(state.threadId, [state]);
+      }
+      return Effect.forEach(
+        byThread,
+        ([threadId, group]) =>
+          pollThread(threadId, group).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("auto-fix CI poll failed", {
-                threadId: state.threadId,
+                threadId,
                 cause: Cause.pretty(cause),
               }),
             ),
           ),
-        { discard: true },
-      ),
-    ),
+        { concurrency: PULL_REQUEST_AUTO_FIX_THREAD_CONCURRENCY, discard: true },
+      );
+    }),
     Effect.catchCause((cause) =>
       Effect.logWarning("auto-fix CI poll failed", { cause: Cause.pretty(cause) }),
     ),
