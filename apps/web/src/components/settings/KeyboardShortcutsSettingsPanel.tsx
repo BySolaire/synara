@@ -9,7 +9,7 @@ import type {
   ServerConfig,
   ServerKeybindingEdit,
 } from "@synara/contracts";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "~/components/ui/button";
@@ -56,14 +56,19 @@ function useShortcutEditor() {
     if (edits.length === 0) return true;
     try {
       const result = await ensureNativeApi().server.editKeybindings({ edits });
+      // Issues arrive with the config update that follows the write; the edit reply
+      // does not carry them.
       queryClient.setQueryData(serverQueryKeys.config(), (current: ServerConfig | undefined) =>
-        current ? { ...current, keybindings: result.keybindings, issues: result.issues } : current,
+        current ? { ...current, keybindings: result.keybindings } : current,
       );
       return true;
     } catch (error) {
+      // The server refuses edits made from bindings that changed in the meantime; load
+      // the current ones so the list and an open dialog show what is really there.
+      void queryClient.invalidateQueries({ queryKey: serverQueryKeys.config() });
       toastManager.add({
         type: "error",
-        title: "Could not save shortcut",
+        title: "Could not change shortcuts",
         description: error instanceof Error ? error.message : "Try again.",
       });
       return false;
@@ -123,11 +128,13 @@ export function KeyboardShortcutsSettingsPanel() {
   const [query, setQuery] = useState("");
   const [recorderTarget, setRecorderTarget] = useState<ShortcutRecorderTarget | null>(null);
   const [recorderOpen, setRecorderOpen] = useState(false);
+  const recorderSessionRef = useRef(0);
   const [isRemoving, setIsRemoving] = useState(false);
   const filteredRows = filterShortcutEditorRows(rows, query);
 
   const record = (row: ShortcutEditorRow, binding: ShortcutEditorBinding | null) => {
-    setRecorderTarget({ row, binding, source });
+    recorderSessionRef.current += 1;
+    setRecorderTarget({ row, binding, session: recorderSessionRef.current });
     setRecorderOpen(true);
   };
   const remove = async (binding: ShortcutEditorBinding) => {
@@ -186,6 +193,7 @@ export function KeyboardShortcutsSettingsPanel() {
       <ShortcutRecorderDialog
         open={recorderOpen}
         target={recorderTarget}
+        source={source}
         onOpenChange={setRecorderOpen}
         onApply={applyEdits}
       />
@@ -227,6 +235,7 @@ function ShortcutRow({
               <IconButton
                 label={`Change the shortcut ${binding.label} for ${row.label}`}
                 tooltip="Change shortcut"
+                disabled={disabled}
                 onClick={() => onRecord(binding)}
               >
                 <PencilIcon className="size-3" />
@@ -236,6 +245,7 @@ function ShortcutRow({
                   label={`Add another shortcut for ${row.label}`}
                   tooltip="Add another shortcut"
                   className="opacity-0 transition-opacity focus-visible:opacity-100 group-hover/shortcut:opacity-100 pointer-coarse:opacity-100"
+                  disabled={disabled}
                   onClick={() => onRecord(null)}
                 >
                   <AddPlusIcon className="size-3" />
@@ -258,6 +268,7 @@ function ShortcutRow({
             <IconButton
               label={`Set a shortcut for ${row.label}`}
               tooltip="Set shortcut"
+              disabled={disabled}
               onClick={() => onRecord(null)}
             >
               <PencilIcon className="size-3" />
