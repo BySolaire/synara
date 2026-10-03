@@ -44,7 +44,7 @@ describe("describePullRequestAutoFix", () => {
     expect(describePullRequestAutoFix(base)).toMatchObject({ checked: true, trailing: null });
     expect(describePullRequestAutoFix({ ...base, status: "fixing", attempts: 2 })).toMatchObject({
       checked: true,
-      trailing: "Fixing 2/3",
+      trailing: "Fixing",
     });
   });
 

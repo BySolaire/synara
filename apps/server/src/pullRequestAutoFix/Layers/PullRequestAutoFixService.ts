@@ -169,9 +169,7 @@ const make = Effect.gen(function* () {
           role: "user",
           text: buildPullRequestAutoFixPrompt({
             prNumber: input.prNumber,
-            prUrl: state.pullRequestUrl,
             headSha: decision.headSha,
-            attempt: decision.attempt,
           }),
           attachments: [],
         },

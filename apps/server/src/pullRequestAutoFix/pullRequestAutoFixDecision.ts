@@ -114,16 +114,11 @@ export function decidePullRequestAutoFix(input: {
   return { type: "fix", headSha: pullRequest.headSha, attempt: state.attempts + 1 };
 }
 
-// Deliberately short: the agent reads the failures itself with `gh`, so the message only
-// names the PR and commit and says when to push or stop.
+// A one-line notice, like Claude Code's CI event: the agent reads the failures itself with
+// `gh`, so the message only names the PR and commit and says when to push or stop.
 export function buildPullRequestAutoFixPrompt(input: {
   readonly prNumber: number;
-  readonly prUrl: string;
   readonly headSha: string;
-  readonly attempt: number;
 }): string {
-  return [
-    `Auto-fix CI (attempt ${input.attempt}/${PULL_REQUEST_AUTO_FIX_MAX_ATTEMPTS}): CI failed on PR #${input.prNumber} (${input.prUrl}) at ${input.headSha.slice(0, 7)}.`,
-    `Check \`gh pr checks ${input.prNumber}\`, fix the cause, and push only a verified fix. If the failure isn't caused by this PR, say why and don't push.`,
-  ].join("\n");
+  return `Auto-fix CI: CI failed on PR #${input.prNumber} at ${input.headSha.slice(0, 7)}. Check \`gh pr checks ${input.prNumber}\` and push only a verified fix; if this PR didn't cause it, say why and don't push.`;
 }

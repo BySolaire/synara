@@ -456,7 +456,7 @@ export function describePullRequestAutoFix(
     case "fixing":
       return {
         checked: true,
-        trailing: `Fixing ${state.attempts}/${PULL_REQUEST_AUTO_FIX_MAX_ATTEMPTS}`,
+        trailing: "Fixing",
         title: "A fix turn is running for the failing checks",
       };
     case "paused":

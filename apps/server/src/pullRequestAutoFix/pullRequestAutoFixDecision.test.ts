@@ -189,17 +189,9 @@ describe("decidePullRequestAutoFix", () => {
 });
 
 describe("buildPullRequestAutoFixPrompt", () => {
-  it("stays two lines: the PR, commit and attempt, then how to act", () => {
-    expect(
-      buildPullRequestAutoFixPrompt({
-        prNumber: 7,
-        prUrl: "https://github.com/o/r/pull/7",
-        headSha: "abc1234def",
-        attempt: 2,
-      }),
-    ).toBe(
-      "Auto-fix CI (attempt 2/3): CI failed on PR #7 (https://github.com/o/r/pull/7) at abc1234.\n" +
-        "Check `gh pr checks 7`, fix the cause, and push only a verified fix. If the failure isn't caused by this PR, say why and don't push.",
+  it("is a one-line notice naming the PR and short commit", () => {
+    expect(buildPullRequestAutoFixPrompt({ prNumber: 7, headSha: "abc1234def" })).toBe(
+      "Auto-fix CI: CI failed on PR #7 at abc1234. Check `gh pr checks 7` and push only a verified fix; if this PR didn't cause it, say why and don't push.",
     );
   });
 });
