@@ -10,7 +10,11 @@ import {
   type DesktopMenuShortcuts,
   type ResolvedKeybindingsConfig,
 } from "@synara/contracts";
-import { resolveKeybindingForCommand, type ShortcutMatchContext } from "~/keybindings";
+import {
+  resolveKeybindingForCommand,
+  shortcutConflictKey,
+  type ShortcutMatchContext,
+} from "~/keybindings";
 
 // Resolve each command where it normally runs. The menu's "New Terminal Tab" is
 // `terminal.new`, which is bound for a focused terminal; the others run outside it.
@@ -30,16 +34,29 @@ export function resolveDesktopMenuShortcuts(
       context: MENU_COMMAND_CONTEXT[command],
       ...(platform ? { platform } : {}),
     });
-    const shortcut = binding
-      ? {
-          key: binding.shortcut.key,
-          metaKey: binding.shortcut.metaKey,
-          ctrlKey: binding.shortcut.ctrlKey,
-          shiftKey: binding.shortcut.shiftKey,
-          altKey: binding.shortcut.altKey,
-          modKey: binding.shortcut.modKey,
-        }
-      : null;
+    const sharedConditionalChord =
+      binding &&
+      keybindings.some(
+        (rule) =>
+          rule.command !== command &&
+          rule.whenAst &&
+          shortcutConflictKey(rule.shortcut, platform) ===
+            shortcutConflictKey(binding.shortcut, platform),
+      );
+    // Electron accelerators run globally, without the renderer's focus or `when`
+    // context. Keep conditional bindings in the renderer, where they also yield
+    // to the recorder; native menu clicks still dispatch their command.
+    const shortcut =
+      binding && !binding.whenAst && !sharedConditionalChord
+        ? {
+            key: binding.shortcut.key,
+            metaKey: binding.shortcut.metaKey,
+            ctrlKey: binding.shortcut.ctrlKey,
+            shiftKey: binding.shortcut.shiftKey,
+            altKey: binding.shortcut.altKey,
+            modKey: binding.shortcut.modKey,
+          }
+        : null;
     return [command, shortcut] as const;
   });
   return Object.fromEntries(entries) as DesktopMenuShortcuts;

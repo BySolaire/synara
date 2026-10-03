@@ -3,6 +3,8 @@ import {
   KeybindingRule,
   KeybindingsConfig,
   MAX_KEYBINDINGS_COUNT,
+  MAX_RESOLVED_KEYBINDINGS_COUNT,
+  ResolvedKeybindingsConfig,
 } from "@synara/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -1608,6 +1610,13 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
 
       assert.deepEqual(configState.issues, []);
       assert.equal(configState.keybindings.at(-1)?.command, overLimit.at(-1)?.command);
+      assert.deepEqual(
+        configState.keybindings
+          .filter((rule) => rule.command.startsWith("script."))
+          .map((rule) => rule.command),
+        overLimit.slice(-MAX_KEYBINDINGS_COUNT).map((rule) => rule.command),
+      );
+      yield* Schema.decodeUnknownEffect(ResolvedKeybindingsConfig)(configState.keybindings);
       assert.deepEqual(yield* readRawKeybindingsConfig(keybindingsConfigPath), overLimit.slice(1));
     }).pipe(Effect.provide(makeKeybindingsLayer())),
   );
@@ -1621,8 +1630,42 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
       yield* Effect.gen(function* () {
         const keybindings = yield* Keybindings;
         yield* keybindings.syncDefaultKeybindingsOnStartup;
+        const snapshot = yield* keybindings.loadConfigState;
+        assert.isTrue(snapshot.keybindings.some((rule) => rule.command === "sidebar.toggle"));
+        assert.isTrue(snapshot.keybindings.some((rule) => rule.command === "chat.new"));
+        assert.isAtMost(snapshot.keybindings.length, MAX_RESOLVED_KEYBINDINGS_COUNT);
+        yield* Schema.decodeUnknownEffect(ResolvedKeybindingsConfig)(snapshot.keybindings);
+        assert.deepEqual(
+          snapshot.keybindings
+            .filter((rule) => rule.command.startsWith("script."))
+            .map((rule) => rule.command),
+          full.map((rule) => rule.command),
+        );
+        assert.equal(snapshot.keybindings.at(-1)?.command, full.at(-1)?.command);
       });
 
+      assert.deepEqual(yield* readRawKeybindingsConfig(keybindingsConfigPath), full);
+    }).pipe(Effect.provide(makeKeybindingsLayer())),
+  );
+  it.effect("keeps custom built-ins and unassigned markers at the user rule cap", () =>
+    Effect.gen(function* () {
+      const { keybindingsConfigPath } = yield* ServerConfig;
+      const full: KeybindingRule[] = [
+        { key: "unassigned", command: "sidebar.toggle" },
+        { key: "mod+shift+l", command: "browser.toggle", when: "!terminalFocus" },
+        ...scriptRules(MAX_KEYBINDINGS_COUNT - 2),
+      ];
+      yield* writeRawKeybindingsConfig(keybindingsConfigPath, full);
+      const keybindings = yield* Keybindings;
+      yield* keybindings.syncDefaultKeybindingsOnStartup;
+      const snapshot = yield* keybindings.loadConfigState;
+      assert.deepEqual(
+        snapshot.keybindings.filter(
+          (rule) => rule.command === "sidebar.toggle" || rule.command === "browser.toggle",
+        ),
+        compileResolvedKeybindingsConfig(full.slice(0, 2)),
+      );
+      yield* Schema.decodeUnknownEffect(ResolvedKeybindingsConfig)(snapshot.keybindings);
       assert.deepEqual(yield* readRawKeybindingsConfig(keybindingsConfigPath), full);
     }).pipe(Effect.provide(makeKeybindingsLayer())),
   );

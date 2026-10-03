@@ -854,18 +854,14 @@ function mergeWithDefaultKeybindings(custom: ResolvedKeybindingsConfig): Resolve
     return [...DEFAULT_RESOLVED_KEYBINDINGS];
   }
 
-  const overriddenCommands = new Set(custom.map((binding) => binding.command));
+  // Legacy files may exceed the write cap. Keep their newest user rules without
+  // spending that budget on defaults; the resolved contract reserves both spaces.
+  const activeCustom = custom.slice(-MAX_KEYBINDINGS_COUNT);
+  const overriddenCommands = new Set(activeCustom.map((binding) => binding.command));
   const retainedDefaults = DEFAULT_RESOLVED_KEYBINDINGS.filter(
     (binding) => !overriddenCommands.has(binding.command),
   );
-  const merged = [...retainedDefaults, ...custom];
-
-  if (merged.length <= MAX_KEYBINDINGS_COUNT) {
-    return merged;
-  }
-
-  // Keep the latest rules when the config exceeds max size; later rules have higher precedence.
-  return merged.slice(-MAX_KEYBINDINGS_COUNT);
+  return [...retainedDefaults, ...activeCustom];
 }
 
 function toKeybindingsConfigState(
@@ -1177,8 +1173,8 @@ const makeKeybindings = Effect.gen(function* () {
         });
       }
       // A config at the cap goes without the backfill instead of losing its oldest rules.
-      // The missing commands still get their defaults in the merged runtime list, unless
-      // that list is itself over the cap: it keeps the file's rules and drops defaults.
+      // Runtime defaults have a separate budget, so the full user config stays live
+      // alongside the missing shipped commands without rewriting the file.
       const backfillExceedsLimit =
         missingDefaults.length > 0 &&
         exceedsKeybindingLimit(customConfig.length, customConfig.length + missingDefaults.length);

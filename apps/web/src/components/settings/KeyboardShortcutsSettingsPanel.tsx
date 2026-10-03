@@ -218,19 +218,19 @@ function ShortcutRow({
         SETTINGS_CARD_ROW_CLASS_NAME,
         // Tighter than a regular settings row: this list runs to dozens of commands. The
         // density setting still scales it.
-        "group/shortcut grid grid-cols-[minmax(0,1fr)_12rem] items-center gap-3 py-[calc(var(--app-density-settings-row-padding-y,0.625rem)*0.6)]",
+        "group/shortcut flex flex-wrap items-center gap-x-3 gap-y-1.5 py-[calc(var(--app-density-settings-row-padding-y,0.625rem)*0.6)]",
       )}
     >
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1 basis-48">
         <div className={cn(SETTINGS_CARD_ROW_TITLE_CLASS_NAME, "leading-snug")}>{row.label}</div>
         <div className={cn(SETTINGS_CARD_ROW_DESCRIPTION_CLASS_NAME, "text-ui-sm leading-snug")}>
           {row.description}
         </div>
       </div>
-      <div className="flex min-w-0 flex-col gap-0.5">
+      <div className="flex min-w-0 max-w-full flex-col gap-0.5">
         {row.bindings.length > 0 ? (
           row.bindings.map((binding, index) => (
-            <div key={binding.id} className="flex min-h-6 items-center gap-0.5">
+            <div key={binding.id} className="flex min-h-6 flex-wrap items-center gap-0.5">
               <ShortcutKbd joined shortcutLabel={binding.label} groupClassName="mr-1.5 shrink-0" />
               <IconButton
                 label={`Change the shortcut ${binding.label} for ${row.label}`}
@@ -263,7 +263,7 @@ function ShortcutRow({
             </div>
           ))
         ) : (
-          <div className="flex min-h-6 items-center gap-0.5">
+          <div className="flex min-h-6 flex-wrap items-center gap-0.5">
             <span className="mr-1.5 text-ui text-muted-foreground">Unassigned</span>
             <IconButton
               label={`Set a shortcut for ${row.label}`}

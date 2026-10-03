@@ -37,7 +37,7 @@ Settings → Keybindings lists every built-in command with its shortcuts and wri
 
 A new shortcut takes the `when` condition its command ships with. Edit the file to change a condition.
 
-In the desktop app, the View menu's New Terminal Tab, Toggle Sidebar, and Toggle Browser items show your shortcut for each command, and no shortcut when you leave the command unassigned.
+In the desktop app, the View menu's New Terminal Tab, Toggle Sidebar, and Toggle Browser items follow unconditional shortcuts that do not share their keys with a conditional command. Conditional shortcuts stay in the app's keyboard dispatcher so their `when` conditions are respected; those menu items have no native accelerator. Unassigned commands also have no native accelerator. Menu clicks remain available.
 
 Shortcuts follow the character your layout types: on AZERTY, the key labelled A fires a binding on `a`. A key that types something other than a letter or digit, such as Option+S typing "ß" on macOS or Shift+1 typing "!", matches by its physical key.
 
@@ -74,7 +74,7 @@ Each entry supports:
 - `command` (required): action ID
 - `when` (optional): boolean expression controlling when the shortcut is active
 
-Invalid rules are ignored and reported as issues, and saving from Settings keeps them in the file as written. Invalid config files are ignored. Warnings are logged by the server. The file holds at most 256 rules: past that, saving from Settings is refused and nothing is dropped.
+Invalid rules are ignored and reported as issues, and saving from Settings keeps them in the file as written. Invalid config files are ignored. Warnings are logged by the server. The file holds at most 256 rules: past that, saving from Settings is refused and nothing is dropped. Runtime snapshots reserve additional room for missing built-in defaults, so a full user file keeps every configured rule and the remaining default commands. Legacy files above 256 remain intact on disk; their newest 256 user rules are active, and edits that shrink them remain allowed.
 
 ### Unassigned Commands
 

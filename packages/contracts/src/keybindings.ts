@@ -194,7 +194,12 @@ export const ResolvedKeybindingRule = Schema.Struct({
 }).annotate({ parseOptions: { onExcessProperty: "ignore" } });
 export type ResolvedKeybindingRule = typeof ResolvedKeybindingRule.Type;
 
+// Runtime snapshots include missing shipped defaults alongside the persisted rules.
+// Reserve the built-in inventory's space without lowering the 256-rule user budget.
+export const MAX_RESOLVED_KEYBINDINGS_COUNT =
+  MAX_KEYBINDINGS_COUNT + STATIC_KEYBINDING_COMMANDS.length;
+
 export const ResolvedKeybindingsConfig = Schema.Array(ResolvedKeybindingRule).check(
-  Schema.isMaxLength(MAX_KEYBINDINGS_COUNT),
+  Schema.isMaxLength(MAX_RESOLVED_KEYBINDINGS_COUNT),
 );
 export type ResolvedKeybindingsConfig = typeof ResolvedKeybindingsConfig.Type;
