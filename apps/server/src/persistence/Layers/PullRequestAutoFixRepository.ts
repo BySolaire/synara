@@ -14,13 +14,24 @@ import {
 const makePullRequestAutoFixRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
+  const Row = PullRequestAutoFixState.mapFields((fields) => ({
+    ...fields,
+    requestedPullRequestUrl: Schema.NullOr(Schema.String),
+  }));
+  const decodeRows = (rows: ReadonlyArray<typeof Row.Type>) =>
+    rows.map(({ requestedPullRequestUrl, ...state }) => ({
+      ...state,
+      ...(requestedPullRequestUrl !== null ? { requestedPullRequestUrl } : {}),
+    }));
+
   const listThreadRows = SqlSchema.findAll({
     Request: PullRequestAutoFixThreadInput,
-    Result: PullRequestAutoFixState,
+    Result: Row,
     execute: ({ threadId }) => sql`
       SELECT
         thread_id AS "threadId",
         pull_request_url AS "pullRequestUrl",
+        requested_pull_request_url AS "requestedPullRequestUrl",
         status AS "status",
         pause_reason AS "pauseReason",
         attempts AS "attempts",
@@ -34,11 +45,12 @@ const makePullRequestAutoFixRepository = Effect.gen(function* () {
 
   const listActiveRows = SqlSchema.findAll({
     Request: Schema.Void,
-    Result: PullRequestAutoFixState,
+    Result: Row,
     execute: () => sql`
       SELECT
         thread_id AS "threadId",
         pull_request_url AS "pullRequestUrl",
+        requested_pull_request_url AS "requestedPullRequestUrl",
         status AS "status",
         pause_reason AS "pauseReason",
         attempts AS "attempts",
@@ -56,6 +68,7 @@ const makePullRequestAutoFixRepository = Effect.gen(function* () {
       INSERT INTO pull_request_auto_fix (
         thread_id,
         pull_request_url,
+        requested_pull_request_url,
         status,
         pause_reason,
         attempts,
@@ -65,6 +78,7 @@ const makePullRequestAutoFixRepository = Effect.gen(function* () {
       VALUES (
         ${state.threadId},
         ${state.pullRequestUrl},
+        ${state.requestedPullRequestUrl ?? null},
         ${state.status},
         ${state.pauseReason},
         ${state.attempts},
@@ -72,6 +86,7 @@ const makePullRequestAutoFixRepository = Effect.gen(function* () {
         ${state.updatedAt}
       )
       ON CONFLICT (thread_id, pull_request_url) DO UPDATE SET
+        requested_pull_request_url = excluded.requested_pull_request_url,
         status = excluded.status,
         pause_reason = excluded.pause_reason,
         attempts = excluded.attempts,
@@ -91,6 +106,7 @@ const makePullRequestAutoFixRepository = Effect.gen(function* () {
 
   const listByThread: PullRequestAutoFixRepositoryShape["listByThread"] = (input) =>
     listThreadRows(input).pipe(
+      Effect.map(decodeRows),
       Effect.mapError(
         toPersistenceSqlOrDecodeError(
           "PullRequestAutoFixRepository.listByThread:query",
@@ -101,6 +117,7 @@ const makePullRequestAutoFixRepository = Effect.gen(function* () {
 
   const listActive: PullRequestAutoFixRepositoryShape["listActive"] = () =>
     listActiveRows(undefined).pipe(
+      Effect.map(decodeRows),
       Effect.mapError(
         toPersistenceSqlOrDecodeError(
           "PullRequestAutoFixRepository.listActive:query",

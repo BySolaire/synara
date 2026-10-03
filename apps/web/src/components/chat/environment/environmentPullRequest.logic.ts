@@ -1,3 +1,4 @@
+import { normalizeGitHubPullRequestUrl } from "@synara/shared/githubRepository";
 // FILE: environmentPullRequest.logic.ts
 // Purpose: Pure display/prompt helpers for the Environment panel "Pull request" section —
 //          check-rollup summaries, review-comment display models, the repair prompts that
@@ -444,7 +445,14 @@ export function findPullRequestAutoFixState(
   states: ReadonlyArray<PullRequestAutoFixState>,
   pullRequestUrl: string | null | undefined,
 ): PullRequestAutoFixState | null {
-  return states.find((state) => state.pullRequestUrl === pullRequestUrl) ?? null;
+  const url = normalizeGitHubPullRequestUrl(pullRequestUrl);
+  return url
+    ? (states.find(
+        (state) =>
+          normalizeGitHubPullRequestUrl(state.pullRequestUrl) === url ||
+          normalizeGitHubPullRequestUrl(state.requestedPullRequestUrl) === url,
+      ) ?? null)
+    : null;
 }
 
 // A paused auto-fix reads as unchecked: ticking it again is how the user resumes.
@@ -472,9 +480,11 @@ export function describePullRequestAutoFix(
         checked: false,
         trailing: "Paused",
         title:
-          state.pauseReason === "no-push"
-            ? "Paused: the last fix turn did not push a commit. Turn it on again to retry."
-            : `Paused: checks still failed after ${PULL_REQUEST_AUTO_FIX_MAX_ATTEMPTS} fix attempts. Turn it on again to retry.`,
+          state.pauseReason === "dispatch-interrupted"
+            ? "The fix request was interrupted. Turn Auto-fix CI on again to resume."
+            : state.pauseReason === "no-push"
+              ? "Paused: the last fix turn did not push a commit. Turn it on again to retry."
+              : `Paused: checks still failed after ${PULL_REQUEST_AUTO_FIX_MAX_ATTEMPTS} fix attempts. Turn it on again to retry.`,
       };
   }
 }

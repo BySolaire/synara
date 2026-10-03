@@ -1,6 +1,6 @@
 import { ThreadId, type PullRequestAutoFixState } from "@synara/contracts";
 import { assert, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Effect, Exit, Layer } from "effect";
 
 import { PullRequestAutoFixRepository } from "../Services/PullRequestAutoFixRepository";
 import { PullRequestAutoFixRepositoryLive } from "./PullRequestAutoFixRepository";
@@ -63,5 +63,33 @@ layer("PullRequestAutoFixRepository", (it) => {
         [PR_2],
       );
     }),
+  );
+  it.effect(
+    "permits only one active owner, releases paused ownership and rejects a conflicting resume",
+    () =>
+      Effect.gen(function* () {
+        const repository = yield* PullRequestAutoFixRepository;
+        const pr = "https://github.com/o/r/pull/99";
+        yield* repository.upsert(state("owner-a", pr));
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(repository.upsert(state("owner-b", pr)))));
+        yield* repository.upsert(
+          state("owner-a", pr, { status: "paused", pauseReason: "no-push" }),
+        );
+        yield* repository.upsert(state("owner-b", pr));
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(repository.upsert(state("owner-a", pr)))));
+        assert.deepStrictEqual(
+          (yield* repository.listActive())
+            .filter((row) => row.pullRequestUrl === pr)
+            .map((row) => row.threadId),
+          [ThreadId.makeUnsafe("owner-b")],
+        );
+        yield* repository.delete({ threadId: ThreadId.makeUnsafe("owner-b"), pullRequestUrl: pr });
+        yield* repository.upsert(state("owner-a", pr));
+        assert.deepStrictEqual(
+          yield* repository.listByThread({ threadId: ThreadId.makeUnsafe("owner-a") }),
+          [state("owner-a", pr)],
+        );
+        yield* repository.delete({ threadId: ThreadId.makeUnsafe("owner-a"), pullRequestUrl: pr });
+      }),
   );
 });

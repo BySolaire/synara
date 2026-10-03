@@ -13,7 +13,7 @@ export const PULL_REQUEST_AUTO_FIX_MAX_ATTEMPTS = 3;
 
 /**
  * - `watching`: waiting for the PR's checks to settle.
- * - `fixing`: a fix turn was started for `lastHandledHeadSha` and has not pushed yet.
+ * - `fixing`: a durable fix request was recorded for `lastHandledHeadSha` and has not pushed yet.
  * - `paused`: stopped until the user turns it back on (see `pauseReason`).
  */
 export const PullRequestAutoFixStatus = Schema.Literals(["watching", "fixing", "paused"]);
@@ -22,14 +22,21 @@ export type PullRequestAutoFixStatus = typeof PullRequestAutoFixStatus.Type;
 /**
  * - `attempt-limit`: CI still failed after the maximum number of fix turns.
  * - `no-push`: a fix turn ended without pushing a new commit.
+ * - `dispatch-interrupted`: no accepted durable fix command exists after interruption.
  */
-export const PullRequestAutoFixPauseReason = Schema.Literals(["attempt-limit", "no-push"]);
+export const PullRequestAutoFixPauseReason = Schema.Literals([
+  "attempt-limit",
+  "no-push",
+  "dispatch-interrupted",
+]);
 export type PullRequestAutoFixPauseReason = typeof PullRequestAutoFixPauseReason.Type;
 
 /** One watched pull request of one chat. */
 export const PullRequestAutoFixState = Schema.Struct({
   threadId: ThreadId,
   pullRequestUrl: TrimmedNonEmptyString,
+  /** Original URL retained so redirects can be turned off without another GitHub read. */
+  requestedPullRequestUrl: Schema.optional(TrimmedNonEmptyString),
   status: PullRequestAutoFixStatus,
   pauseReason: Schema.NullOr(PullRequestAutoFixPauseReason),
   /** Fix turns started since the last green run. */

@@ -9,6 +9,7 @@ import {
 
 import {
   describePullRequestAutoFix,
+  findPullRequestAutoFixState,
   buildFixFailingChecksPrompt,
   buildFixReviewCommentsPrompt,
   buildFixFindingsPrompt,
@@ -39,6 +40,19 @@ describe("describePullRequestAutoFix", () => {
     updatedAt: "2026-10-03T10:00:00.000Z",
   };
 
+  it("matches a saved redirect alias and canonical URL variants", () => {
+    const state = { ...base, requestedPullRequestUrl: "https://github.com/old/repo/pull/1" };
+    expect(findPullRequestAutoFixState([state], "https://github.com/O/R/pull/1/files?x=1")).toBe(
+      state,
+    );
+    expect(
+      findPullRequestAutoFixState([state], "https://github.com/OLD/Repo/pull/1#comments"),
+    ).toBe(state);
+    expect(findPullRequestAutoFixState([state], "https://github.com/o/r/pull/0")).toBeNull();
+    expect(
+      findPullRequestAutoFixState([state], "https://github.com/o/r/pull/9007199254740993"),
+    ).toBeNull();
+  });
   it("is unchecked while off and checked while watching or fixing", () => {
     expect(describePullRequestAutoFix(null)).toMatchObject({ checked: false, trailing: null });
     expect(describePullRequestAutoFix(base)).toMatchObject({ checked: true, trailing: null });

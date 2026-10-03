@@ -8,6 +8,7 @@ import type {
   PullRequestSetPinnedInput,
   PullRequestState,
 } from "@synara/contracts";
+import { normalizeGitHubPullRequestUrl } from "@synara/shared/githubRepository";
 import { mutationOptions, type QueryClient } from "@tanstack/react-query";
 
 import { ensureNativeApi } from "~/nativeApi";
@@ -434,7 +435,10 @@ export function pullRequestSetAutoFixMutationOptions(queryClient: QueryClient) {
           states: [
             ...(current?.states ?? []).filter(
               (state) =>
-                state.pullRequestUrl !== input.pullRequestUrl &&
+                normalizeGitHubPullRequestUrl(state.pullRequestUrl) !==
+                  normalizeGitHubPullRequestUrl(input.pullRequestUrl) &&
+                normalizeGitHubPullRequestUrl(state.requestedPullRequestUrl) !==
+                  normalizeGitHubPullRequestUrl(input.pullRequestUrl) &&
                 state.pullRequestUrl !== result.state?.pullRequestUrl,
             ),
             ...(result.state ? [result.state] : []),

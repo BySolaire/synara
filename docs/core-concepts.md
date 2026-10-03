@@ -116,6 +116,19 @@ When due, the thread returns to recent activity and Synara shows a reminder usin
 your notification settings. If Synara and its server are closed, the overdue
 reminder is recovered when they start again.
 
+In Beta, **Auto-fix CI** in the Environment panel's pull request menu watches open PRs
+for this chat, including other PRs in its stack. One chat can own the active watch for a
+PR. A paused watch releases ownership; resuming it requires that no other chat owns it.
+The server checks every minute and starts at most one fix turn for each failing commit,
+using the chat's permissions. It waits for active turns, background tasks, approvals,
+questions, and Plan mode. Switching to another PR requires a clean working tree; the fix
+request names the canonical GitHub PR and asks the agent to verify its commit before
+editing and restore the original checkout afterwards. A failure streak allows three
+attempts. A turn that finishes without pushing, or an interrupted request with no accepted
+durable command receipt after restart, pauses the watch with a transcript notice. Turn it
+on again to resume. Turning it off cancels pending watch decisions, and closed PRs stop
+being watched. Stable does not start this watcher or accept its RPC operations.
+
 Sidechats keep the source chat's project, folder, branch, and Local/Worktree environment. Their
 empty view shows the composer without the new-chat welcome screen or independent project, folder,
 branch, Local/Worktree, or Temporary controls.

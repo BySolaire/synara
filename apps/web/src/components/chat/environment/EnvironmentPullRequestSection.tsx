@@ -16,6 +16,7 @@ import type {
   PullRequestAction,
   PullRequestDetailInput,
   PullRequestMergeMethod,
+  PullRequestAutoFixState,
   ThreadId,
 } from "@synara/contracts";
 import { githubAvatarUrlForLogin } from "@synara/shared/githubAvatar";
@@ -110,6 +111,68 @@ import {
   withStableCheckKeys,
   type PullRequestChecksTone,
 } from "./environmentPullRequest.logic";
+/** Shares the menu/stack action and loads its settings only when the control is shown. */
+function PullRequestAutoFixToggle(props: {
+  threadId: ThreadId;
+  url: string;
+  state: PullRequestAutoFixState | null;
+  disabled: boolean;
+  number?: number;
+}) {
+  const queryClient = useQueryClient();
+  const { updateSettings } = useAppSettings();
+  const autoFixMutation = useMutation(pullRequestSetAutoFixMutationOptions(queryClient));
+  const setAutoFix = (threadId: ThreadId, enabled: boolean, pullRequestUrl: string) =>
+    autoFixMutation.mutate(
+      { threadId, enabled, pullRequestUrl },
+      {
+        // Once someone finds the checkbox, the composer hint has done its job.
+        onSuccess: () => {
+          if (enabled) updateSettings({ dismissedPullRequestAutoFixHint: true });
+        },
+        onError: (error) => {
+          toastManager.add({
+            type: "error",
+            timeout: DEFAULT_TOAST_TIMEOUT_MS,
+            title: "Couldn't update Auto-fix CI",
+            description: error instanceof Error ? error.message : undefined,
+          });
+        },
+      },
+    );
+
+  const display = describePullRequestAutoFix(props.state);
+  const onCheckedChange = (checked: boolean) =>
+    setAutoFix(props.threadId, checked, props.state?.pullRequestUrl ?? props.url);
+  const disabled = props.disabled || autoFixMutation.isPending;
+  return props.number === undefined ? (
+    <MenuCheckboxItem
+      variant="checkbox"
+      checked={display.checked}
+      disabled={disabled}
+      closeOnClick={false}
+      title={display.title}
+      data-testid="pr-auto-fix-ci"
+      onCheckedChange={onCheckedChange}
+    >
+      <MenuRowLabel icon={null} label="Auto-fix CI" trailing={display.trailing} />
+    </MenuCheckboxItem>
+  ) : (
+    <span className="flex shrink-0 items-center gap-2">
+      {display.trailing ? (
+        <span className="text-ui-sm text-muted-foreground">{display.trailing}</span>
+      ) : null}
+      <Checkbox
+        aria-label={`Auto-fix CI for #${props.number}`}
+        title={display.title}
+        checked={display.checked}
+        disabled={disabled}
+        onCheckedChange={onCheckedChange}
+      />
+    </span>
+  );
+}
+
 /** Icon-only action sharing the "View PR" row (copy link, open in GitHub). */
 const MENU_INLINE_ACTION_CLASS_NAME = "shrink-0 px-1.5";
 /** Right-aligned secondary value on a menu row (diff stat, count, current status).
@@ -363,26 +426,6 @@ export function EnvironmentPullRequestSection({
   const autoFixQuery = useQuery(
     pullRequestAutoFixQueryOptions(activeThreadId, enabled && autoFixAvailable),
   );
-  const { updateSettings } = useAppSettings();
-  const autoFixMutation = useMutation(pullRequestSetAutoFixMutationOptions(queryClient));
-  const setAutoFix = (threadId: ThreadId, enabled: boolean, pullRequestUrl: string) =>
-    autoFixMutation.mutate(
-      { threadId, enabled, pullRequestUrl },
-      {
-        // Once someone finds the checkbox, the composer hint has done its job.
-        onSuccess: () => {
-          if (enabled) updateSettings({ dismissedPullRequestAutoFixHint: true });
-        },
-        onError: (error) => {
-          toastManager.add({
-            type: "error",
-            timeout: DEFAULT_TOAST_TIMEOUT_MS,
-            title: "Couldn't update Auto-fix CI",
-            description: error instanceof Error ? error.message : undefined,
-          });
-        },
-      },
-    );
 
   if (!displayPr) {
     return null;
@@ -390,9 +433,7 @@ export function EnvironmentPullRequestSection({
 
   const settledState = displayPr.state !== "open" ? displayPr.state : null;
   const autoFixStates = autoFixQuery.data?.states ?? [];
-  const autoFixDisplay = describePullRequestAutoFix(
-    findPullRequestAutoFixState(autoFixStates, displayPr.url),
-  );
+  const autoFixState = findPullRequestAutoFixState(autoFixStates, displayPr.url);
   // The other PRs of this PR's stack, each with its own Auto-fix CI checkbox (Beta).
   const stackRows =
     autoFixAvailable && detailQuery.data?.stack
@@ -793,21 +834,12 @@ export function EnvironmentPullRequestSection({
               {/* Beta-only: the server watches this PR's checks and starts a fix turn in this
                   chat when they fail. Stays open on toggle so the new state is visible. */}
               {autoFixAvailable && activeThreadId ? (
-                <MenuCheckboxItem
-                  variant="checkbox"
-                  checked={autoFixDisplay.checked}
-                  disabled={autoFixQuery.isPending || autoFixMutation.isPending}
-                  closeOnClick={false}
-                  title={autoFixDisplay.title}
-                  data-testid="pr-auto-fix-ci"
-                  onCheckedChange={(checked) => setAutoFix(activeThreadId, checked, displayPr.url)}
-                >
-                  <MenuRowLabel
-                    icon={null}
-                    label="Auto-fix CI"
-                    trailing={autoFixDisplay.trailing}
-                  />
-                </MenuCheckboxItem>
+                <PullRequestAutoFixToggle
+                  threadId={activeThreadId}
+                  url={displayPr.url}
+                  state={autoFixState}
+                  disabled={autoFixQuery.isPending}
+                />
               ) : null}
 
               {canRunActions ? (
@@ -917,9 +949,7 @@ export function EnvironmentPullRequestSection({
       {stackRows.map((entry) => {
         const presentation = resolvePrStatePresentation(entry);
         const EntryIcon = PR_STATE_PRESENTATION_ICONS[presentation.iconKind];
-        const entryAutoFix = describePullRequestAutoFix(
-          findPullRequestAutoFixState(autoFixStates, entry.url),
-        );
+        const entryAutoFix = findPullRequestAutoFixState(autoFixStates, entry.url);
         const label = `#${entry.number} ${entry.title}`;
         return (
           <div
@@ -938,20 +968,13 @@ export function EnvironmentPullRequestSection({
               label={<span className="truncate">{label}</span>}
               trailing={
                 entry.state === "open" && activeThreadId ? (
-                  <span className="flex shrink-0 items-center gap-2">
-                    {entryAutoFix.trailing ? (
-                      <span className="text-ui-sm text-muted-foreground">
-                        {entryAutoFix.trailing}
-                      </span>
-                    ) : null}
-                    <Checkbox
-                      aria-label={`Auto-fix CI for #${entry.number}`}
-                      title={entryAutoFix.title}
-                      checked={entryAutoFix.checked}
-                      disabled={autoFixMutation.isPending}
-                      onCheckedChange={(checked) => setAutoFix(activeThreadId, checked, entry.url)}
-                    />
-                  </span>
+                  <PullRequestAutoFixToggle
+                    threadId={activeThreadId}
+                    url={entry.url}
+                    state={entryAutoFix}
+                    disabled={autoFixQuery.isPending}
+                    number={entry.number}
+                  />
                 ) : null
               }
             />
