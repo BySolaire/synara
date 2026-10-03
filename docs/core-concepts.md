@@ -106,6 +106,16 @@ the conversation or split from one exact turn. Use a
 [handoff](https://www.trysynara.com/docs/workflows/handoffs) when another provider should continue
 the same task and ownership boundary.
 
+Use **Snooze** in a thread's context menu to return to it in 30 minutes, 1 hour,
+2 hours, or tomorrow at 9am. It moves to **Snoozed** and leaves ordinary thread lists
+and attention badges until the reminder is due. **Return now** cancels the snooze;
+choosing another time reschedules it. Snoozing preserves any running agent work.
+Sending a new message also returns the thread to the list.
+
+When due, the thread returns to recent activity and Synara shows a reminder using
+your notification settings. If Synara and its server are closed, the overdue
+reminder is recovered when they start again.
+
 Sidechats keep the source chat's project, folder, branch, and Local/Worktree environment. Their
 empty view shows the composer without the new-chat welcome screen or independent project, folder,
 branch, Local/Worktree, or Temporary controls.
@@ -118,7 +128,8 @@ A sidechat can also stand alone, with no source chat: **Ask** on a Code review i
 that pull request or issue. It has no transcript to import and no permissions to inherit, so it
 starts in Ask for approval, runs in the project's own checkout without switching branches, and
 is told to treat the item's text as untrusted reference data. Like any sidechat it stays out of
-the thread list and expires after an hour of inactivity. Its empty view likewise shows only the
+the thread list and expires after the inactivity window set in Settings → Conversation
+(1 hour by default, 24 hours, or never). Its empty view likewise shows only the
 composer and keeps the workspace assigned by Code review.
 
 ## Code review
@@ -288,6 +299,8 @@ scaling beyond one task.
 - `mod+d` — toggle the diff view
 - `mod+shift+b` — toggle the browser
 - `mod+\` — split the current view
+- `mod+1` through `mod+9` — open a numbered sidebar thread. Hold `mod` to show the
+  default numbers in the classic and Activity views.
 
 Check the [keyboard reference](https://www.trysynara.com/docs/reference/keyboard-shortcuts) for the
 complete current list.

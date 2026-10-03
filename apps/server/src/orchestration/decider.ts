@@ -145,6 +145,33 @@ function validateAutoRuntimeMode(
       );
 }
 
+/**
+ * A same-thread provider handoff restarts the session on another provider, so
+ * it shares Hand off's preconditions: no running turn, pending approval, or
+ * pending question the new session could not settle.
+ */
+function validateProviderHandoff(
+  command: Extract<OrchestrationCommand, { type: "thread.meta.update" }>,
+  thread: OrchestrationThread,
+) {
+  const target = command.modelSelection;
+  // A live session cannot switch between instances of one provider in place
+  // (the turn path rejects that), so those handoffs keep using a new thread.
+  const detail =
+    target === undefined
+      ? "A provider handoff needs a target model selection."
+      : target.provider === thread.modelSelection.provider
+        ? `Thread '${command.threadId}' already runs on '${target.provider}'; hand off to a new thread instead.`
+        : thread.session?.status === "starting" || thread.session?.status === "running"
+          ? `Thread '${command.threadId}' still has a running turn.`
+          : thread.hasPendingApprovals || thread.hasPendingUserInput
+            ? `Thread '${command.threadId}' is waiting for an approval or an answer.`
+            : null;
+  return detail === null
+    ? Effect.void
+    : Effect.fail(new OrchestrationCommandInvariantError({ commandType: command.type, detail }));
+}
+
 const defaultMetadata: Omit<OrchestrationEvent, "sequence" | "type" | "payload"> = {
   eventId: crypto.randomUUID() as OrchestrationEvent["eventId"],
   aggregateKind: "thread",
@@ -1546,11 +1573,38 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const expectedSnoozedUntil = command.expectedSnoozedUntil;
+      const expiresSnooze = expectedSnoozedUntil !== undefined;
+      if (command.snoozedUntil != null || expiresSnooze) {
+        yield* requireThreadNotArchived({ readModel, command, threadId: command.threadId });
+      }
+      if (expectedSnoozedUntil !== undefined) {
+        if (
+          command.snoozedUntil !== null ||
+          expectedSnoozedUntil === null ||
+          thread.snoozedUntil == null ||
+          Date.parse(thread.snoozedUntil) !== Date.parse(expectedSnoozedUntil)
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Thread '${command.threadId}' snooze deadline changed before expiry.`,
+          });
+        }
+        if (Date.parse(thread.snoozedUntil) > Date.now()) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Thread '${command.threadId}' snooze reminder is not due.`,
+          });
+        }
+      }
       const project = readModel.projects.find((candidate) => candidate.id === thread.projectId);
       // Provider-native threads: see thread.create — the selection mirrors the
       // provider's own subagent, so the Auto-mode capability check doesn't apply.
       if (command.modelSelection !== undefined && thread.creationSource !== "provider_native") {
         yield* validateAutoRuntimeMode(command, command.modelSelection, thread.runtimeMode);
+      }
+      if (command.providerHandoff === true) {
+        yield* validateProviderHandoff(command, thread);
       }
       const occurredAt = nowIso();
       return {
@@ -1572,6 +1626,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.isSettled !== undefined
             ? { settledAt: command.isSettled ? occurredAt : null }
             : {}),
+          ...(command.snoozedUntil !== undefined
+            ? { snoozedUntil: command.snoozedUntil, snoozeReminderAt: null }
+            : {}),
+          ...(expiresSnooze ? { snoozeReminderAt: occurredAt, settledAt: null } : {}),
           ...(command.parentThreadId !== undefined
             ? { parentThreadId: command.parentThreadId }
             : {}),
@@ -1592,6 +1650,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? { goalStartBehavior: command.goalStartBehavior }
             : {}),
           ...resolveThreadGoalPatch(command, thread, occurredAt),
+          ...(command.providerHandoff === true
+            ? { providerHandoff: { sourceModelSelection: thread.modelSelection } }
+            : {}),
           updatedAt: occurredAt,
         },
       };
@@ -1883,6 +1944,27 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         (targetThread.claudeCacheReview != null ||
           (isThreadRunning &&
             (dispatchMode === "queue" || !providerSupportsNativeTurnSteering(activeProvider))));
+      const snoozeEvents: Array<Omit<OrchestrationEvent, "sequence">> =
+        (command.dispatchOrigin ?? "user") === "user" &&
+        (targetThread.snoozedUntil != null || targetThread.snoozeReminderAt != null)
+          ? [
+              {
+                ...withEventBase({
+                  aggregateKind: "thread",
+                  aggregateId: command.threadId,
+                  occurredAt: command.createdAt,
+                  commandId: command.commandId,
+                }),
+                type: "thread.meta-updated",
+                payload: {
+                  threadId: command.threadId,
+                  snoozedUntil: null,
+                  snoozeReminderAt: null,
+                  updatedAt: command.createdAt,
+                },
+              },
+            ]
+          : [];
       const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
           aggregateKind: "thread",
@@ -1944,6 +2026,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
       if (shouldQueue && dispatchMode === "steer" && targetThread.claudeCacheReview == null) {
         return [
+          ...snoozeEvents,
           userMessageEvent,
           queuedEvent,
           {
@@ -1965,6 +2048,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
       if (questionResponse && questionMessage?.asyncUserInput) {
         return [
+          ...snoozeEvents,
           {
             ...withEventBase({
               aggregateKind: "thread",
@@ -1986,7 +2070,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           queuedEvent,
         ];
       }
-      return [userMessageEvent, queuedEvent];
+      return [...snoozeEvents, userMessageEvent, queuedEvent];
     }
 
     case "thread.claude-cache.set": {
