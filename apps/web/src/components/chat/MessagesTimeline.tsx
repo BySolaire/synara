@@ -5,6 +5,7 @@
 
 import {
   type EditorId,
+  type HubWorkItem,
   type MessageId,
   type ProviderMentionReference,
   type ResolvedKeybindingsConfig,
@@ -30,6 +31,7 @@ import {
   type KeyboardEvent,
   type RefObject,
   type ReactNode,
+  type ReactElement,
   type SetStateAction,
 } from "react";
 import {
@@ -45,6 +47,7 @@ import {
   type WorktreeSetupSnapshot,
   type WorktreeSetupStep,
 } from "../../types";
+import { HubWorkItemCards } from "./group/HubWorkItemCard";
 import { AsyncUserInputCard } from "./AsyncUserInputCard";
 import ChatMarkdown from "../ChatMarkdown";
 import type { WorkingLabel } from "../ChatView.logic";
@@ -71,6 +74,7 @@ import { Button } from "../ui/button";
 import { composerOverlayScrollFadeVars } from "./composerOverlay";
 import { CrossTaskOriginLabel, type CrossTaskOrigin } from "./CrossTaskOriginLabel";
 import { ForkSourceDivider, type ForkSourceReference } from "./ForkSourceDivider";
+import { ProviderHandoffDivider } from "./ProviderHandoffDivider";
 import { SynaraThreadCreationCard } from "./SynaraThreadCreationCard";
 import { WorkerMonitorNoticePill } from "./WorkerMonitorNoticePill";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
@@ -405,6 +409,10 @@ interface MessagesTimelineProps {
   isWorking: boolean;
   workingLabel?: WorkingLabel | undefined;
   activeTurnInProgress: boolean;
+  /** Keeps the latest turn expanded while background subagents are still running. */
+  subagentsRunning?: boolean;
+  /** User setting: false keeps every finished turn expanded instead of folding it. */
+  collapseFinishedTurns?: boolean;
   activeTurnStartedAt: string | null;
   /** Transient "New worktree" setup progress; rendered as an ephemeral step card at the tail. */
   worktreeSetup?: WorktreeSetupSnapshot | null;
@@ -414,6 +422,7 @@ interface MessagesTimelineProps {
   onResolveWorktreeSetup?: (action: WorktreeSetupResolutionAction) => void;
   followLiveOutput?: boolean;
   emptyStateContent?: ReactNode;
+  historyHeader?: ReactElement | undefined;
   listRef?: RefObject<LegendListRef | null>;
   /** Receives the scroll-to-message controller so the Environment panel can jump to a pin. */
   controllerRef?: RefObject<MessagesTimelineController | null>;
@@ -449,6 +458,7 @@ interface MessagesTimelineProps {
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   /** Stable source messages, before plans/tools reshape the presentation rows. */
   messageChangeSignal?: unknown;
+  hubWorkItemsByMessageId?: ReadonlyMap<MessageId, readonly HubWorkItem[]> | undefined;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
   /** Coordinator/bot chats hide tool rows and keep a text conversation. */
   conversationOnly?: boolean;
@@ -522,9 +532,12 @@ interface MessagesTimelineProps {
 
 export const MessagesTimeline = memo(function MessagesTimeline({
   hasMessages,
+  historyHeader,
   isWorking,
   workingLabel: workingLabelProp,
   activeTurnInProgress,
+  subagentsRunning,
+  collapseFinishedTurns,
   activeTurnStartedAt,
   worktreeSetup: worktreeSetupProp,
   worktreeSetupPendingAction: worktreeSetupPendingActionProp,
@@ -545,6 +558,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   isTemporaryThread: isTemporaryThreadProp,
   timelineEntries,
   messageChangeSignal: messageChangeSignalProp,
+  hubWorkItemsByMessageId,
   turnDiffSummaryByAssistantMessageId,
   conversationOnly: conversationOnlyProp,
   nowIso,
@@ -768,6 +782,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         worktreeSetup: presentedWorktreeSetup?.snapshot ?? null,
         worktreeSetupOpen: presentedWorktreeSetup?.open ?? false,
         activeTurnInProgress,
+        subagentsRunning: subagentsRunning === true,
+        collapseFinishedTurns: collapseFinishedTurns !== false,
         activeTurnId,
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
@@ -779,6 +795,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       isWorking,
       presentedWorktreeSetup,
       activeTurnInProgress,
+      subagentsRunning,
+      collapseFinishedTurns,
       activeTurnId,
       activeTurnStartedAt,
       turnDiffSummaryByAssistantMessageId,
@@ -902,6 +920,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const enteringMessageRowIds = useMessageSendEnterAnimations(rows, enteringUserMessageIds);
   const timelineExtraData = useMemo(
     () => ({
+      hubWorkItemsByMessageId,
       crossTaskOrigin,
       editingUserMessageId,
       enteringMessageRowIds,
@@ -920,6 +939,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       toolGroupSummaryOverrides,
     }),
     [
+      hubWorkItemsByMessageId,
       crossTaskOrigin,
       editingUserMessageId,
       enteringMessageRowIds,
@@ -1376,13 +1396,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     >
       {forkDividerBeforeRowId === row.id ? forkSourceDivider : null}
       {row.kind === "work" &&
+        row.groupedEntries.map((workEntry) =>
+          workEntry.providerHandoff ? (
+            <ProviderHandoffDivider
+              key={`provider-handoff:${workEntry.id}`}
+              info={workEntry.providerHandoff}
+            />
+          ) : null,
+        )}
+      {row.kind === "work" &&
         !conversationOnly &&
         (() => {
           const groupId = row.id;
           // Creation milestones are reserved for the end-of-turn recap card.
           // The provider's actual Synara MCP tool rows remain visible here.
+          // Handoff boundaries render as the divider above, not as work rows.
           const groupedEntries = row.groupedEntries.filter(
-            (workEntry) => !workEntry.synaraThreadCreation,
+            (workEntry) => !workEntry.synaraThreadCreation && !workEntry.providerHandoff,
           );
           if (groupedEntries.length === 0) {
             return null;
@@ -1595,6 +1625,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           const renderedPullRequestContexts = displayedUserMessage.pullRequestContexts;
           const renderedBrowserAnnotations = displayedUserMessage.browserAnnotations;
           const userMessageText = displayedUserMessage.visibleText;
+          const messageWorkItems = hubWorkItemsByMessageId?.get(row.message.id);
           const userMessageExpanded = expandedUserMessagesById[row.message.id] ?? false;
           const showUserText = userMessageText.trim().length > 0 || terminalContexts.length > 0;
           const canRevertAgentWork = typeof row.revertTurnCount === "number";
@@ -1811,6 +1842,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                   )}
                 </div>
               </div>
+              {messageWorkItems?.length ? (
+                <HubWorkItemCards items={messageWorkItems} onOpenThread={onOpenThread} />
+              ) : null}
             </div>
           );
         })()}
@@ -2658,14 +2692,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const hasRenderableTranscriptContent =
     hasMessages || rows.length > 0 || canRenderForkSourceDivider;
   if (!hasRenderableTranscriptContent && !isWorking) {
-    if (emptyStateContent) {
-      return <div className="flex h-full items-center justify-center">{emptyStateContent}</div>;
-    }
     return (
-      <div className="flex h-full items-center justify-center">
-        <p className="text-ui leading-snug text-muted-foreground/30">
-          Send a message to start the conversation.
-        </p>
+      <div className="flex h-full flex-col">
+        {historyHeader}
+        <div className="flex flex-1 items-center justify-center">
+          {emptyStateContent ?? (
+            <p className="text-ui leading-snug text-muted-foreground/30">
+              Send a message to start the conversation.
+            </p>
+          )}
+        </div>
       </div>
     );
   }
@@ -2713,6 +2749,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         onWheel={handleMessagesWheel}
         data-chat-scroll-container="true"
         ListFooterComponent={listFooter}
+        ListHeaderComponent={historyHeader}
         // `scroll-edge-fade` (index.css) dissolves rows under the chat header and toward
         // the composer instead of cutting them. It is scroll-aware via
         // `animation-timeline: scroll()` and paint-only, so each edge clears once nothing

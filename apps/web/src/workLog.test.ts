@@ -122,6 +122,59 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["task-progress"]);
   });
 
+  it("adds a visible row when a task moved to the background finishes", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "moved",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "runtime.warning",
+        summary: "Moved to background",
+        tone: "info",
+        turnId: "turn-1",
+        payload: {
+          message: "Server startup",
+          detail: "Server startup",
+          nativeEventType: "background_tasks_changed",
+          data: {
+            subtype: "background_tasks_changed",
+            tasks: [
+              { task_id: "agent-1", task_type: "local_agent", description: "Server startup" },
+            ],
+          },
+        },
+      }),
+      // A foreground command task finishing must not add a row.
+      makeActivity({
+        id: "bash-done",
+        createdAt: "2026-02-23T00:00:30.000Z",
+        kind: "task.completed",
+        summary: "Task completed",
+        tone: "info",
+        payload: { taskId: "bash-1", status: "completed" },
+      }),
+      makeActivity({
+        id: "agent-done",
+        createdAt: "2026-02-23T00:01:00.000Z",
+        kind: "task.completed",
+        summary: "Task completed",
+        tone: "info",
+        payload: { taskId: "agent-1", status: "completed", detail: "Report" },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined, {
+      visibleTurnIds: new Set([TurnId.makeUnsafe("turn-1")]),
+    });
+    const completion = entries.find((entry) => entry.backgroundTaskCompletion);
+    expect(entries.map((entry) => entry.id)).toEqual(["moved", "agent-done"]);
+    expect(completion?.label).toBe("Subagent finished: Server startup");
+    expect(completion?.backgroundTaskCompletion).toEqual({
+      taskId: "agent-1",
+      taskType: "local_agent",
+      description: "Server startup",
+    });
+  });
+
   it("collapses task-list snapshots into one progressing row per turn", () => {
     const taskListActivity = (
       id: string,
@@ -389,6 +442,67 @@ describe("deriveWorkLogEntries", () => {
       },
     });
     expect(entry?.providerContextLifecycle?.recapPreview?.length).toBeLessThanOrEqual(600);
+  });
+
+  it("derives same-thread handoff rows with source, target, and transferred context", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "provider-handoff",
+          kind: "provider.handoff",
+          summary: "Handed off from Codex (gpt-5.4) to Claude (claude-sonnet-4-6)",
+          tone: "info",
+          payload: {
+            sourceProvider: "codex",
+            sourceModel: "gpt-5.4",
+            targetProvider: "claudeAgent",
+            targetModel: "claude-sonnet-4-6",
+            contextText: "User:\nfix the flaky test",
+            contextCharacters: 24,
+          },
+        }),
+        makeActivity({
+          id: "provider-handoff-failed",
+          kind: "provider.handoff.failed",
+          summary: "Handoff to Claude (claude-sonnet-4-6) failed",
+          tone: "error",
+          payload: {
+            sourceProvider: "codex",
+            sourceModel: "gpt-5.4",
+            targetProvider: "claudeAgent",
+            targetModel: "claude-sonnet-4-6",
+            detail: "Claude could not start.",
+          },
+        }),
+      ],
+      TurnId.makeUnsafe("turn-visible"),
+      { visibleTurnIds: new Set([TurnId.makeUnsafe("turn-visible")]) },
+    );
+
+    expect(entries.map((entry) => entry.providerHandoff)).toEqual([
+      {
+        status: "completed",
+        sourceProvider: "codex",
+        sourceModel: "gpt-5.4",
+        targetProvider: "claudeAgent",
+        targetModel: "claude-sonnet-4-6",
+        sourceModelSelection: { provider: "codex", model: "gpt-5.4" },
+        targetModelSelection: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+        contextText: "User:\nfix the flaky test",
+        failureDetail: null,
+      },
+      {
+        status: "failed",
+        sourceProvider: "codex",
+        sourceModel: "gpt-5.4",
+        targetProvider: "claudeAgent",
+        targetModel: "claude-sonnet-4-6",
+        sourceModelSelection: { provider: "codex", model: "gpt-5.4" },
+        targetModelSelection: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+        contextText: null,
+        failureDetail: "Claude could not start.",
+      },
+    ]);
   });
 
   it("keeps native-history loss visible when the provider sent no recap", () => {

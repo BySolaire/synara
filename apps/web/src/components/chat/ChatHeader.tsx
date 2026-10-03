@@ -43,14 +43,13 @@ import {
 } from "./chatHeaderControls";
 import { DiffStat } from "../ui/diff-stat";
 import { IconButton } from "../ui/icon-button";
-import { Menu, MenuItem, MenuTrigger } from "../ui/menu";
+import { Menu, MenuGroup, MenuGroupLabel, MenuItem, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { ComposerPickerMenuPopup } from "./ComposerPickerMenuPopup";
 import { OpenInPicker } from "./OpenInPicker";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SidebarHeaderNavigationControls } from "../SidebarHeaderNavigationControls";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
 import { Toggle } from "../ui/toggle";
-import { useSidebar } from "../ui/sidebar";
 import { useAppSettings } from "../../appSettings";
 import { useStore } from "../../store";
 import { createSidebarDisplayThreadsSelector } from "../../storeSelectors";
@@ -61,7 +60,7 @@ import {
   useRecordOpenThreadTab,
 } from "../../hooks/useOpenThreadTabs";
 import { useOptimisticTabSelection } from "../../hooks/useOptimisticTabSelection";
-import { createOpenThreadTabCloseQueue } from "../../openThreadTabs.logic";
+import { closeOpenThreadTab, createOpenThreadTabCloseQueue } from "../../openThreadTabs.logic";
 import { useOpenThreadTabsStore } from "../../openThreadTabsStore";
 import { StatusDot } from "~/components/ui/status-chip";
 import { cn } from "~/lib/utils";
@@ -110,6 +109,8 @@ interface ChatHeaderProps {
   handoffActionLabel: string;
   handoffDisabled: boolean;
   handoffActionTargets: ReadonlyArray<ThreadHandoffTarget>;
+  /** Subset of `handoffActionTargets` that can continue in this same thread. */
+  continueHandoffActionTargets: ReadonlyArray<ThreadHandoffTarget>;
   // Coordinator threads pass false — a hand-off copy would read as a second
   // coordinator, so the action itself is hidden rather than disabled.
   showHandoffAction?: boolean;
@@ -160,6 +161,7 @@ interface ChatHeaderProps {
   onToggleDiff: () => void;
   onRegisterCommitAndPushTrigger?: (trigger: (() => void) | null) => void;
   onCreateHandoff: (target: ThreadHandoffTarget) => void;
+  onContinueHandoff: (target: ThreadHandoffTarget) => void;
   onNavigateToThread: (threadId: ThreadId) => void;
   onRenameThread: () => void;
   onCloseThreadPane?: () => void;
@@ -303,7 +305,7 @@ function EditorRailTabs(props: {
     // route has left it, so a guarded navigation keeps it in both places.
     void enqueueClose(() => {
       const openThreadIds = useOpenThreadTabsStore.getState().threadIds;
-      return {
+      return closeOpenThreadTab({
         tabs: chatTabs.filter((tab) => openThreadIds.includes(tab.threadId)),
         closedThreadId: threadId,
         activeThreadId: props.activeSurface === "chat" ? readRouteThreadId() : null,
@@ -317,7 +319,7 @@ function EditorRailTabs(props: {
             }
           : undefined,
         readRouteThreadId,
-      };
+      });
     });
   };
 
@@ -441,6 +443,7 @@ export function ChatHeader({
   handoffActionLabel,
   handoffDisabled,
   handoffActionTargets,
+  continueHandoffActionTargets,
   showHandoffAction: showHandoffActionProp,
   gitCwd,
   diffTotals,
@@ -465,6 +468,7 @@ export function ChatHeader({
   onToggleDiff,
   onRegisterCommitAndPushTrigger,
   onCreateHandoff,
+  onContinueHandoff,
   onNavigateToThread,
   onRenameThread,
   onCloseThreadPane,
@@ -483,7 +487,6 @@ export function ChatHeader({
   const chatLayoutAction = chatLayoutActionProp ?? null;
   const changeThreadAction = changeThreadActionProp ?? null;
   const editorChatControls = editorChatControlsProp ?? null;
-  const { isMobile, state } = useSidebar();
   const headerRef = useRef<HTMLDivElement>(null);
   const [compact, setCompact] = useState(false);
   const {
@@ -609,10 +612,16 @@ export function ChatHeader({
         className={cn(
           "flex min-w-0 flex-1 items-center",
           editorChatControls ? "h-full overflow-visible" : "overflow-hidden",
-          !isMobile && state === "collapsed" ? "gap-4" : "gap-2 sm:gap-3",
+          "gap-2 sm:gap-3",
         )}
       >
-        {hideSidebarControls ? null : <SidebarHeaderNavigationControls />}
+        {hideSidebarControls ? null : (
+          // The extra end padding keeps the wider gap the collapsed header had (gap-4).
+          <SidebarHeaderNavigationControls
+            className="md:pe-1"
+            collapsedGapClassName="-me-2 sm:-me-3"
+          />
+        )}
         {threadTabs ? (
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {!minimalChrome && threadBreadcrumbs.length > 0 ? (
@@ -738,14 +747,39 @@ export function ChatHeader({
               />
               <TooltipPopup side="bottom">{handoffActionLabel}</TooltipPopup>
             </Tooltip>
-            <ComposerPickerMenuPopup align="end" side="bottom" className="w-48 min-w-48">
-              {handoffActionTargets.map((target) => (
-                <MenuItem key={target.instanceId} onClick={() => onCreateHandoff(target)}>
-                  {/* opacity-100 opts brand icons out of the option row's 80% icon dim. */}
-                  {renderProviderIcon(target.provider, "size-3.5 shrink-0 opacity-100")}
-                  <span>Handoff to {target.label}</span>
-                </MenuItem>
-              ))}
+            <ComposerPickerMenuPopup align="end" side="bottom" className="w-56 min-w-56">
+              {continueHandoffActionTargets.length > 0 ? (
+                <>
+                  <MenuGroup>
+                    <MenuGroupLabel>Continue in this thread</MenuGroupLabel>
+                    {continueHandoffActionTargets.map((target) => (
+                      <MenuItem
+                        key={target.instanceId}
+                        data-handoff-destination="this-thread"
+                        onClick={() => onContinueHandoff(target)}
+                      >
+                        {/* opacity-100 opts brand icons out of the option row's 80% icon dim. */}
+                        {renderProviderIcon(target.provider, "size-3.5 shrink-0 opacity-100")}
+                        <span>{target.label}</span>
+                      </MenuItem>
+                    ))}
+                  </MenuGroup>
+                  <MenuSeparator />
+                </>
+              ) : null}
+              <MenuGroup>
+                <MenuGroupLabel>Continue in a new thread</MenuGroupLabel>
+                {handoffActionTargets.map((target) => (
+                  <MenuItem
+                    key={target.instanceId}
+                    data-handoff-destination="new-thread"
+                    onClick={() => onCreateHandoff(target)}
+                  >
+                    {renderProviderIcon(target.provider, "size-3.5 shrink-0 opacity-100")}
+                    <span>{target.label}</span>
+                  </MenuItem>
+                ))}
+              </MenuGroup>
             </ComposerPickerMenuPopup>
           </Menu>
         ) : null}

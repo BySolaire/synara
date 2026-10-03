@@ -1,3 +1,8 @@
+import { ProjectionThreadMessageRepositoryLive } from "./persistence/Layers/ProjectionThreadMessages";
+import { OrchestrationCommandReceiptRepositoryLive } from "./persistence/Layers/OrchestrationCommandReceipts";
+import { QueuedTurnPromotionRepositoryLive } from "./persistence/Layers/QueuedTurnPromotions";
+import { HubWorkRepositoryLive } from "./persistence/Layers/HubWorkRepository";
+import { ManagedAttachmentRepositoryLive } from "./persistence/Layers/ManagedAttachments";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Layer } from "effect";
 
@@ -18,6 +23,7 @@ import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderComma
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion";
 import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus";
 import { SidechatExpiryReactorLive } from "./orchestration/Layers/SidechatExpiryReactor";
+import { ThreadSnoozeReactorLive } from "./orchestration/Layers/ThreadSnoozeReactor";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor";
 import { TurnCheckpointCoordinatorLive } from "./orchestration/Layers/TurnCheckpointCoordinator";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer";
@@ -126,6 +132,7 @@ export function makeServerRuntimeServicesLayer(
     Layer.provideMerge(runtimeServicesLayer),
   );
   const projectAgentServiceLayer = ProjectAgentServiceLive.pipe(
+    Layer.provideMerge(HubWorkRepositoryLive),
     Layer.provideMerge(ProjectAgentRepositoryLive),
     Layer.provideMerge(automationServiceLayer),
     Layer.provideMerge(TextGenerationLayerLive),
@@ -154,6 +161,9 @@ export function makeServerRuntimeServicesLayer(
   );
   const sidechatExpiryReactorLayer = SidechatExpiryReactorLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),
+  );
+  const threadSnoozeReactorLayer = ThreadSnoozeReactorLive.pipe(
+    Layer.provideMerge(OrchestrationLayerLive),
   );
   const profileStatsArchiveLayer = ProfileStatsArchiveLive.pipe(
     Layer.provideMerge(checkpointStoreLayer),
@@ -225,6 +235,16 @@ export function makeServerRuntimeServicesLayer(
     Layer.provideMerge(providerHealthLayer),
   );
   const agentGatewayLayer = AgentGatewayLive.pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        ProjectionThreadMessageRepositoryLive,
+        OrchestrationCommandReceiptRepositoryLive,
+      ),
+    ),
+    Layer.provideMerge(QueuedTurnPromotionRepositoryLive),
+    Layer.provideMerge(HubWorkRepositoryLive),
+    Layer.provideMerge(ProjectAgentRepositoryLive),
+    Layer.provideMerge(ManagedAttachmentRepositoryLive),
     Layer.provideMerge(agentGatewayCredentialsLayer),
     Layer.provideMerge(automationServiceLayer),
     Layer.provideMerge(projectAgentServiceLayer),
@@ -278,6 +298,7 @@ export function makeServerRuntimeServicesLayer(
     orchestrationReactorLayer,
     providerCommandReactorLayer,
     sidechatExpiryReactorLayer,
+    threadSnoozeReactorLayer,
     threadGitMetadataReactorLayer,
     threadDeletionReactorLayer,
     devServerManagerLayer,

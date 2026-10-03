@@ -3,7 +3,12 @@
 // Layer: Route screen
 // Exports: Settings route component for `/settings`
 
-import { PROVIDER_DISPLAY_NAMES, type ProviderKind } from "@synara/contracts";
+import {
+  type DesktopAudioInputDevice,
+  PROVIDER_DISPLAY_NAMES,
+  type ProviderKind,
+  type SidechatExpiry,
+} from "@synara/contracts";
 import { GROUPS_ON, VISIBLE_PROVIDER_DESCRIPTORS } from "../betaFeatures";
 import { sameAppSnapShortcut } from "@synara/shared/appSnapShortcut";
 import { desktopFlavorFromProtocol } from "@synara/shared/betaFeatures";
@@ -52,7 +57,10 @@ import {
 } from "~/components/settings/ProvidersSettingsPanel";
 import { ProviderOptionLabel } from "../components/ProviderIcon";
 import ReleaseHistoryDialog from "../components/ReleaseHistoryDialog";
-import { KeyboardShortcutsSettingsPanel } from "../components/settings/KeyboardShortcutsSettingsPanel";
+import {
+  KeyboardShortcutsResetButton,
+  KeyboardShortcutsSettingsPanel,
+} from "../components/settings/KeyboardShortcutsSettingsPanel";
 import { ProfileSettingsPanel } from "../components/settings/ProfileSettingsPanel";
 import { ProviderUsageSettingsPanel } from "../components/settings/ProviderUsageSettingsPanel";
 import { ExternalMcpSettingsPanel } from "../components/settings/ExternalMcpSettingsPanel";
@@ -189,6 +197,12 @@ const FOLLOW_UP_BEHAVIOR_OPTIONS = [
   { value: "steer", label: "Steer" },
 ] as const satisfies ReadonlyArray<{ value: FollowUpBehavior; label: string }>;
 
+const SIDECHAT_EXPIRY_OPTIONS = [
+  { value: "1h", label: "1 hour" },
+  { value: "24h", label: "24 hours" },
+  { value: "never", label: "Never" },
+] as const satisfies ReadonlyArray<{ value: SidechatExpiry; label: string }>;
+
 const GITHUB_LINK_OPEN_TARGET_LABELS = {
   app: "In Synara",
   browser: "In-app browser",
@@ -201,6 +215,95 @@ const MESSAGE_TRAIL_AUDIO_SOURCE_OPTIONS = [
   { value: "microphone", label: "Microphone" },
   { value: "both", label: "Both" },
 ] as const satisfies ReadonlyArray<{ value: MessageTrailAudioSource; label: string }>;
+
+// Select items need a non-empty value; "" in settings means the Mac's default input.
+const MAC_DEFAULT_MICROPHONE_VALUE = "mac-default";
+
+function microphoneLabel(device: DesktopAudioInputDevice): string {
+  return device.bluetooth ? `${device.name} (Bluetooth)` : device.name;
+}
+
+function MessageTrailMicrophoneRow({
+  value,
+  defaultValue,
+  onChange,
+}: {
+  value: string;
+  defaultValue: string;
+  onChange: (microphoneId: string) => void;
+}) {
+  const [devices, setDevices] = useState<readonly DesktopAudioInputDevice[]>([]);
+
+  // Listing only reads device names; plugging a device in or out refreshes it.
+  useEffect(() => {
+    const audioLevel = window.desktopBridge?.audioLevel;
+    if (!audioLevel) return;
+    let cancelled = false;
+    const refresh = () => {
+      void audioLevel
+        .listMicrophones()
+        .then((next) => {
+          if (!cancelled) setDevices(next);
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    navigator.mediaDevices?.addEventListener("devicechange", refresh);
+    return () => {
+      cancelled = true;
+      navigator.mediaDevices?.removeEventListener("devicechange", refresh);
+    };
+  }, []);
+
+  const macDefault = devices.find((device) => device.default);
+  const selected = devices.find((device) => device.id === value);
+  const macDefaultLabel = macDefault
+    ? `Mac default: ${microphoneLabel(macDefault)}`
+    : "Mac default";
+  const valueContent = !value
+    ? macDefaultLabel
+    : selected
+      ? microphoneLabel(selected)
+      : "Not connected";
+
+  return (
+    <SettingsRow
+      title="Message trail microphone"
+      description="Microphone the message trail listens to. Pick a built-in one if you use Bluetooth headphones: opening their microphone lowers their sound quality. If the chosen microphone is not connected, the trail ignores the microphone instead of falling back to another one."
+      resetAction={
+        value !== defaultValue ? (
+          <SettingResetButton
+            label="message trail microphone"
+            onClick={() => onChange(defaultValue)}
+          />
+        ) : null
+      }
+      control={
+        <SettingsSelectControl
+          value={value || MAC_DEFAULT_MICROPHONE_VALUE}
+          onValueChange={(next) => onChange(next === MAC_DEFAULT_MICROPHONE_VALUE ? "" : next)}
+          ariaLabel="Message trail microphone"
+          triggerClassName="w-full sm:w-64"
+          valueContent={valueContent}
+        >
+          <SelectItem hideIndicator value={MAC_DEFAULT_MICROPHONE_VALUE}>
+            {macDefaultLabel}
+          </SelectItem>
+          {devices.map((device) => (
+            <SelectItem hideIndicator key={device.id} value={device.id}>
+              {microphoneLabel(device)}
+            </SelectItem>
+          ))}
+          {value && !selected ? (
+            <SelectItem hideIndicator value={value}>
+              Not connected
+            </SelectItem>
+          ) : null}
+        </SettingsSelectControl>
+      }
+    />
+  );
+}
 
 const VOICE_ENTER_BEHAVIOR_OPTIONS = [
   { value: "stop", label: "Stop" },
@@ -349,6 +452,9 @@ function SettingsRouteView() {
     ...(!isDefaultActiveTheme ? [`${resolvedTheme === "dark" ? "Dark" : "Light"} theme pack`] : []),
     ...(settings.defaultProvider !== defaults.defaultProvider ? ["Default provider"] : []),
     ...(settings.defaultThreadEnvMode !== defaults.defaultThreadEnvMode ? ["New thread mode"] : []),
+    ...(settings.anchorSentMessagesToTop !== defaults.anchorSentMessagesToTop
+      ? ["Move sent messages to top"]
+      : []),
     ...(settings.archiveDeletesOrphanedWorktree !== defaults.archiveDeletesOrphanedWorktree
       ? ["Delete worktree on archive"]
       : []),
@@ -384,14 +490,24 @@ function SettingsRouteView() {
     defaults.enableSystemTaskCompletionNotifications
       ? ["Desktop notifications"]
       : []),
+    ...(settings.notifyAfterSubagentsFinish !== defaults.notifyAfterSubagentsFinish
+      ? ["Wait for subagents"]
+      : []),
     ...(settings.enableAssistantStreaming !== defaults.enableAssistantStreaming
       ? ["Assistant output"]
+      : []),
+    ...(settings.collapseFinishedTurns !== defaults.collapseFinishedTurns
+      ? ["Fold finished turns"]
       : []),
     ...(settings.composerEffortSlider !== defaults.composerEffortSlider ? ["Effort slider"] : []),
     ...(settings.messageTrailAudioSource !== defaults.messageTrailAudioSource
       ? ["Message trail sound"]
       : []),
+    ...(settings.messageTrailMicrophoneId !== defaults.messageTrailMicrophoneId
+      ? ["Message trail microphone"]
+      : []),
     ...(settings.followUpBehavior !== defaults.followUpBehavior ? ["Follow-up behavior"] : []),
+    ...(settings.sidechatExpiry !== defaults.sidechatExpiry ? ["Side chat expiry"] : []),
     ...(settings.voiceEnterBehavior !== defaults.voiceEnterBehavior
       ? ["Enter while dictating"]
       : []),
@@ -601,6 +717,15 @@ function SettingsRouteView() {
             "After Archive's Undo period, remove a clean worktree only if the task has stopped and no other task uses it. Its branch remains available for recovery.",
           resetLabel: "delete worktree on archive",
           ariaLabel: "Delete worktree on archive",
+        })}
+
+        {renderBooleanSettingRow({
+          settingKey: "anchorSentMessagesToTop",
+          title: "Move sent messages to top",
+          description:
+            "Move each sent message to the top of the conversation. Turn off to keep it at the bottom and follow replies as they stream.",
+          resetLabel: "move sent messages to top",
+          ariaLabel: "Move sent messages to top",
         })}
 
         <SettingsRow
@@ -1229,6 +1354,31 @@ function SettingsRouteView() {
         />
 
         <SettingsRow
+          title="Side chat expiry"
+          description="Expire a side chat after it sits idle, unviewed and not running, for this long. Expired side chats are read-only and unload their provider session."
+          resetAction={
+            settings.sidechatExpiry !== defaults.sidechatExpiry ? (
+              <SettingResetButton
+                label="side chat expiry"
+                onClick={() =>
+                  updateSettings({
+                    sidechatExpiry: defaults.sidechatExpiry,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <SettingsSegmentedControl
+              value={settings.sidechatExpiry}
+              onValueChange={(value) => updateSettings({ sidechatExpiry: value })}
+              ariaLabel="Side chat expiry"
+              options={SIDECHAT_EXPIRY_OPTIONS}
+            />
+          }
+        />
+
+        <SettingsRow
           title="Enter while dictating"
           description="Choose what Enter does while a voice note is recording: stop and transcribe into the composer, or stop and send the message once it is transcribed."
           resetAction={
@@ -1262,6 +1412,15 @@ function SettingsRouteView() {
         })}
 
         {renderBooleanSettingRow({
+          settingKey: "collapseFinishedTurns",
+          title: "Fold finished turns",
+          description:
+            'Hide a finished turn\'s tool calls and intermediate messages behind a single "Worked for…" line. A turn stays open while it runs or while its background subagents are still working. Turn this off to keep every step visible.',
+          resetLabel: "fold finished turns",
+          ariaLabel: "Fold finished turns",
+        })}
+
+        {renderBooleanSettingRow({
           settingKey: "composerEffortSlider",
           title: "Effort slider",
           description:
@@ -1292,6 +1451,16 @@ function SettingsRouteView() {
                 options={MESSAGE_TRAIL_AUDIO_SOURCE_OPTIONS}
               />
             }
+          />
+        ) : null}
+
+        {isAudioLevelAvailable() &&
+        (settings.messageTrailAudioSource === "microphone" ||
+          settings.messageTrailAudioSource === "both") ? (
+          <MessageTrailMicrophoneRow
+            value={settings.messageTrailMicrophoneId}
+            defaultValue={defaults.messageTrailMicrophoneId}
+            onChange={(messageTrailMicrophoneId) => updateSettings({ messageTrailMicrophoneId })}
           />
         ) : null}
 
@@ -1482,16 +1651,20 @@ function SettingsRouteView() {
                       {activeSectionItem.description}
                     </p>
                   </div>
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    className="shrink-0"
-                    disabled={changedSettingLabels.length === 0}
-                    onClick={() => void restoreDefaults()}
-                  >
-                    <ResetIcon className="size-3.5" />
-                    Restore defaults
-                  </Button>
+                  {activeSection === "shortcuts" ? (
+                    <KeyboardShortcutsResetButton />
+                  ) : (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      className="shrink-0"
+                      disabled={changedSettingLabels.length === 0}
+                      onClick={() => void restoreDefaults()}
+                    >
+                      <ResetIcon className="size-3.5" />
+                      Restore defaults
+                    </Button>
+                  )}
                 </div>
               ) : null}
 

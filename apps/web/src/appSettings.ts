@@ -20,10 +20,10 @@ import {
   type ProviderDriverKind,
   type ProviderInstanceEnvironment,
   ProviderInstanceId,
-  GitHubInboxState,
   GitHubInboxSort,
   TrimmedNonEmptyString,
   ProviderKind,
+  SidechatExpiry,
   type GitTextGenerationProvider,
   type ProviderStartOptions,
   type ServerSettingsView,
@@ -166,6 +166,10 @@ export const DEFAULT_TASKS_VIEW_MODE: TasksViewMode = "list";
 export type SidebarThreadSortOrder = typeof SidebarThreadSortOrder.Type;
 export const DEFAULT_SIDEBAR_THREAD_SORT_ORDER: SidebarThreadSortOrder = "updated_at";
 export const FollowUpBehavior = Schema.Literals(["queue", "steer"]);
+/** The inbox status filter. Merged is the closed list narrowed to merged pull requests. */
+export const GitHubInboxStateFilter = Schema.Literals(["open", "closed", "merged"]);
+export type GitHubInboxStateFilter = typeof GitHubInboxStateFilter.Type;
+
 /** GitHub inbox kind filter: both kinds, or only pull requests or only issues. */
 export const GitHubInboxKindFilter = Schema.Literals(["all", "pullRequest", "issue"]);
 export type GitHubInboxKindFilter = typeof GitHubInboxKindFilter.Type;
@@ -184,10 +188,14 @@ export const GitHubLinkOpenTarget = Schema.Literals(["app", "browser", "external
 export type GitHubLinkOpenTarget = typeof GitHubLinkOpenTarget.Type;
 export const DEFAULT_GITHUB_LINK_OPEN_TARGET: GitHubLinkOpenTarget = "app";
 export type FollowUpBehavior = typeof FollowUpBehavior.Type;
-// Sound the chat message trail moves with (Beta desktop on macOS).
+// Sound the chat message trail moves with (desktop on macOS).
 export const MessageTrailAudioSource = Schema.Literals(["off", "system", "microphone", "both"]);
 export type MessageTrailAudioSource = typeof MessageTrailAudioSource.Type;
 export const DEFAULT_FOLLOW_UP_BEHAVIOR: FollowUpBehavior = "queue";
+/** Which account windows each app-rail usage ring draws: both, or only one of them. */
+export const RailUsageWindow = Schema.Literals(["both", "fiveHour", "weekly"]);
+export type RailUsageWindow = typeof RailUsageWindow.Type;
+export const DEFAULT_RAIL_USAGE_WINDOW: RailUsageWindow = "both";
 // What plain Enter does while a composer voice note is recording: "stop" only
 // transcribes into the draft, "send" also sends the draft once transcribed.
 export const VoiceEnterBehavior = Schema.Literals(["stop", "send"]);
@@ -367,6 +375,7 @@ export const AppSettingsSchema = Schema.Struct({
   openCodeServerPasswordConfigured: Schema.Boolean.pipe(withDefaults(() => false)),
   openCodeExperimentalWebSockets: Schema.Boolean.pipe(withDefaults(() => false)),
   defaultThreadEnvMode: EnvMode.pipe(withDefaults(() => "local" as const satisfies EnvMode)),
+  anchorSentMessagesToTop: Schema.Boolean.pipe(withDefaults(() => true)),
   confirmThreadDelete: Schema.Boolean.pipe(withDefaults(() => true)),
   // Opt-in: archiving a task also releases its worktree when nothing else uses it.
   archiveDeletesOrphanedWorktree: Schema.Boolean.pipe(withDefaults(() => false)),
@@ -383,7 +392,7 @@ export const AppSettingsSchema = Schema.Struct({
   // override them for one visit; search text lives only in the URL). The column widths are not
   // stored: the page always opens at even fractions.
   githubInboxKind: GitHubInboxKindFilter.pipe(withDefaults(() => "all" as const)),
-  githubInboxState: GitHubInboxState.pipe(withDefaults(() => "open" as const)),
+  githubInboxState: GitHubInboxStateFilter.pipe(withDefaults(() => "open" as const)),
   githubInboxSort: GitHubInboxSort.pipe(withDefaults(() => "created" as const)),
   githubInboxInvolvement: GitHubInboxInvolvementFilter.pipe(
     withDefaults(() => "everything" as const),
@@ -400,6 +409,8 @@ export const AppSettingsSchema = Schema.Struct({
   ).pipe(withDefaults(() => ["authored", "reviewRequested"] as const)),
   // Server-backed: the inbox also reads each project's other GitHub remotes (fork upstreams).
   githubInboxIncludeUpstreams: Schema.Boolean.pipe(withDefaults(() => false)),
+  // Server-backed: how long an idle side chat stays usable before it expires.
+  sidechatExpiry: SidechatExpiry.pipe(withDefaults(() => "1h" as const satisfies SidechatExpiry)),
   // Local-only UI preferences for hiding sidebar surfaces a user doesn't want.
   // `showChatsSection` controls the standalone "Chats" list in the sidebar footer
   // (rootless chats not tied to a project). `showGroupsSection` controls the
@@ -437,6 +448,15 @@ export const AppSettingsSchema = Schema.Struct({
   railUsageProviders: PersistedProviderKindList.pipe(
     withDefaults((): ReadonlyArray<ProviderKind> => ["codex", "claudeAgent"]),
   ),
+  railUsageWindow: RailUsageWindow.pipe(withDefaults(() => DEFAULT_RAIL_USAGE_WINDOW)),
+  // Usage popovers (rail rings, chat header, branch toolbar) open on the limit rows only;
+  // reset credits, credits, and token totals sit behind a "Details" toggle. The toggle
+  // writes back here, so the last choice sticks; Settings → Usage exposes it too.
+  usageDetailsDefaultOpen: Schema.Boolean.pipe(withDefaults(() => false)),
+  // Which detail sections usage popovers offer at all. Ignored when a provider reports no
+  // limit rows, since the details are then the only usage there is to show.
+  usagePopoverShowResetCredits: Schema.Boolean.pipe(withDefaults(() => true)),
+  usagePopoverShowUsageLines: Schema.Boolean.pipe(withDefaults(() => true)),
   showEnvironmentRepository: Schema.Boolean.pipe(withDefaults(() => true)),
   showEnvironmentPullRequest: Schema.Boolean.pipe(withDefaults(() => true)),
   showEnvironmentEditor: Schema.Boolean.pipe(withDefaults(() => true)),
@@ -447,12 +467,20 @@ export const AppSettingsSchema = Schema.Struct({
   followUpBehavior: FollowUpBehavior.pipe(withDefaults(() => DEFAULT_FOLLOW_UP_BEHAVIOR)),
   voiceEnterBehavior: VoiceEnterBehavior.pipe(withDefaults(() => DEFAULT_VOICE_ENTER_BEHAVIOR)),
   enableAssistantStreaming: Schema.Boolean.pipe(withDefaults(() => true)),
+  // Fold each finished turn's tool calls and intermediate messages behind one
+  // "Worked for…" line. Off keeps every step of finished turns visible.
+  collapseFinishedTurns: Schema.Boolean.pipe(withDefaults(() => true)),
   // Started threads: show reasoning effort as a stepped slider card in the composer's
   // model menu instead of radio rows. New chats keep the split model/effort pickers.
   composerEffortSlider: Schema.Boolean.pipe(withDefaults(() => true)),
-  // Beta desktop on macOS: the message trail moves with the Mac's audio output,
+  // Desktop on macOS: the message trail moves with the Mac's audio output,
   // the microphone, or both. Opt-in because the first use asks macOS for access.
   messageTrailAudioSource: MessageTrailAudioSource.pipe(withDefaults(() => "off" as const)),
+  // Core Audio UID of the microphone the trail listens to; "" follows the Mac's
+  // default input (which may be a Bluetooth headset).
+  messageTrailMicrophoneId: Schema.String.check(Schema.isMaxLength(512)).pipe(
+    withDefaults(() => ""),
+  ),
   autoOpenDevicePane: Schema.Boolean.pipe(withDefaults(() => true)),
   enableProviderUpdateChecks: Schema.Boolean.pipe(withDefaults(() => true)),
   enableNativeFontSmoothing: Schema.Boolean.pipe(withDefaults(getDefaultNativeFontSmoothing)),
@@ -463,6 +491,9 @@ export const AppSettingsSchema = Schema.Struct({
   useCustomTitleBar: Schema.Boolean.pipe(withDefaults(() => true)),
   enableTaskCompletionToasts: Schema.Boolean.pipe(withDefaults(() => true)),
   enableSystemTaskCompletionNotifications: Schema.Boolean.pipe(withDefaults(() => true)),
+  // Finished-work alerts wait for the agent's background subagents too, and a
+  // subagent's own thread never alerts. Off alerts every time any of them stops.
+  notifyAfterSubagentsFinish: Schema.Boolean.pipe(withDefaults(() => true)),
   // Local desktop preference. Native capability/permission state remains owned by Electron.
   // AppSnap is opt-in because enabling its Settings toggle requests macOS
   // Input Monitoring and Screen Recording permissions.
@@ -1483,6 +1514,7 @@ function serverSettingsToAppSettings(settings: ServerSettingsView): Partial<AppS
     devinBinaryPath: settings.providers.devin.binaryPath,
     defaultThreadEnvMode: settings.defaultThreadEnvMode,
     githubInboxIncludeUpstreams: settings.githubInboxIncludeUpstreams,
+    sidechatExpiry: settings.sidechatExpiry,
     enableAssistantStreaming: settings.enableAssistantStreaming,
     enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
     antigravityBinaryPath: settings.providers.antigravity.binaryPath,
@@ -1623,6 +1655,13 @@ export function appSettingsPatchToServerSettingsPatch(
   }
   if (hasOwn(patch, "githubInboxIncludeUpstreams")) {
     serverPatch.githubInboxIncludeUpstreams = Boolean(patch.githubInboxIncludeUpstreams);
+  }
+  if (
+    patch.sidechatExpiry === "1h" ||
+    patch.sidechatExpiry === "24h" ||
+    patch.sidechatExpiry === "never"
+  ) {
+    serverPatch.sidechatExpiry = patch.sidechatExpiry;
   }
   if (hasOwn(patch, "onboardingCompletedAt")) {
     serverPatch.onboardingCompletedAt = patch.onboardingCompletedAt ?? null;

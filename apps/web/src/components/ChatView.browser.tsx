@@ -65,6 +65,7 @@ import {
 } from "../lib/terminalContext";
 import { extractTrailingBrowserAnnotations } from "../lib/browserAnnotations";
 import { isMacNavigatorPlatform } from "../lib/utils";
+import { STARRED_MODELS_STORAGE_KEY } from "../lib/starredModels";
 import { readNativeApi } from "../nativeApi";
 import { setThreadDetailResumeCursor } from "../threadDetailResumeCursors";
 import { resetHomeChatProjectPrewarmStateForTests } from "../lib/chatProjects";
@@ -72,10 +73,15 @@ import { hasReconciledServerProviderStatuses } from "../lib/serverReactQuery";
 import { getRouter } from "../router";
 import { showContextMenuFallback } from "../contextMenuFallback";
 import { useRightDockStore } from "../rightDockStore";
+import { GITHUB_INBOX_DOCK_HOST_ID } from "../rightDockStore.logic";
 import { useOpenThreadTabsStore } from "../openThreadTabsStore";
-import { useSplitViewStore } from "../splitViewStore";
+import { resolveSplitViewPaneIdForThread, useSplitViewStore } from "../splitViewStore";
+import { splitViewPaneScopeId } from "../lib/chatPaneScope";
 import { useSpacesUiStore } from "../spacesUiStore";
 import { useRailShellStore } from "../railShellStore";
+import { usePinnedThreadsStore } from "../pinnedThreadsStore";
+import { getAppTypographyScale } from "../lib/appTypography";
+import { threadJumpCommandForIndex } from "../keybindings";
 import { useStore } from "../store";
 import {
   createShellSnapshotFromReadModel,
@@ -537,6 +543,13 @@ function findThreadDetailFromFixtureSnapshot(
   threadId: ThreadId,
 ): OrchestrationReadModel["threads"][number] | null {
   return fixture.snapshot.threads.find((entry) => entry.id === threadId) ?? null;
+}
+
+/** The rows of the open fallback context menu. */
+function contextMenuRows() {
+  return Array.from(
+    document.querySelectorAll<HTMLButtonElement>('[data-slot="context-menu-popup"] button'),
+  );
 }
 
 function addThreadToSnapshot(
@@ -2297,6 +2310,224 @@ describe("ChatView transcript geometry (full app)", () => {
     document.body.innerHTML = "";
   });
 
+  it.each([
+    { activityViewEnabled: false, customShortcut: false },
+    { activityViewEnabled: true, customShortcut: false },
+    { activityViewEnabled: false, customShortcut: true },
+    { activityViewEnabled: true, customShortcut: true },
+  ])(
+    "keeps sidebar shortcut hints clear of row content (Activity: $activityViewEnabled, custom: $customShortcut)",
+    async ({ activityViewEnabled, customShortcut }) => {
+      const base = createSnapshotForTargetUser({
+        targetMessageId: MessageId.makeUnsafe("shortcut-layout"),
+        targetText: "Review the sidebar layout",
+      });
+      const titles = [
+        "Review authentication and session recovery",
+        "Improve the checkout flow",
+        "Check the background worker",
+        "Update the account settings",
+        "Investigate a long-running worktree task",
+        "Review the session cancellation tests",
+        "Review the deployment checklist",
+      ];
+      const now = new Date().toISOString();
+      const threads = titles.map((title, index) => ({
+        ...base.threads[0]!,
+        id: index === 0 ? THREAD_ID : ThreadId.makeUnsafe(`shortcut-layout-${index}`),
+        title,
+        createdAt: now,
+        updatedAt: now,
+        latestTurn: {
+          turnId: TurnId.makeUnsafe(`shortcut-layout-turn-${index}`),
+          state: "completed" as const,
+          requestedAt: now,
+          startedAt: now,
+          completedAt: now,
+          assistantMessageId: null,
+        },
+        session: {
+          ...base.threads[0]!.session!,
+          threadId: index === 0 ? THREAD_ID : ThreadId.makeUnsafe(`shortcut-layout-${index}`),
+          updatedAt: now,
+        },
+        messages: index === 0 ? base.threads[0]!.messages : [],
+        envMode: index % 2 === 0 ? ("local" as const) : ("worktree" as const),
+        worktreePath: index % 2 === 0 ? null : `/repo/worktrees/sidebar-${index}`,
+        branch: index % 2 === 0 ? "main" : "fix/authentication-session-recovery",
+        forkSourceThreadId: index === 1 ? THREAD_ID : null,
+        parentThreadId:
+          index === 0 ? ThreadId.makeUnsafe("shortcut-layout-6") : index === 5 ? THREAD_ID : null,
+        subagentNickname: index === 0 ? "Atlas" : index === 5 ? "Nova" : null,
+      }));
+      const snapshot = {
+        ...base,
+        projects: base.projects.map((project) => ({
+          ...project,
+          title: "Customer portal workspace",
+        })),
+        threads,
+      };
+      const previousPins = usePinnedThreadsStore.getState().pinnedThreadIds;
+      usePinnedThreadsStore.setState({
+        pinnedThreadIds: threads.slice(1, 4).map((thread) => thread.id),
+      });
+      onTestFinished(() => {
+        usePinnedThreadsStore.setState({ pinnedThreadIds: previousPins });
+      });
+      localStorage.setItem("synara:sidebar-ui:v1", JSON.stringify({ activityViewEnabled }));
+      if (customShortcut) {
+        const platformSpy = vi.spyOn(navigator, "platform", "get").mockReturnValue("Win32");
+        onTestFinished(() => platformSpy.mockRestore());
+      }
+      const mounted = await mountChatView({
+        viewport: { ...DEFAULT_VIEWPORT, width: 1280, height: 800 },
+        snapshot,
+        configureFixture: (nextFixture) => {
+          if (!customShortcut) return;
+          nextFixture.serverConfig = {
+            ...nextFixture.serverConfig,
+            keybindings: Array.from({ length: 9 }, (_, index) => ({
+              command: threadJumpCommandForIndex(index)!,
+              shortcut: {
+                key: String(index + 1),
+                modKey: false,
+                metaKey: true,
+                ctrlKey: true,
+                shiftKey: true,
+                altKey: true,
+              },
+            })),
+          };
+        },
+      });
+      try {
+        await waitForServerConfigToApply();
+        const sidebar = document.querySelector<HTMLElement>('[data-slot="sidebar-container"]')!;
+        expect(sidebar).toBeTruthy();
+        const wrapper = sidebar.closest<HTMLElement>('[data-slot="sidebar-wrapper"]')!;
+        const resizeSidebar = async (width: number) => {
+          wrapper.style.setProperty("--sidebar-width", `${width}px`);
+          await vi.waitFor(() =>
+            expect(sidebar.getBoundingClientRect().width).toBeCloseTo(width, 0),
+          );
+        };
+        const mod = isMacNavigatorPlatform() ? "Meta" : "Control";
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+        await userEvent.unhover(sidebar);
+        for (const fontSize of [13, 18]) {
+          const scale = getAppTypographyScale(fontSize);
+          for (const [token, value] of Object.entries({
+            ui: scale.uiPx,
+            "ui-lg": scale.uiLgPx,
+            "ui-sm": scale.uiSmPx,
+            "ui-xs": scale.uiXsPx,
+            "ui-meta": scale.uiMetaPx,
+          })) {
+            document.documentElement.style.setProperty(`--app-font-size-${token}`, `${value}px`);
+          }
+          for (const width of [208, 256, 320]) {
+            await resizeSidebar(width);
+            window.dispatchEvent(
+              new KeyboardEvent("keydown", {
+                key: mod,
+                metaKey: customShortcut || mod === "Meta",
+                ctrlKey: customShortcut || mod === "Control",
+                altKey: customShortcut,
+                shiftKey: customShortcut,
+                bubbles: true,
+              }),
+            );
+            await waitForLayout();
+            const hints = [
+              ...sidebar.querySelectorAll<HTMLElement>('[data-slot="kbd-group"]'),
+            ].filter((hint) => hint.closest("[data-thread-item]"));
+            expect(hints.length).toBe(activityViewEnabled ? 5 : 6);
+            if (!activityViewEnabled) expect(sidebar.textContent).toContain("Atlas");
+            if (customShortcut) expect(hints[0]!.textContent).toContain("CtrlAltShiftMeta");
+            for (const hint of hints) {
+              const row = hint.closest<HTMLElement>("[data-thread-item]")!;
+              expect(row).toBeTruthy();
+              const hintRect = hint.getBoundingClientRect();
+              expect(hintRect.right).toBeLessThanOrEqual(row.getBoundingClientRect().right);
+              expect(
+                hint.querySelector("kbd:last-child")!.getBoundingClientRect().width,
+              ).toBeGreaterThanOrEqual(20);
+              for (const chip of row.querySelectorAll<HTMLElement>(".sidebar-icon-chip")) {
+                const rect = chip.getBoundingClientRect();
+                if (rect.top < hintRect.bottom && rect.bottom > hintRect.top) {
+                  expect(rect.right).toBeLessThanOrEqual(hintRect.left);
+                }
+              }
+              const labels = [...row.querySelectorAll<HTMLElement>("span")].filter(
+                (element) =>
+                  element.classList.contains("truncate-fade") ||
+                  (!element.parentElement?.closest(".truncate-fade") &&
+                    (element.textContent === "Customer portal workspace" ||
+                      titles.includes(element.textContent ?? ""))),
+              );
+              expect(labels.length).toBeGreaterThan(0);
+              for (const label of labels) {
+                const rect = label.getBoundingClientRect();
+                if (rect.top < hintRect.bottom && rect.bottom > hintRect.top) {
+                  expect(
+                    rect.right,
+                    `${label.textContent} overlaps ${hint.textContent}`,
+                  ).toBeLessThanOrEqual(hintRect.left);
+                }
+              }
+            }
+            for (const hoverHint of hints.filter(
+              (hint, index) =>
+                index === 0 || hint.closest("[data-thread-item]")!.textContent?.includes("Atlas"),
+            )) {
+              const row = hoverHint.closest<HTMLElement>("[data-thread-item]")!;
+              await userEvent.hover(row);
+              const actions = activityViewEnabled
+                ? row.querySelector<HTMLElement>(
+                    'span[class*="group-hover/activity-row:opacity-100"]',
+                  )!
+                : row.querySelector<HTMLElement>('[data-testid^="thread-hover-actions-"]')!;
+              const assertHoverLayout = () => {
+                expect(Number(getComputedStyle(hoverHint).opacity)).toBe(0);
+                expect(Number(getComputedStyle(actions).opacity)).toBe(1);
+                const actionsRect = actions.getBoundingClientRect();
+                for (const label of [...row.querySelectorAll<HTMLElement>("span")].filter(
+                  (element) =>
+                    element.classList.contains("truncate-fade") ||
+                    (!element.parentElement?.closest(".truncate-fade") &&
+                      (element.textContent === "Customer portal workspace" ||
+                        titles.includes(element.textContent ?? ""))),
+                )) {
+                  const rect = label.getBoundingClientRect();
+                  if (rect.top < actionsRect.bottom && rect.bottom > actionsRect.top) {
+                    expect(
+                      rect.right,
+                      `${label.textContent} overlaps hover actions`,
+                    ).toBeLessThanOrEqual(actionsRect.left);
+                  }
+                }
+              };
+              await vi.waitFor(assertHoverLayout);
+              await userEvent.unhover(row);
+              const focusTarget = row.matches('[role="button"]')
+                ? row
+                : row.querySelector<HTMLElement>('button, [role="button"]')!;
+              focusTarget.focus();
+              await vi.waitFor(assertHoverLayout);
+              focusTarget.blur();
+            }
+            window.dispatchEvent(new KeyboardEvent("keyup", { key: mod, bubbles: true }));
+            await waitForLayout();
+            expect(sidebar.querySelector('[data-thread-item] [data-slot="kbd-group"]')).toBeNull();
+          }
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
   it.each(["user", "assistant"] as const)(
     "opens the linked PR number from a %s message when the repository path also contains pull",
     async (role) => {
@@ -2389,8 +2620,282 @@ describe("ChatView transcript geometry (full app)", () => {
     },
   );
 
+  it.each([
+    { kind: "forked", repository: "acme/widgets", opens: "the host chat dock" },
+    { kind: "forked", repository: "other/repo", opens: "the external browser" },
+    { kind: "standalone", repository: "acme/widgets", opens: "Code review" },
+  ] as const)(
+    "opens a $repository pull request link from a $kind side chat in $opens",
+    async ({ kind, repository: linkedRepository }) => {
+      useRightDockStore.setState({ dockStateByThreadId: {} });
+      const url = `https://github.com/${linkedRepository}/pull/41`;
+      const sidechatId = ThreadId.makeUnsafe("sidechat-pr-link");
+      const base = addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: MessageId.makeUnsafe("sidechat-pr-main"),
+          targetText: "Main conversation",
+        }),
+        sidechatId,
+      );
+      const snapshot = {
+        ...base,
+        threads: base.threads.map((thread) =>
+          thread.id === sidechatId
+            ? {
+                ...thread,
+                ...(kind === "forked"
+                  ? { sidechatSourceThreadId: THREAD_ID }
+                  : {
+                      sidechatContext: {
+                        kind: "github-item" as const,
+                        itemKind: "pullRequest" as const,
+                        repository: "acme/widgets",
+                        number: 1368,
+                        url: "https://github.com/acme/widgets/pull/1368",
+                      },
+                    }),
+                messages: [
+                  createAssistantMessage({
+                    id: MessageId.makeUnsafe("sidechat-pr-link"),
+                    text: `[Inspect PR](${url})`,
+                    offsetSeconds: 0,
+                  }),
+                ],
+              }
+            : thread,
+        ),
+      };
+      const dockHostId = kind === "forked" ? THREAD_ID : GITHUB_INBOX_DOCK_HOST_ID;
+      useRightDockStore.getState().openPane(dockHostId, { kind: "sidechat", threadId: sidechatId });
+      const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+      const previousNativeApi = window.nativeApi;
+      const api = readNativeApi()!;
+      const repository = { nameWithOwner: "acme/widgets", url: "https://github.com/acme/widgets" };
+      const openedExternally: string[] = [];
+      Object.defineProperty(window, "nativeApi", {
+        configurable: true,
+        value: {
+          ...api,
+          git: {
+            ...api.git,
+            githubRepository: async () => ({ repository, repositories: [repository] }),
+          },
+          shell: {
+            ...api.shell,
+            openExternal: async (href: string) => {
+              openedExternally.push(href);
+            },
+          },
+        },
+      });
+      const pullRequestNumbers = (hostId: ThreadId) =>
+        (useRightDockStore.getState().dockStateByThreadId[hostId]?.panes ?? [])
+          .filter((pane) => pane.kind === "pullRequest")
+          .map((pane) => pane.pullRequestNumber);
+      try {
+        if (kind === "standalone") {
+          await mounted.router.navigate({
+            to: "/pull-requests",
+            search: {
+              kind: "pullRequest",
+              selectedProjectId: PROJECT_ID,
+              selectedRepo: "acme/widgets",
+              number: 1368,
+            },
+          });
+        }
+        await page.getByRole("link", { name: "Inspect PR", exact: true }).click();
+        await vi.waitFor(() => {
+          if (kind === "standalone") {
+            expect(mounted.router.state.location.pathname).toBe("/pull-requests");
+            expect(mounted.router.state.location.search).toMatchObject({
+              kind: "pullRequest",
+              selectedProjectId: PROJECT_ID,
+              selectedRepo: "acme/widgets",
+              number: 41,
+            });
+          } else if (linkedRepository === "acme/widgets") {
+            expect(pullRequestNumbers(THREAD_ID)).toEqual([41]);
+          } else {
+            expect(openedExternally).toEqual([url]);
+          }
+        });
+        // Nothing lands in the side chat's own dock, which no surface renders.
+        expect(pullRequestNumbers(sidechatId)).toEqual([]);
+      } finally {
+        if (previousNativeApi) {
+          Object.defineProperty(window, "nativeApi", {
+            configurable: true,
+            value: previousNativeApi,
+          });
+        } else {
+          Reflect.deleteProperty(window, "nativeApi");
+        }
+        await mounted.cleanup();
+      }
+    },
+  );
+
   // #1374: real route, dock and Lexical composers; only the server boundary is
   // simulated. The main agent must keep running while the panel toggles.
+  it("keeps the surviving non-route chat mounted when a split collapses", async () => {
+    const snapshot = addThreadToSnapshot(
+      createSnapshotWithLongAssistantResponse(),
+      OTHER_THREAD_ID,
+    );
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+    try {
+      useComposerDraftStore.getState().setPrompt(OTHER_THREAD_ID, "surviving draft");
+      const splitViewId = useSplitViewStore.getState().createFromDrop({
+        sourceThreadId: THREAD_ID,
+        ownerProjectId: PROJECT_ID,
+        droppedThreadId: OTHER_THREAD_ID,
+        direction: "horizontal",
+        side: "second",
+      });
+      await mounted.router.navigate({
+        to: "/$threadId",
+        params: { threadId: THREAD_ID },
+        search: () => ({ splitViewId }),
+      });
+      await vi.waitFor(() =>
+        expect(document.querySelectorAll('[contenteditable="true"]').length).toBe(2),
+      );
+      await waitForLayout();
+      const split = useSplitViewStore.getState().splitViewsById[splitViewId]!;
+      if (
+        split.root.kind !== "split" ||
+        split.root.first.kind !== "leaf" ||
+        split.root.second.kind !== "leaf"
+      )
+        throw new Error("Expected two panes");
+      const scope = splitViewPaneScopeId(splitViewId, split.root.second.id);
+      const survivingEditor = document.querySelector<HTMLElement>(
+        `[data-chat-pane-scope="${scope}"] [contenteditable="true"]`,
+      )!;
+      const survivingChat = survivingEditor.closest("[data-chat-pane-scope]")!;
+      await vi.waitFor(() => expect(survivingEditor.textContent).toContain("surviving draft"));
+      // The public split store publishes the one remaining leaf before the router
+      // commits its new parameter, just as closing the current pane does.
+      useSplitViewStore
+        .getState()
+        .removePaneFromSplitView({ splitViewId, paneId: split.root.first.id });
+      await vi.waitFor(() => {
+        expect(mounted.router.state.location.pathname).toBe(`/${OTHER_THREAD_ID}`);
+        expect(mounted.router.state.location.search.splitViewId).toBeUndefined();
+        expect(document.querySelectorAll('[contenteditable="true"]').length).toBe(1);
+      });
+      expect(document.querySelector('[contenteditable="true"]')).toBe(survivingEditor);
+      expect(document.querySelector("[data-chat-pane-scope]")).toBe(survivingChat);
+      expect(survivingEditor.textContent).toContain("surviving draft");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each([
+    { panes: 2, closing: "non-source" },
+    { panes: 3, closing: "non-source" },
+    { panes: 3, closing: "source" },
+  ] as const)("closes a standalone Side in $panes panes ($closing)", async ({ panes, closing }) => {
+    const thirdId = ThreadId.makeUnsafe("third-standalone-grid-chat");
+    const closingThreadId = closing === "source" ? THREAD_ID : OTHER_THREAD_ID;
+    const base = addThreadToSnapshot(
+      addThreadToSnapshot(createSnapshotWithLongAssistantResponse(), OTHER_THREAD_ID),
+      thirdId,
+    );
+    const snapshot = {
+      ...base,
+      threads: base.threads.map((thread) =>
+        thread.id === closingThreadId
+          ? {
+              ...thread,
+              sidechatContext: {
+                kind: "github-item" as const,
+                itemKind: "pullRequest" as const,
+                repository: "acme/widgets",
+                number: 1472,
+                url: "https://github.com/acme/widgets/pull/1472",
+              },
+            }
+          : thread,
+      ),
+    };
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+    try {
+      const splitViewId = useSplitViewStore.getState().createFromDrop({
+        sourceThreadId: THREAD_ID,
+        ownerProjectId: PROJECT_ID,
+        droppedThreadId: OTHER_THREAD_ID,
+        direction: "horizontal",
+        side: "second",
+      });
+      const split = useSplitViewStore.getState().splitViewsById[splitViewId]!;
+      const sourcePaneId = resolveSplitViewPaneIdForThread(split, THREAD_ID)!;
+      if (panes === 3)
+        useSplitViewStore.getState().dropThreadOnPane({
+          splitViewId,
+          targetPaneId: sourcePaneId,
+          threadId: thirdId,
+          direction: "vertical",
+          side: "first",
+        });
+      await mounted.router.navigate({
+        to: "/$threadId",
+        params: { threadId: THREAD_ID },
+        search: () => ({ splitViewId }),
+      });
+      await vi.waitFor(() =>
+        expect(document.querySelectorAll('[contenteditable="true"]')).toHaveLength(panes),
+      );
+      await waitForLayout();
+      const readySplit = useSplitViewStore.getState().splitViewsById[splitViewId]!;
+      const targetThreadId = closing === "source" ? thirdId : THREAD_ID;
+      const editorForThread = (threadId: ThreadId) => {
+        const scope = splitViewPaneScopeId(
+          splitViewId,
+          resolveSplitViewPaneIdForThread(readySplit, threadId)!,
+        );
+        return document.querySelector<HTMLElement>(
+          `[data-chat-pane-scope="${scope}"] [contenteditable="true"]`,
+        )!;
+      };
+      const retainedEditor = editorForThread(targetThreadId);
+      await userEvent.click(editorForThread(closingThreadId));
+      await vi.waitFor(() =>
+        expect(mounted.router.state.location.pathname).toBe(`/${closingThreadId}`),
+      );
+      const persistedSplit = () =>
+        JSON.parse(localStorage.getItem("synara:split-view-state:v1")!).state.splitViewsById[
+          splitViewId
+        ];
+      expect(persistedSplit()).toBeDefined();
+      await page.getByRole("button", { name: "Close selected Side", exact: true }).click();
+      await vi.waitFor(() => {
+        expect(mounted.router.state.location.pathname).toBe(`/${targetThreadId}`);
+        expect(mounted.router.state.location.search.splitViewId).toBe(
+          closing === "source" ? splitViewId : undefined,
+        );
+        expect(document.querySelectorAll('[contenteditable="true"]')).toHaveLength(
+          closing === "source" ? 2 : 1,
+        );
+        if (closing === "source") {
+          expect(useSplitViewStore.getState().splitViewsById[splitViewId]).toBeDefined();
+          expect(persistedSplit()).toBeDefined();
+          expect(persistedSplit().sourceThreadId).toBe(thirdId);
+        } else {
+          expect(useSplitViewStore.getState().splitViewsById[splitViewId]).toBeUndefined();
+          expect(persistedSplit()).toBeUndefined();
+        }
+      });
+      await waitForLayout();
+      expect(retainedEditor.isConnected).toBe(true);
+      expect(document.querySelectorAll('[contenteditable="true"]')).toContain(retainedEditor);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("opens one sidechat, preserves its draft on toggle, and restores composer focus", async () => {
     useRightDockStore.setState({ dockStateByThreadId: {} });
     const mainSnapshot = createSnapshotForTargetUser({
@@ -3179,12 +3684,41 @@ describe("ChatView transcript geometry (full app)", () => {
     });
     const previousNativeApi = window.nativeApi;
     const api = readNativeApi()!;
-    const dispatchCommand = vi.fn(async () => {});
+    const subscribeThread = vi.fn(api.orchestration.subscribeThread);
+    const dispatchCommand = vi.fn(
+      async (command: Parameters<typeof api.orchestration.dispatchCommand>[0]) => {
+        if (command.type !== "thread.user-input.respond") {
+          throw new Error("Unexpected command in the cancellation fixture.");
+        }
+        // Model provider-confirmed cancellation in the server fixture. The client
+        // must fetch this settlement; command acceptance alone is not confirmation.
+        fixture.snapshot = {
+          ...fixture.snapshot,
+          snapshotSequence: fixture.snapshot.snapshotSequence + 1,
+          threads: [
+            {
+              ...pendingThread,
+              pendingInteractions: pendingThread.pendingInteractions.map((interaction) =>
+                Object.assign({}, interaction, {
+                  status: "confirmed" as const,
+                  responseCommandId: command.commandId,
+                  responseRequestedAt: command.createdAt,
+                  resolvedAt: NOW_ISO,
+                }),
+              ),
+            },
+          ],
+        };
+        return { sequence: fixture.snapshot.snapshotSequence };
+      },
+    );
     Object.defineProperty(window, "nativeApi", {
       configurable: true,
-      value: { ...api, orchestration: { ...api.orchestration, dispatchCommand } },
+      value: { ...api, orchestration: { ...api.orchestration, dispatchCommand, subscribeThread } },
     });
     try {
+      setThreadDetailResumeCursor(THREAD_ID, snapshot.snapshotSequence);
+      await expect.element(page.getByText("Choose option 1?")).toBeVisible();
       await page.getByRole("button", { name: /Choice 1/ }).click();
       await page.getByRole("button", { name: "Cancel", exact: true }).click();
       await vi.waitFor(() => expect(dispatchCommand).toHaveBeenCalledTimes(1));
@@ -3197,7 +3731,9 @@ describe("ChatView transcript geometry (full app)", () => {
           answers: {},
         }),
       );
+      await vi.waitFor(() => expect(subscribeThread).toHaveBeenCalledWith({ threadId: THREAD_ID }));
       await new Promise((resolve) => setTimeout(resolve, 250));
+      await expect.element(page.getByText("Choose option 1?")).not.toBeInTheDocument();
       await expect.element(page.getByText("Choose option 2?")).not.toBeInTheDocument();
     } finally {
       if (previousNativeApi)
@@ -3208,6 +3744,461 @@ describe("ChatView transcript geometry (full app)", () => {
       else Reflect.deleteProperty(window, "nativeApi");
       await mounted.cleanup();
     }
+  });
+
+  describe("provider handoff destination", () => {
+    const withClaudeReady = (nextFixture: TestFixture) => {
+      const providers: ServerConfig["providers"] = [
+        ...nextFixture.serverConfig.providers,
+        {
+          provider: "claudeAgent",
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          status: "ready",
+          available: true,
+          authStatus: "authenticated",
+          checkedAt: NOW_ISO,
+        },
+      ];
+      nextFixture.serverConfig = { ...nextFixture.serverConfig, providers };
+      nextFixture.providerStatusesSnapshot = providers;
+    };
+
+    async function mountWithCapturedCommands(
+      snapshot: OrchestrationReadModel = createSnapshotForTargetUser({
+        targetMessageId: MessageId.makeUnsafe("msg-handoff-destination"),
+        targetText: "Fix the flaky reconnect test",
+      }),
+      // Models the server's reaction to a dispatched command.
+      respond?: (
+        command: Parameters<
+          NonNullable<typeof window.nativeApi>["orchestration"]["dispatchCommand"]
+        >[0],
+      ) => void,
+      respondDelayMs = 50,
+    ) {
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot,
+        configureFixture: withClaudeReady,
+      });
+      const previousNativeApi = window.nativeApi;
+      const api = readNativeApi()!;
+      const commands: Array<Parameters<typeof api.orchestration.dispatchCommand>[0]> = [];
+      const dispatchCommand = vi.fn(
+        async (command: Parameters<typeof api.orchestration.dispatchCommand>[0]) => {
+          commands.push(command);
+          if (respond) setTimeout(() => respond(command), respondDelayMs);
+          return { sequence: fixture.snapshot.snapshotSequence };
+        },
+      );
+      Object.defineProperty(window, "nativeApi", {
+        configurable: true,
+        value: { ...api, orchestration: { ...api.orchestration, dispatchCommand } },
+      });
+      await waitForServerConfigToApply();
+      return {
+        commands,
+        cleanup: async () => {
+          if (previousNativeApi)
+            Object.defineProperty(window, "nativeApi", {
+              configurable: true,
+              value: previousNativeApi,
+            });
+          else Reflect.deleteProperty(window, "nativeApi");
+          await mounted.cleanup();
+        },
+      };
+    }
+
+    async function openHandoffMenu() {
+      const trigger = page.getByRole("button", { name: "Hand off thread" });
+      await expect.element(trigger).toBeEnabled();
+      // The first click can land while the chat is still hydrating and the menu
+      // closes again; reopen until the destinations render.
+      await vi.waitFor(
+        async () => {
+          if (!document.querySelector("[data-handoff-destination]")) {
+            await trigger.click();
+          }
+          expect(document.querySelector("[data-handoff-destination]")).not.toBeNull();
+        },
+        { timeout: 10_000, interval: 500 },
+      );
+      await expect.element(page.getByText("Continue in this thread")).toBeVisible();
+      await expect.element(page.getByText("Continue in a new thread")).toBeVisible();
+    }
+
+    it("continues in the same thread by rebinding its provider", async () => {
+      const mounted = await mountWithCapturedCommands();
+      try {
+        await openHandoffMenu();
+        const sameThreadItem = document.querySelector<HTMLElement>(
+          '[data-handoff-destination="this-thread"]',
+        );
+        expect(sameThreadItem?.textContent).toContain("Claude");
+        sameThreadItem!.click();
+        await vi.waitFor(() => expect(mounted.commands).toHaveLength(1));
+        expect(mounted.commands[0]).toMatchObject({
+          type: "thread.meta.update",
+          threadId: THREAD_ID,
+          providerHandoff: true,
+          modelSelection: { provider: "claudeAgent" },
+        });
+        // Same thread: no new thread, and the route stays put.
+        expect(mounted.commands.some((command) => command.type === "thread.handoff.create")).toBe(
+          false,
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("still hands off to a new thread with the imported transcript", async () => {
+      const mounted = await mountWithCapturedCommands();
+      try {
+        await openHandoffMenu();
+        document.querySelector<HTMLElement>('[data-handoff-destination="new-thread"]')!.click();
+        await vi.waitFor(() =>
+          expect(mounted.commands.some((command) => command.type === "thread.handoff.create")).toBe(
+            true,
+          ),
+        );
+        const create = mounted.commands.find((command) => command.type === "thread.handoff.create");
+        expect(create).toMatchObject({
+          sourceThreadId: THREAD_ID,
+          projectId: PROJECT_ID,
+          modelSelection: { provider: "claudeAgent" },
+        });
+        expect(create && "threadId" in create ? create.threadId : null).not.toBe(THREAD_ID);
+        expect(
+          create && "importedMessages" in create
+            ? create.importedMessages.some((message) =>
+                message.text.includes("Fix the flaky reconnect test"),
+              )
+            : false,
+        ).toBe(true);
+        expect(mounted.commands.some((command) => command.type === "thread.meta.update")).toBe(
+          false,
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    // Server reaction to a same-thread handoff: the outcome row keyed by the
+    // command, plus (on success) the thread rebound to the target provider.
+    const respondToHandoff =
+      (outcome: "completed" | "failed") =>
+      (
+        command: Parameters<
+          NonNullable<typeof window.nativeApi>["orchestration"]["dispatchCommand"]
+        >[0],
+      ) => {
+        if (command.type !== "thread.meta.update" || command.providerHandoff !== true) return;
+        const { commandId } = command;
+        fixture.snapshot = {
+          ...fixture.snapshot,
+          snapshotSequence: fixture.snapshot.snapshotSequence + 1,
+          threads: fixture.snapshot.threads.map((thread) =>
+            thread.id !== THREAD_ID
+              ? thread
+              : {
+                  ...thread,
+                  ...(outcome === "completed"
+                    ? {
+                        modelSelection: {
+                          provider: "claudeAgent" as const,
+                          model: "claude-sonnet-4-6",
+                        },
+                        session: {
+                          threadId: THREAD_ID,
+                          status: "ready" as const,
+                          providerName: "claudeAgent",
+                          providerInstanceId: "claudeAgent",
+                          runtimeMode: "full-access" as const,
+                          activeTurnId: null,
+                          lastError: null,
+                          updatedAt: NOW_ISO,
+                        },
+                      }
+                    : {}),
+                  activities: [
+                    ...thread.activities,
+                    {
+                      id: EventId.makeUnsafe(
+                        outcome === "completed"
+                          ? `provider-handoff:${commandId}`
+                          : `provider-handoff-failed:${commandId}`,
+                      ),
+                      createdAt: NOW_ISO,
+                      kind:
+                        outcome === "completed" ? "provider.handoff" : "provider.handoff.failed",
+                      summary: outcome === "completed" ? "Handed off" : "Handoff failed",
+                      tone: outcome === "completed" ? ("info" as const) : ("error" as const),
+                      turnId: null,
+                      sequence: 950,
+                      payload:
+                        outcome === "completed" ? {} : { detail: "Claude CLI is not signed in." },
+                    },
+                  ],
+                },
+          ),
+        };
+        useStore.getState().syncServerReadModel(fixture.snapshot);
+      };
+
+    async function pickClaudeAndSend(text: string) {
+      useComposerDraftStore.getState().setModelSelectionAndSticky(THREAD_ID, {
+        provider: "claudeAgent",
+        model: "claude-sonnet-4-6",
+      });
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, text);
+      const composerEditor = await waitForComposerEditor();
+      await vi.waitFor(() => expect(composerEditor.textContent ?? "").toContain(text), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      sendButton.click();
+      return composerEditor;
+    }
+
+    it("hands the thread off before sending when the composer picks another provider", async () => {
+      // The target takes a while to start; the message must show meanwhile.
+      const mounted = await mountWithCapturedCommands(
+        undefined,
+        respondToHandoff("completed"),
+        1_500,
+      );
+      try {
+        await pickClaudeAndSend("Review the reconnect fix");
+        await vi.waitFor(
+          () =>
+            expect(
+              [...document.querySelectorAll('[data-message-role="user"]')].some((row) =>
+                (row.textContent ?? "").includes("Review the reconnect fix"),
+              ),
+            ).toBe(true),
+          { timeout: 1_000, interval: 16 },
+        );
+        expect(mounted.commands.some((command) => command.type === "thread.turn.start")).toBe(
+          false,
+        );
+        await vi.waitFor(
+          () =>
+            expect(mounted.commands.some((command) => command.type === "thread.turn.start")).toBe(
+              true,
+            ),
+          { timeout: 8_000, interval: 16 },
+        );
+        const handoffIndex = mounted.commands.findIndex(
+          (command) => command.type === "thread.meta.update" && "providerHandoff" in command,
+        );
+        const turnStartIndex = mounted.commands.findIndex(
+          (command) => command.type === "thread.turn.start",
+        );
+        expect(mounted.commands[handoffIndex]).toMatchObject({
+          threadId: THREAD_ID,
+          providerHandoff: true,
+          modelSelection: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+        });
+        // The message only goes out once the target is up, and to the target.
+        expect(turnStartIndex).toBeGreaterThan(handoffIndex);
+        expect(mounted.commands[turnStartIndex]).toMatchObject({
+          threadId: THREAD_ID,
+          modelSelection: { provider: "claudeAgent" },
+        });
+        expect(mounted.commands.some((command) => command.type === "thread.handoff.create")).toBe(
+          false,
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("never persists a provider switch before its explicit handoff", async () => {
+      const mounted = await mountWithCapturedCommands(undefined, respondToHandoff("completed"));
+      try {
+        await pickClaudeAndSend("Continue on the selected provider");
+        await vi.waitFor(() =>
+          expect(mounted.commands.some((command) => command.type === "thread.turn.start")).toBe(
+            true,
+          ),
+        );
+        // An ordinary metadata update changes the durable provider immediately.
+        // Persisting Claude first makes the real decider refuse the later
+        // explicit handoff as a same-provider switch, and loses source provenance.
+        const providerUpdates = mounted.commands.filter(
+          (command) =>
+            command.type === "thread.meta.update" &&
+            command.modelSelection?.provider === "claudeAgent",
+        );
+        expect(providerUpdates[0]).toMatchObject({ providerHandoff: true });
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("hands off the captured selection when the picker changes during attachment upload", async () => {
+      let releaseUpload = () => {};
+      attachmentUploadBarrier = new Promise<void>((resolve) => {
+        releaseUpload = resolve;
+      });
+      const mounted = await mountWithCapturedCommands(undefined, respondToHandoff("completed"));
+      try {
+        useComposerDraftStore.getState().addImage(
+          THREAD_ID,
+          createComposerImage({
+            id: "handoff-upload-image",
+            previewUrl: "blob:handoff-upload-image",
+          }),
+        );
+        await pickClaudeAndSend("Continue after uploading");
+        // The optimistic row proves this send captured Claude and is now waiting
+        // on its real attachment route, before preparing the provider handoff.
+        await vi.waitFor(() =>
+          expect(
+            [...document.querySelectorAll('[data-message-role="user"]')].some((row) =>
+              (row.textContent ?? "").includes("Continue after uploading"),
+            ),
+          ).toBe(true),
+        );
+        useComposerDraftStore.getState().setModelSelectionAndSticky(THREAD_ID, {
+          provider: "codex",
+          model: "gpt-5.5",
+        });
+        await vi.waitFor(() =>
+          expect(
+            [...document.querySelectorAll("button")].some((button) =>
+              (button.textContent ?? "").includes("GPT-5.5"),
+            ),
+          ).toBe(true),
+        );
+        releaseUpload();
+        await vi.waitFor(() =>
+          expect(mounted.commands.some((command) => command.type === "thread.turn.start")).toBe(
+            true,
+          ),
+        );
+        expect(
+          mounted.commands.find(
+            (command) => command.type === "thread.meta.update" && command.providerHandoff === true,
+          ),
+        ).toMatchObject({
+          threadId: THREAD_ID,
+          modelSelection: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+        });
+        expect(
+          mounted.commands.find((command) => command.type === "thread.turn.start"),
+        ).toMatchObject({ modelSelection: { provider: "claudeAgent" } });
+      } finally {
+        releaseUpload();
+        attachmentUploadBarrier = null;
+        await mounted.cleanup();
+      }
+    });
+
+    it("keeps the message in the composer when the picked provider cannot start", async () => {
+      const mounted = await mountWithCapturedCommands(undefined, respondToHandoff("failed"));
+      try {
+        const composerEditor = await pickClaudeAndSend("Review the reconnect fix");
+        await expect
+          .element(page.getByText("Claude could not start: Claude CLI is not signed in."))
+          .toBeVisible();
+        expect(mounted.commands.some((command) => command.type === "thread.turn.start")).toBe(
+          false,
+        );
+        // The send rolled back: the message left the transcript for the composer.
+        await vi.waitFor(() =>
+          expect(composerEditor.textContent ?? "").toContain("Review the reconnect fix"),
+        );
+        expect(
+          [...document.querySelectorAll('[data-message-role="user"]')].some((row) =>
+            (row.textContent ?? "").includes("Review the reconnect fix"),
+          ),
+        ).toBe(false);
+      } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("shows the handoff event with its source, target, and transferred context", async () => {
+      const snapshot = createSnapshotForTargetUser({
+        targetMessageId: MessageId.makeUnsafe("msg-handoff-event"),
+        targetText: "Fix the flaky reconnect test",
+      });
+      const thread = snapshot.threads[0]!;
+      const handedOffThread = {
+        ...thread,
+        modelSelection: { provider: "claudeAgent" as const, model: "claude-sonnet-4-6" },
+        activities: [
+          {
+            id: EventId.makeUnsafe("provider-handoff:event"),
+            // Mid-conversation: after an assistant reply, before the next user
+            // message, where it used to fold into the settled turn's work group.
+            createdAt: isoAt(124),
+            kind: "provider.handoff",
+            summary: "Handed off from Codex (gpt-5) to Claude (claude-sonnet-4-6)",
+            tone: "info" as const,
+            turnId: null,
+            sequence: 900,
+            payload: {
+              sourceProvider: "codex",
+              sourceModel: "gpt-5.5",
+              targetProvider: "claudeAgent",
+              targetModel: "claude-sonnet-4-6",
+              contextText: "Most recent imported messages:\nUser:\nFix the flaky reconnect test",
+              sourceModelSelection: {
+                provider: "codex",
+                model: "gpt-5.5",
+                options: { reasoningEffort: "high", fastMode: true },
+              },
+              targetModelSelection: {
+                provider: "claudeAgent",
+                model: "claude-sonnet-4-6",
+                options: { effort: "medium" },
+              },
+              contextCharacters: 66,
+            },
+          },
+        ],
+      };
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: { ...snapshot, threads: [handedOffThread] },
+        configureFixture: withClaudeReady,
+      });
+      try {
+        // A transcript boundary of its own, naming both models, not a work row.
+        const divider = await vi.waitFor(() => {
+          const element = document.querySelector<HTMLElement>(
+            '[data-provider-handoff-divider="true"]',
+          );
+          expect(element).not.toBeNull();
+          return element!;
+        });
+        expect(divider.textContent).toContain("Context handoff");
+        expect(divider.textContent).toContain("GPT-5.5");
+        expect(divider.textContent).toContain("Claude Sonnet 4.6");
+        // Effort and fast mode read like the composer's model trigger.
+        expect(divider.textContent).toContain("High");
+        expect(divider.textContent).toContain("Medium");
+        expect(divider.querySelector('[aria-label="Fast mode"]')).not.toBeNull();
+        divider.querySelector("button")!.click();
+        await expect.element(page.getByText("Transferred context", { exact: true })).toBeVisible();
+        const context = document.querySelector('[data-provider-handoff-context="true"]');
+        expect(context?.textContent).toContain("Fix the flaky reconnect test");
+        // The transcript before the handoff stays in place.
+        await expect.element(page.getByText("assistant filler 21")).toBeInTheDocument();
+      } finally {
+        await mounted.cleanup();
+      }
+    });
   });
 
   it("dispatches a rapid access-mode reversal while the server projection is stale", async () => {
@@ -3814,7 +4805,7 @@ describe("ChatView transcript geometry (full app)", () => {
 
       const sendButton = await waitForSendButton();
       expect(sendButton.disabled).toBe(false);
-      sendButton.click();
+      await userEvent.click(sendButton);
 
       await vi.waitFor(
         async () => {
@@ -3833,6 +4824,142 @@ describe("ChatView transcript geometry (full app)", () => {
       restoreNativeApi();
     }
   });
+
+  it.each(["Enter", "send button", "plan follow-up"])(
+    "keeps sent messages at the bottom with anchoring disabled when using %s, and follows streaming text",
+    async (sendMethod) => {
+      localStorage.setItem(
+        "synara:app-settings:v1",
+        JSON.stringify({ anchorSentMessagesToTop: false }),
+      );
+      const restoreNativeApi = installDeterministicSendNativeApi();
+      let currentSnapshot =
+        sendMethod === "plan follow-up"
+          ? createSnapshotWithSettledPlanAwaitingFollowUp()
+          : createSnapshotForTargetUser({
+              targetMessageId: "msg-user-send-no-anchor" as MessageId,
+              targetText: "Previous conversation message",
+            });
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: currentSnapshot,
+      });
+
+      try {
+        const scrollContainer = await waitForElement(
+          () => document.querySelector<HTMLElement>("[data-chat-scroll-container='true']"),
+          "Unable to find message scroll container.",
+        );
+        // Sending must return to the live edge even if the reader was looking at history.
+        scrollContainer.scrollTop = 0;
+        scrollContainer.dispatchEvent(new Event("scroll"));
+        await waitForLayout();
+
+        const prompt = "Keep this message at the bottom";
+        if (sendMethod === "plan follow-up") {
+          useComposerDraftStore.getState().setInteractionMode(THREAD_ID, "plan");
+        }
+        useComposerDraftStore.getState().setPrompt(THREAD_ID, prompt);
+        await vi.waitFor(async () => {
+          expect((await waitForComposerEditor()).textContent).toContain(prompt);
+        });
+        if (sendMethod !== "send button") {
+          await userEvent.click(await waitForComposerEditor());
+          await userEvent.keyboard("{Enter}");
+        } else {
+          const sendButton = await waitForSendButton();
+          expect(sendButton.disabled).toBe(false);
+          await userEvent.click(sendButton);
+        }
+
+        const findSentRow = () =>
+          Array.from(
+            document.querySelectorAll<HTMLElement>("[data-message-id][data-message-role='user']"),
+          ).find((row) => row.textContent?.includes(prompt));
+        await vi.waitFor(
+          () => {
+            const row = findSentRow();
+            expect(row, "sent user message missing").toBeTruthy();
+            expect(
+              row!.getBoundingClientRect().top - scrollContainer.getBoundingClientRect().top,
+              "sent user message moved to the viewport top",
+            ).toBeGreaterThan(scrollContainer.clientHeight / 2);
+            expect(getScrollContainerDistanceFromBottom(scrollContainer)).toBeLessThanOrEqual(2);
+          },
+          { timeout: 8_000, interval: 16 },
+        );
+        if (sendMethod !== "plan follow-up") {
+          expect(document.activeElement).toBe(await waitForComposerEditor());
+        }
+
+        const sentMessageId = MessageId.makeUnsafe(findSentRow()!.dataset.messageId!);
+        const activeTurnId = TurnId.makeUnsafe("turn-no-anchor");
+        const streamingId = MessageId.makeUnsafe("msg-assistant-no-anchor");
+        for (const paragraphCount of [1, 20]) {
+          currentSnapshot = {
+            ...currentSnapshot,
+            snapshotSequence: currentSnapshot.snapshotSequence + 1,
+            threads: currentSnapshot.threads.map((thread) =>
+              thread.id !== THREAD_ID
+                ? thread
+                : {
+                    ...thread,
+                    messages: [
+                      ...thread.messages.filter(
+                        (message) => message.id !== streamingId && message.id !== sentMessageId,
+                      ),
+                      {
+                        id: sentMessageId,
+                        role: "user" as const,
+                        text: prompt,
+                        turnId: activeTurnId,
+                        streaming: false,
+                        source: "native" as const,
+                        createdAt: isoAt(1_300),
+                        updatedAt: isoAt(1_300),
+                      },
+                      {
+                        id: streamingId,
+                        role: "assistant" as const,
+                        text: "Streaming response paragraph.\n\n".repeat(paragraphCount),
+                        turnId: activeTurnId,
+                        streaming: true,
+                        source: "native" as const,
+                        createdAt: isoAt(1_302),
+                        updatedAt: isoAt(1_302 + paragraphCount),
+                      },
+                    ],
+                    latestTurn: {
+                      turnId: activeTurnId,
+                      state: "running" as const,
+                      requestedAt: isoAt(1_300),
+                      startedAt: isoAt(1_301),
+                      completedAt: null,
+                      assistantMessageId: streamingId,
+                    },
+                    session: thread.session
+                      ? { ...thread.session, status: "running" as const, activeTurnId }
+                      : null,
+                  },
+            ),
+            updatedAt: isoAt(1_302 + paragraphCount),
+          };
+          fixture = { ...fixture, snapshot: currentSnapshot };
+          useStore.getState().syncServerReadModel(currentSnapshot);
+          await vi.waitFor(
+            () => {
+              expect(document.body.textContent).toContain("Streaming response paragraph.");
+              expect(getScrollContainerDistanceFromBottom(scrollContainer)).toBeLessThanOrEqual(2);
+            },
+            { timeout: 8_000, interval: 16 },
+          );
+        }
+      } finally {
+        await mounted.cleanup();
+        restoreNativeApi();
+      }
+    },
+  );
 
   it("anchors a freshly sent user message at the top of the transcript viewport", async () => {
     const restoreNativeApi = installDeterministicSendNativeApi();
@@ -4025,6 +5152,26 @@ describe("ChatView transcript geometry (full app)", () => {
         Math.abs(scrollContainer.scrollTop - scrollTopBeforeTurnEnd),
         "scroll position jumped when the turn settled",
       ).toBeLessThanOrEqual(2);
+
+      const anchoredScrollHeight = scrollContainer.scrollHeight;
+      for (const enabled of [false, true]) {
+        const storedSettings = JSON.parse(localStorage.getItem("synara:app-settings:v1") ?? "{}");
+        localStorage.setItem(
+          "synara:app-settings:v1",
+          JSON.stringify({ ...storedSettings, anchorSentMessagesToTop: enabled }),
+        );
+        window.dispatchEvent(new StorageEvent("storage", { key: "synara:app-settings:v1" }));
+        await vi.waitFor(
+          () => {
+            expect(
+              scrollContainer.scrollHeight,
+              "disabling must release the reserve; re-enabling must not resurrect the old anchor",
+            ).toBeLessThan(anchoredScrollHeight - 50);
+          },
+          { timeout: 4_000, interval: 16 },
+        );
+        await waitForLayout();
+      }
     } finally {
       await mounted.cleanup();
       restoreNativeApi();
@@ -5674,7 +6821,19 @@ describe("ChatView transcript geometry (full app)", () => {
     }
   });
 
-  it("toggles plan mode with Shift+Tab only while the composer is focused", async () => {
+  it("cycles model effort with Shift+Tab in the existing model picker", async () => {
+    localStorage.setItem("synara:app-settings:v1", JSON.stringify({ composerEffortSlider: true }));
+    localStorage.setItem(
+      STARRED_MODELS_STORAGE_KEY,
+      JSON.stringify([
+        { provider: "codex", model: "gpt-5.4", effort: "medium", fastMode: true, thinking: null },
+      ]),
+    );
+    useComposerDraftStore.getState().setModelSelection(THREAD_ID, {
+      provider: "codex",
+      model: "gpt-5.4",
+      options: { reasoningEffort: "medium", fastMode: true },
+    });
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -5682,13 +6841,22 @@ describe("ChatView transcript geometry (full app)", () => {
         targetText: "hotkey target",
       }),
     });
+    const focusTarget = document.createElement("button");
+    focusTarget.type = "button";
+    focusTarget.textContent = "Focus sink";
+    document.body.appendChild(focusTarget);
 
     try {
+      await waitForServerConfigToApply();
       const readInteractionMode = () =>
         useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.interactionMode ?? "default";
+      const readModelSelection = () =>
+        useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelSelectionByProvider
+          .codex;
       expect(readInteractionMode()).toBe("default");
 
-      window.dispatchEvent(
+      focusTarget.focus();
+      focusTarget.dispatchEvent(
         new KeyboardEvent("keydown", {
           key: "Tab",
           shiftKey: true,
@@ -5699,7 +6867,143 @@ describe("ChatView transcript geometry (full app)", () => {
       await waitForLayout();
 
       expect(readInteractionMode()).toBe("default");
+      expect(readModelSelection()).toMatchObject({ options: { reasoningEffort: "medium" } });
+      expect(document.querySelector('[role="slider"][aria-label="Reasoning effort"]')).toBeNull();
 
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      const slider = page.getByRole("slider", { name: "Reasoning effort" });
+      const searchbox = page.getByRole("searchbox", { name: "Search models" });
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Tab",
+          shiftKey: true,
+          isComposing: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await waitForLayout();
+      expect(readModelSelection()).toMatchObject({ options: { reasoningEffort: "medium" } });
+      expect(document.querySelector('[role="slider"][aria-label="Reasoning effort"]')).toBeNull();
+      let shortcutTarget: HTMLElement = composerEditor;
+      for (const [effort, label] of [
+        ["high", "High"],
+        ["xhigh", "Extra High"],
+        ["low", "Low"],
+      ] as const) {
+        const event = new KeyboardEvent("keydown", {
+          key: "Tab",
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        });
+        shortcutTarget.dispatchEvent(event);
+        await expect.element(searchbox, { timeout: 1_000 }).toBeVisible();
+        await expect.element(page.getByRole("tablist", { name: "Model sources" })).toBeVisible();
+        await expect
+          .element(page.getByRole("tab", { name: "Starred", exact: true }))
+          .toHaveAttribute("aria-selected", "true");
+        await expect.element(page.getByRole("menuitem", { name: /^GPT-5\.4/u })).toBeVisible();
+        expect(
+          page.getByRole("dialog", { name: "Model effort", exact: true }).elements(),
+        ).toHaveLength(0);
+        await expect.element(slider).toHaveAttribute("aria-valuetext", label);
+        expect(event.defaultPrevented).toBe(true);
+        expect(readModelSelection()).toMatchObject({
+          provider: "codex",
+          model: "gpt-5.4",
+          options: { reasoningEffort: effort, fastMode: true },
+        });
+        expect(readInteractionMode()).toBe("default");
+        await vi.waitFor(() => expect(document.activeElement).toBe(searchbox.element()));
+        shortcutTarget = searchbox.element() as HTMLElement;
+      }
+
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('[data-slot="menu-popup"]')).toBeNull();
+        },
+        { timeout: 2_500, interval: 16 },
+      );
+      expect(readModelSelection()).toMatchObject({ options: { reasoningEffort: "low" } });
+      await vi.waitFor(() => expect(document.activeElement).toBe(composerEditor));
+    } finally {
+      focusTarget.remove();
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the model picker open for 1500ms after the latest Shift+Tab press", async () => {
+    localStorage.setItem("synara:app-settings:v1", JSON.stringify({ composerEffortSlider: true }));
+    useComposerDraftStore.getState().setModelSelection(THREAD_ID, {
+      provider: "codex",
+      model: "gpt-5.4",
+      options: { reasoningEffort: "low" },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-effort-preview-timer" as MessageId,
+        targetText: "effort preview timer",
+      }),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      let shortcutTarget: HTMLElement = composerEditor;
+      const pressShortcut = () =>
+        shortcutTarget.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Tab",
+            shiftKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      const slider = page.getByRole("slider", { name: "Reasoning effort" });
+      const searchbox = page.getByRole("searchbox", { name: "Search models" });
+      pressShortcut();
+      await expect.element(searchbox, { timeout: 1_000 }).toBeVisible();
+      await expect.element(slider).toHaveAttribute("aria-valuetext", "Medium");
+      await vi.waitFor(() => expect(document.activeElement).toBe(searchbox.element()));
+      shortcutTarget = searchbox.element() as HTMLElement;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 900));
+      pressShortcut();
+      await expect.element(slider).toHaveAttribute("aria-valuetext", "High");
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 900));
+      await expect.element(slider).toBeVisible();
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector('[data-slot="menu-popup"]')).toBeNull();
+        },
+        { timeout: 1_500, interval: 16 },
+      );
+      await vi.waitFor(() => expect(document.activeElement).toBe(composerEditor));
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps a manually opened model picker open after the effort shortcut timer expires", async () => {
+    localStorage.setItem("synara:app-settings:v1", JSON.stringify({ composerEffortSlider: true }));
+    useComposerDraftStore.getState().setModelSelection(THREAD_ID, {
+      provider: "codex",
+      model: "gpt-5.4",
+      options: { reasoningEffort: "medium" },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-effort-preview-manual-picker" as MessageId,
+        targetText: "manual model picker",
+      }),
+    });
+
+    try {
+      await waitForServerConfigToApply();
       const composerEditor = await waitForComposerEditor();
       composerEditor.focus();
       composerEditor.dispatchEvent(
@@ -5710,18 +7014,42 @@ describe("ChatView transcript geometry (full app)", () => {
           cancelable: true,
         }),
       );
+      await expect
+        .element(page.getByRole("slider", { name: "Reasoning effort" }))
+        .toHaveAttribute("aria-valuetext", "High");
+      const searchbox = page.getByRole("searchbox", { name: "Search models" });
+      await expect.element(searchbox, { timeout: 1_000 }).toBeVisible();
+      await vi.waitFor(() => expect(document.activeElement).toBe(searchbox.element()));
+      dispatchComposerPickerShortcut(searchbox.element(), "m");
+      await waitForComposerPickerSurfaceOpen();
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 1_700));
+      await expect
+        .element(page.getByRole("searchbox", { name: "Search models" }), { timeout: 1_000 })
+        .toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
 
-      await vi.waitFor(
-        () => {
-          expect(readInteractionMode()).toBe("plan");
-          const planButton = Array.from(
-            document.querySelectorAll<HTMLButtonElement>("button"),
-          ).find((button) => button.textContent?.trim() === "Plan");
-          expect(planButton?.title).toContain("return to normal build mode");
-        },
-        { timeout: 8_000, interval: 16 },
-      );
+  it("keeps the existing slider menu open when choosing another model after Shift+Tab", async () => {
+    localStorage.setItem("synara:app-settings:v1", JSON.stringify({ composerEffortSlider: true }));
+    useComposerDraftStore.getState().setModelSelection(THREAD_ID, {
+      provider: "codex",
+      model: "gpt-5.4",
+      options: { reasoningEffort: "medium" },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-effort-shortcut-model-selection" as MessageId,
+        targetText: "choose model from effort shortcut",
+      }),
+    });
 
+    try {
+      await waitForServerConfigToApply();
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
       composerEditor.dispatchEvent(
         new KeyboardEvent("keydown", {
           key: "Tab",
@@ -5730,13 +7058,77 @@ describe("ChatView transcript geometry (full app)", () => {
           cancelable: true,
         }),
       );
+      const searchbox = page.getByRole("searchbox", { name: "Search models" });
+      const slider = page.getByRole("slider", { name: "Reasoning effort" });
+      await expect.element(searchbox, { timeout: 1_000 }).toBeVisible();
+      await expect.element(slider, { timeout: 1_000 }).toHaveAttribute("aria-valuetext", "High");
+      await page.getByRole("menuitem", { name: /^GPT-5\.5/u }).click();
+      await vi.waitFor(() => {
+        expect(
+          useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelSelectionByProvider
+            .codex,
+        ).toMatchObject({ model: "gpt-5.5" });
+      });
+      await waitForLayout();
+      await expect.element(searchbox, { timeout: 1_000 }).toBeVisible();
+      await expect.element(slider, { timeout: 1_000 }).toHaveAttribute("aria-valuetext", "High");
+      slider
+        .element()
+        .dispatchEvent(
+          new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }),
+        );
+      await expect.element(slider, { timeout: 1_000 }).toHaveAttribute("aria-valuetext", "Medium");
+      expect(
+        useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelSelectionByProvider
+          .codex,
+      ).toMatchObject({ model: "gpt-5.5", options: { reasoningEffort: "medium" } });
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 1_700));
+      await expect.element(searchbox, { timeout: 1_000 }).toBeVisible();
+      await expect.element(slider, { timeout: 1_000 }).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
 
-      await vi.waitFor(
-        () => {
-          expect(readInteractionMode()).toBe("default");
-        },
-        { timeout: 8_000, interval: 16 },
+  it("opens the existing model picker effort menu when its slider setting is disabled", async () => {
+    localStorage.setItem("synara:app-settings:v1", JSON.stringify({ composerEffortSlider: false }));
+    useComposerDraftStore.getState().setModelSelection(THREAD_ID, {
+      provider: "codex",
+      model: "gpt-5.4",
+      options: { reasoningEffort: "medium" },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-effort-shortcut-menu-setting" as MessageId,
+        targetText: "effort menu setting",
+      }),
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Tab",
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
       );
+      expect(
+        useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.modelSelectionByProvider
+          .codex,
+      ).toMatchObject({ options: { reasoningEffort: "high" } });
+      await expect
+        .element(page.getByRole("searchbox", { name: "Search models" }), { timeout: 1_000 })
+        .toBeVisible();
+      await expect.element(page.getByRole("menuitem", { name: /^Effort.*High/u })).toBeVisible();
+      expect(page.getByRole("slider", { name: "Reasoning effort" }).elements()).toHaveLength(0);
+      expect(
+        page.getByRole("dialog", { name: "Model effort", exact: true }).elements(),
+      ).toHaveLength(0);
     } finally {
       await mounted.cleanup();
     }
@@ -5939,9 +7331,9 @@ describe("ChatView transcript geometry (full app)", () => {
             request._tag === WS_METHODS.providerListModels && request.provider === "claudeAgent",
         ),
       ).toEqual([]);
-      const refreshButton = page.getByRole("button", { name: "Refresh models", exact: true });
-      await expect.element(refreshButton).toBeEnabled();
-      await refreshButton.click();
+      expect(
+        page.getByRole("button", { name: "Refresh models", exact: true }).elements(),
+      ).toHaveLength(0);
       await vi.waitFor(() => {
         expect(wsRequests).toEqual(
           expect.arrayContaining([
@@ -5949,7 +7341,7 @@ describe("ChatView transcript geometry (full app)", () => {
               _tag: WS_METHODS.providerListModels,
               provider: "codex",
               instanceId: "codex",
-              refresh: "now",
+              refresh: "if-stale",
             }),
           ]),
         );
@@ -9745,6 +11137,55 @@ describe("ChatView transcript geometry (full app)", () => {
         },
       );
       expect(useOpenThreadTabsStore.getState().threadIds).toEqual([OTHER_THREAD_ID]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens the thread menu on a tab right-click and closes the tabs its close row names", async () => {
+    const thirdId = ThreadId.makeUnsafe("tab-menu-third");
+    const snapshot = addThreadToSnapshot(
+      addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: MessageId.makeUnsafe("tab-menu"),
+          targetText: "Tab menu",
+        }),
+        OTHER_THREAD_ID,
+      ),
+      thirdId,
+    );
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+    try {
+      useOpenThreadTabsStore.setState({ threadIds: [THREAD_ID, OTHER_THREAD_ID, thirdId] });
+      await vi.waitFor(() =>
+        expect(
+          document.querySelectorAll('nav[aria-label="Open threads"] [data-surface-tab]'),
+        ).toHaveLength(3),
+      );
+      // The last tab, while the first one is on screen.
+      document
+        .querySelectorAll('nav[aria-label="Open threads"] [data-surface-tab]')[2]!
+        .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 320, clientY: 24 }));
+      await vi.waitFor(() =>
+        expect(contextMenuRows().map((row) => row.textContent)).toEqual(
+          expect.arrayContaining(["Rename thread", "Pin thread", "Archive", "Delete"]),
+        ),
+      );
+      // Nothing sits to the right of the last tab, so that row is left out.
+      expect(
+        contextMenuRows()
+          .map((row) => row.textContent)
+          .filter((label) => label?.startsWith("Close ")),
+      ).toEqual(["Close Tabs to the Left", "Close Other Tabs"]);
+      contextMenuRows()
+        .find((row) => row.textContent === "Close Tabs to the Left")!
+        .click();
+
+      // The thread on screen was among the closed tabs, so the kept tab takes over.
+      await vi.waitFor(() =>
+        expect(useOpenThreadTabsStore.getState().threadIds).toEqual([thirdId]),
+      );
+      expect(mounted.router.state.location.pathname).toBe(`/${thirdId}`);
     } finally {
       await mounted.cleanup();
     }

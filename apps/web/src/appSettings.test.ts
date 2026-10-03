@@ -1871,6 +1871,28 @@ describe("provider-indexed custom model settings", () => {
 });
 
 describe("AppSettingsSchema", () => {
+  it("keeps sent-message anchoring enabled for settings saved before the preference existed", () => {
+    const decode = Schema.decodeSync(Schema.fromJsonString(AppSettingsSchema));
+
+    expect(decode(JSON.stringify({ chatFontSizePx: 17 }))).toMatchObject({
+      anchorSentMessagesToTop: true,
+      chatFontSizePx: 17,
+    });
+  });
+
+  it("preserves disabled sent-message anchoring across persistence until defaults are restored", () => {
+    const codec = Schema.fromJsonString(AppSettingsSchema);
+    const decode = Schema.decodeSync(codec);
+    const defaults = decode("{}");
+    const settings = applyLocalAppSettingsPatch(defaults, { anchorSentMessagesToTop: false });
+    const restored = decode(Schema.encodeSync(codec)(settings));
+
+    expect(restored).toMatchObject({ anchorSentMessagesToTop: false });
+    expect(applyLocalAppSettingsPatch(restored, defaults)).toMatchObject({
+      anchorSentMessagesToTop: true,
+    });
+  });
+
   it("opens Tasks as the list until the user picks the Kanban view", () => {
     const decode = Schema.decodeSync(Schema.fromJsonString(AppSettingsSchema));
     expect(decode(JSON.stringify({})).tasksViewMode).toBe("list");
@@ -1978,6 +2000,20 @@ describe("AppSettingsSchema", () => {
     expect(
       decode(JSON.stringify({ environmentPanelDefaultOpen: true })).environmentPanelDefaultOpen,
     ).toBe(true);
+  });
+
+  it("keeps usage popover details collapsed by default and preserves an explicit choice", () => {
+    const decode = Schema.decodeSync(Schema.fromJsonString(AppSettingsSchema));
+
+    expect(decode("{}").usageDetailsDefaultOpen).toBe(false);
+    expect(decode("{}").usagePopoverShowResetCredits).toBe(true);
+    expect(decode("{}").usagePopoverShowUsageLines).toBe(true);
+    expect(
+      decode(JSON.stringify({ usagePopoverShowUsageLines: false })).usagePopoverShowUsageLines,
+    ).toBe(false);
+    expect(decode(JSON.stringify({ usageDetailsDefaultOpen: true })).usageDetailsDefaultOpen).toBe(
+      true,
+    );
   });
 
   it("preserves a disabled simulator auto-open preference across settings persistence", () => {

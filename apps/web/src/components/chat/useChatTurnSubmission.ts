@@ -4,7 +4,7 @@ import {
   prepareComputerPermissionGuide,
   readLocalComputerPermissionBridge,
 } from "~/lib/computerProvisioning";
-import { useCallback } from "react";
+import { useCallback, useLayoutEffect, useRef } from "react";
 import { hasActiveComposerSend } from "~/lib/composerSendOwnership";
 import {
   filterPromptProviderMentionReferences,
@@ -59,6 +59,8 @@ import { getThreadFromState } from "../../threadDerivation";
 export function useChatTurnSubmission({
   threadId,
   hasLiveTurn,
+  canSendWithProviderHandoff,
+  prepareProviderHandoffForSend,
   lateComposerSendHandlersRef,
   activeThread,
   isConnecting,
@@ -187,7 +189,13 @@ export function useChatTurnSubmission({
   runProjectScript,
   persistThreadSettingsForNextTurn,
 }: ChatTurnSubmissionInput) {
+  const anchorSentMessagesToTopRef = useRef(settings.anchorSentMessagesToTop);
+  useLayoutEffect(() => {
+    anchorSentMessagesToTopRef.current = settings.anchorSentMessagesToTop;
+  }, [settings.anchorSentMessagesToTop]);
+
   const executePreparedTurn = useChatTurnExecution({
+    prepareProviderHandoffForSend,
     activeThreadIdRef,
     isServerThread,
     setStoreThreadWorkspace,
@@ -281,6 +289,9 @@ export function useChatTurnSubmission({
         sendPreflightInFlightRef.current = true;
         await waitForPendingComposerImages();
         sendPreflightInFlightRef.current = false;
+      }
+      if (!queuedTurn && !activePendingProgress && canSendWithProviderHandoff?.() === false) {
+        return false;
       }
       if (hasPendingCacheReview()) return false;
       if (activePendingProgress) {
@@ -844,13 +855,16 @@ export function useChatTurnSubmission({
           source: "native",
         },
       ]);
-      // Mark the transcript as anchored before the optimistic row lands. The tail
-      // anchor sizes the spacer that lets this message sit at the viewport top,
-      // and its hook owns the slide; auto-follow stays armed for bookkeeping but
-      // pauses until the in-flight flag clears.
+      // Always follow the sent message. When anchoring is enabled, its hook owns
+      // the slide to the top; otherwise normal auto-follow keeps the tail visible.
+      // Read the current preference after async preflight so toggling it during
+      // preparation cannot leave an invisible anchor owning the scroll.
       armTranscriptAutoFollow(threadIdForSend, true);
-      tailAnchorScrollInFlightRef.current = true;
-      setTailAnchor({ threadId: threadIdForSend, messageId: messageIdForSend });
+      const anchorSentMessage = anchorSentMessagesToTopRef.current;
+      tailAnchorScrollInFlightRef.current = anchorSentMessage;
+      setTailAnchor(
+        anchorSentMessage ? { threadId: threadIdForSend, messageId: messageIdForSend } : null,
+      );
 
       setThreadError(threadIdForSend, null);
       if (expiredTerminalContextCount > 0) {
@@ -1029,6 +1043,7 @@ export function useChatTurnSubmission({
       providerStatuses,
       setOptimisticUserMessages,
       executePreparedTurn,
+      canSendWithProviderHandoff,
     ],
   );
   return { onSend };

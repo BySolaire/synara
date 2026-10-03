@@ -30,6 +30,9 @@ is cancelled, the task and its prompt remain available for retry.
   is a fixed column of icon tabs for Home, Spaces, Kanban (Tasks in Beta), Code review, Automations, Hubs (Beta), and
   Settings, with the thread panel beside it and the route shown as a card inset from the window.
   Open threads appear as tabs across the top of the chat.
+  Archiving the open thread or marking it **Done** opens the most recently used unfinished chat
+  across projects, ordered by its last human message (or creation time). If none remains, New
+  thread reopens an unsent draft. Actions on other threads keep the current chat open.
 - **Code review** — pull requests and issues from the GitHub repositories of your projects, with a
   detail pane and three actions on every item (see [Code review](#code-review))
 - **Tasks** (Beta; Stable keeps Kanban) — a to-do list for anything you need to do, with or without
@@ -90,6 +93,9 @@ A turn is one cycle inside that task:
 A long task can contain many turns. Keep follow-ups connected to the same objective; create another
 task when the work needs a different owner, branch, or review boundary.
 
+Turn off **Settings → General → Move sent messages to top** to keep new messages at the bottom
+of the conversation and follow replies as they stream.
+
 For work that should continue across several turns, set a deliberate
 [thread goal](https://www.trysynara.com/docs/features/thread-goals). A goal can continue after a
 clean turn, but queued user work, approvals, questions, interruptions, failures, and pause rules
@@ -99,6 +105,16 @@ Use a [thread fork](https://www.trysynara.com/docs/workflows/forks) when a new t
 the conversation or split from one exact turn. Use a
 [handoff](https://www.trysynara.com/docs/workflows/handoffs) when another provider should continue
 the same task and ownership boundary.
+
+Use **Snooze** in a thread's context menu to return to it in 30 minutes, 1 hour,
+2 hours, or tomorrow at 9am. It moves to **Snoozed** and leaves ordinary thread lists
+and attention badges until the reminder is due. **Return now** cancels the snooze;
+choosing another time reschedules it. Snoozing preserves any running agent work.
+Sending a new message also returns the thread to the list.
+
+When due, the thread returns to recent activity and Synara shows a reminder using
+your notification settings. If Synara and its server are closed, the overdue
+reminder is recovered when they start again.
 
 Sidechats keep the source chat's project, folder, branch, and Local/Worktree environment. Their
 empty view shows the composer without the new-chat welcome screen or independent project, folder,
@@ -112,7 +128,8 @@ A sidechat can also stand alone, with no source chat: **Ask** on a Code review i
 that pull request or issue. It has no transcript to import and no permissions to inherit, so it
 starts in Ask for approval, runs in the project's own checkout without switching branches, and
 is told to treat the item's text as untrusted reference data. Like any sidechat it stays out of
-the thread list and expires after an hour of inactivity. Its empty view likewise shows only the
+the thread list and expires after the inactivity window set in Settings → Conversation
+(1 hour by default, 24 hours, or never). Its empty view likewise shows only the
 composer and keeps the workspace assigned by Code review.
 
 ## Code review
@@ -123,6 +140,10 @@ your projects: each project contributes the repository of its current branch rem
 GitHub remotes. Two projects on one repository share one list. Filters (kind, projects, state,
 involvement, labels) stay local and are remembered; GitHub is refreshed about every five minutes
 while the page is visible, on window focus, and with the refresh button.
+
+**Merged** narrows the loaded closed list to merged pull requests. Its counts reflect matching
+loaded rows, and its refresh uses the same closed cache. The first-50 cap applies to closed
+pull requests before this local filter, so it does not fetch a separate page of 50 merged items.
 
 Every item offers three actions:
 
@@ -243,7 +264,10 @@ A hub is a coordinated home for related work. You talk to one coordinator conver
 answers directly or starts threads (tasks) that run in parallel — in the hub's own folder or in
 linked repositories. Every thread in the hub receives the hub's instructions and memory, and
 files the threads deliver collect in a Git-versioned Library. A hub needs no repository, so it
-also suits non-code work. Read the [Hubs guide](./hubs.md) to set one up.
+also suits non-code work. Delegations preserve the original request and attachments, and durable
+task cards show their queue state and progress under the request. New Hubs run up to three workers
+at once by default; the General settings allow one to eight. Read the [Hubs guide](./hubs.md) to set
+one up.
 
 ## Parallel work
 
@@ -275,6 +299,8 @@ scaling beyond one task.
 - `mod+d` — toggle the diff view
 - `mod+shift+b` — toggle the browser
 - `mod+\` — split the current view
+- `mod+1` through `mod+9` — open a numbered sidebar thread. Hold `mod` to show the
+  default numbers in the classic and Activity views.
 
 Check the [keyboard reference](https://www.trysynara.com/docs/reference/keyboard-shortcuts) for the
 complete current list.

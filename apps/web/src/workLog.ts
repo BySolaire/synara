@@ -4,6 +4,7 @@ import {
   COMPUTER_CONTROL_DENIED_ACTIVITY_KIND,
   COMPUTER_SETUP_REQUIRED_ACTIVITY_KIND,
   isToolLifecycleItemType,
+  type ModelSelection,
   STUDIO_OUTPUTS_ACTIVITY_KIND,
   type OrchestrationLatestTurnState,
   type OrchestrationThreadActivity,
@@ -55,6 +56,24 @@ export type WorkLogRequestKind = ApprovalRequestKind;
 const CHECKPOINT_REVERT_FAILED_ACTIVITY_KIND = "checkpoint.revert.failed";
 export const PROVIDER_CONTEXT_LIFECYCLE_ACTIVITY_KIND = "provider.context.changed";
 const SESSION_CONTEXT_RECAP_PREVIEW_MAX_CHARS = 600;
+// Mirror the same-thread Hand off activities in ProviderCommandReactor.ts.
+export const PROVIDER_HANDOFF_ACTIVITY_KIND = "provider.handoff";
+export const PROVIDER_HANDOFF_FAILED_ACTIVITY_KIND = "provider.handoff.failed";
+
+export interface ProviderHandoffInfo {
+  status: "completed" | "failed";
+  sourceProvider: ProviderKind;
+  sourceModel: string;
+  targetProvider: ProviderKind;
+  targetModel: string;
+  /** Full selections (effort, fast mode); rebuilt from provider + model when absent. */
+  sourceModelSelection: ModelSelection;
+  targetModelSelection: ModelSelection;
+  /** Prior-transcript context the target receives with its first turn. */
+  contextText: string | null;
+  /** Why the target could not start; only set on failure. */
+  failureDetail: string | null;
+}
 
 export type ProviderContextLifecycleReason =
   | "conversation-rebuilt"
@@ -124,11 +143,15 @@ export interface WorkLogEntry {
   // batch roll-up) render as compact centered pills in the coordinator
   // conversation, each carrying a link into the reported thread.
   synaraWorkerNotice?: WorkLogSynaraWorkerNotice;
+  // A task the agent moved to the background finished. Its completion wakes the
+  // agent into a new turn, so the row also marks where that new response starts.
+  backgroundTaskCompletion?: WorkLogBackgroundTaskCompletion;
   // Computer-control denial rows render as an actionable card (enable control
   // and retry) instead of a plain error line; carry just what that card needs.
   computerControlDenied?: WorkLogComputerControlDenied;
   computerSetupRequired?: WorkLogComputerSetupRequired;
   providerContextLifecycle?: ProviderContextLifecycleInfo;
+  providerHandoff?: ProviderHandoffInfo;
   // Source activity kind, kept so the timeline can pick a kind-specific icon
   // (e.g. user-input.requested -> question glyph) instead of the generic
   // tone fallback. Same rationale as `toolName` below.
@@ -195,6 +218,12 @@ export interface WorkLogSynaraWorkerNoticeThread {
   pr: string | null;
   /** Owning group project — the needs-you actions resolve against it. */
   projectId: string | null;
+}
+
+export interface WorkLogBackgroundTaskCompletion {
+  taskId: string;
+  taskType: string | null;
+  description: string | null;
 }
 
 export interface WorkLogSynaraWorkerNotice {
@@ -380,7 +409,7 @@ export function deriveWorkLogEntries(
   // GitHub icon, user-input rows -> question / submit glyphs). Stripping
   // `toolName` here previously made those icon checks dead code, leaving the
   // generic wrench.
-  return reconcileSettledLiveActivities(
+  const derived = reconcileSettledLiveActivities(
     collapseDerivedWorkLogEntries(entries),
     ordered,
     latestTurnId,
@@ -398,6 +427,65 @@ export function deriveWorkLogEntries(
         ...entry
       }) => entry,
     );
+  const completions = deriveBackgroundTaskCompletionEntries(ordered, latestTurnId, visibleTurnIds);
+  return completions.length > 0 ? [...derived, ...completions] : derived;
+}
+
+// Completions of tasks a visible "Moved to background" notice announced. They
+// carry no turn id (they land between turns), so they bypass the turn filter
+// once the notice that launched them is visible.
+function deriveBackgroundTaskCompletionEntries(
+  ordered: ReadonlyArray<OrchestrationThreadActivity>,
+  latestTurnId: TurnId | undefined,
+  visibleTurnIds: ReadonlySet<TurnId | string> | undefined,
+): WorkLogEntry[] {
+  const backgroundTasks = new Map<
+    string,
+    { taskType: string | null; description: string | null }
+  >();
+  const completions: WorkLogEntry[] = [];
+  for (const activity of ordered) {
+    const payload = asRecord(activity.payload);
+    if (
+      activity.kind === "runtime.warning" &&
+      payload?.nativeEventType === "background_tasks_changed"
+    ) {
+      if (!shouldKeepActivityForWorkLog(activity, latestTurnId, visibleTurnIds)) continue;
+      const tasks = asRecord(payload.data)?.tasks;
+      if (!Array.isArray(tasks)) continue;
+      for (const task of tasks) {
+        const record = asRecord(task);
+        if (typeof record?.task_id !== "string") continue;
+        backgroundTasks.set(record.task_id, {
+          taskType: typeof record.task_type === "string" ? record.task_type : null,
+          description: typeof record.description === "string" ? record.description : null,
+        });
+      }
+      continue;
+    }
+    if (activity.kind !== "task.completed" || typeof payload?.taskId !== "string") continue;
+    const task = backgroundTasks.get(payload.taskId);
+    if (!task) continue;
+    backgroundTasks.delete(payload.taskId);
+    const noun = task.taskType === "local_agent" ? "Subagent" : "Background task";
+    const outcome =
+      payload.status === "failed"
+        ? "failed"
+        : payload.status === "stopped"
+          ? "stopped"
+          : "finished";
+    completions.push({
+      id: activity.id,
+      createdAt: activity.createdAt,
+      ...(activity.sequence !== undefined ? { sequence: activity.sequence } : {}),
+      // Status first: a trailing "finished" is trimmed as a tool status word.
+      label: task.description ? `${noun} ${outcome}: ${task.description}` : `${noun} ${outcome}`,
+      tone: payload.status === "failed" ? "error" : "info",
+      activityKind: activity.kind,
+      backgroundTaskCompletion: { taskId: payload.taskId, ...task },
+    });
+  }
+  return completions;
 }
 
 function shouldKeepActivityForWorkLog(
@@ -407,7 +495,11 @@ function shouldKeepActivityForWorkLog(
 ): boolean {
   // Context lifecycle evidence must survive message visibility filters. It is
   // the durable explanation for why a turn may behave differently after reload.
-  if (activity.kind === PROVIDER_CONTEXT_LIFECYCLE_ACTIVITY_KIND) {
+  if (
+    activity.kind === PROVIDER_CONTEXT_LIFECYCLE_ACTIVITY_KIND ||
+    activity.kind === PROVIDER_HANDOFF_ACTIVITY_KIND ||
+    activity.kind === PROVIDER_HANDOFF_FAILED_ACTIVITY_KIND
+  ) {
     return true;
   }
 
@@ -673,6 +765,53 @@ function isProviderContextLifecycleReason(value: unknown): value is ProviderCont
   );
 }
 
+function asProviderKind(value: unknown): ProviderKind | undefined {
+  return PROVIDER_DESCRIPTORS.find((descriptor) => descriptor.kind === value)?.kind;
+}
+
+function asHandoffModelSelection(
+  value: unknown,
+  fallback: { provider: ProviderKind; model: string },
+): ModelSelection {
+  if (value && typeof value === "object") {
+    const candidate = value as { provider?: unknown; model?: unknown };
+    if (candidate.provider === fallback.provider && candidate.model === fallback.model) {
+      return value as ModelSelection;
+    }
+  }
+  return fallback as ModelSelection;
+}
+
+function extractProviderHandoffInfo(
+  payload: Record<string, unknown> | null,
+  status: ProviderHandoffInfo["status"],
+): ProviderHandoffInfo | null {
+  const sourceProvider = asProviderKind(payload?.sourceProvider);
+  const targetProvider = asProviderKind(payload?.targetProvider);
+  const sourceModel = asTrimmedString(payload?.sourceModel);
+  const targetModel = asTrimmedString(payload?.targetModel);
+  if (!sourceProvider || !targetProvider || !sourceModel || !targetModel) {
+    return null;
+  }
+  return {
+    status,
+    sourceProvider,
+    sourceModel,
+    targetProvider,
+    targetModel,
+    sourceModelSelection: asHandoffModelSelection(payload?.sourceModelSelection, {
+      provider: sourceProvider,
+      model: sourceModel,
+    }),
+    targetModelSelection: asHandoffModelSelection(payload?.targetModelSelection, {
+      provider: targetProvider,
+      model: targetModel,
+    }),
+    contextText: asTrimmedString(payload?.contextText),
+    failureDetail: asTrimmedString(payload?.detail),
+  };
+}
+
 function extractProviderContextLifecycleInfo(
   payload: Record<string, unknown> | null,
 ): ProviderContextLifecycleInfo | null {
@@ -882,6 +1021,18 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     const providerContextLifecycle = extractProviderContextLifecycleInfo(payload);
     if (providerContextLifecycle) {
       entry.providerContextLifecycle = providerContextLifecycle;
+    }
+  }
+  if (
+    activity.kind === PROVIDER_HANDOFF_ACTIVITY_KIND ||
+    activity.kind === PROVIDER_HANDOFF_FAILED_ACTIVITY_KIND
+  ) {
+    const providerHandoff = extractProviderHandoffInfo(
+      payload,
+      activity.kind === PROVIDER_HANDOFF_ACTIVITY_KIND ? "completed" : "failed",
+    );
+    if (providerHandoff) {
+      entry.providerHandoff = providerHandoff;
     }
   }
   const computerToolDescription = deriveComputerToolDescription({
