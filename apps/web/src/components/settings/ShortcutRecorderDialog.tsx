@@ -214,10 +214,10 @@ function ShortcutRecorder({
   const conflicts = recording.status === "ready" && !unsupportedKey ? recording.conflicts : [];
 
   return (
-    <div className="flex flex-col gap-3.5 px-5 pt-5 pb-4">
+    <div className="flex flex-col gap-3 px-4 pt-4 pb-3">
       <div className="flex items-center gap-3">
-        <div className="flex size-10 shrink-0 items-center justify-center rounded-[9px] border border-[color:var(--color-border)] bg-muted text-foreground">
-          <CentralIcon name="shortcut" className="size-5" />
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-[9px] border border-[color:var(--color-border)] bg-muted text-foreground">
+          <CentralIcon name="shortcut" className="size-4.5" />
         </div>
         <div className="min-w-0 space-y-0.5">
           <DialogTitle className="truncate text-[15px]">{row.label}</DialogTitle>
@@ -231,7 +231,7 @@ function ShortcutRecorder({
       <div
         ref={keyWellRef}
         tabIndex={-1}
-        className="flex min-h-[104px] items-center justify-center gap-2 rounded-xl border border-[color:var(--color-border)] bg-muted px-3 shadow-[inset_0_1px_3px_rgba(0,0,0,0.12)] outline-none dark:shadow-[inset_0_1px_3px_rgba(0,0,0,0.5)]"
+        className="flex min-h-[88px] items-center justify-center gap-2 rounded-xl border border-[color:var(--color-border)] bg-muted px-3 shadow-[inset_0_1px_3px_rgba(0,0,0,0.12)] outline-none dark:shadow-[inset_0_1px_3px_rgba(0,0,0,0.5)]"
       >
         {isPreviewing ? (
           <>
@@ -257,7 +257,7 @@ function ShortcutRecorder({
       <div
         role="status"
         className={cn(
-          "flex min-h-[30px] items-start gap-1.5 text-ui-sm leading-snug",
+          "flex min-h-[2lh] items-start gap-1.5 text-ui-sm leading-snug",
           problem
             ? "text-destructive"
             : conflicts.length > 0
