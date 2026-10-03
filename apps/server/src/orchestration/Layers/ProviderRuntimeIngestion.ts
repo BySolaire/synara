@@ -61,6 +61,8 @@ import {
   classifyTerminalTurnApplicability,
   isStartedTurnApplicable,
 } from "../../provider/terminalTurnApplicability.ts";
+import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
+import { ProjectionThreadActivityRepositoryLive } from "../../persistence/Layers/ProjectionThreadActivities.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import {
@@ -728,6 +730,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const computerService = yield* Effect.serviceOption(ComputerService);
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  const projectionThreadActivityRepository = yield* ProjectionThreadActivityRepository;
   const projectionThreadSessionRepository = yield* ProjectionThreadSessionRepository;
   const pendingInteractions = yield* ProjectionPendingInteractionRepository;
   const runtimeEvents = yield* ProviderRuntimeEventRepository;
@@ -1011,11 +1014,28 @@ const make = Effect.gen(function* () {
       const cached = Option.getOrUndefined(
         yield* Cache.getOption(claudeReasoningActivityById, activity.id),
       );
-      const previous =
+      const durable = cached
+        ? undefined
+        : Option.getOrUndefined(
+            yield* projectionThreadActivityRepository.getById({
+              threadId,
+              activityId: activity.id,
+            }),
+          );
+      const previous: OrchestrationThreadActivity | undefined =
         cached ??
-        Option.getOrUndefined(
-          yield* projectionSnapshotQuery.getThreadDetailById(threadId),
-        )?.activities.find((row) => row.id === activity.id);
+        (durable
+          ? {
+              id: durable.activityId,
+              createdAt: durable.createdAt,
+              tone: durable.tone,
+              kind: durable.kind,
+              summary: durable.summary,
+              payload: durable.payload as OrchestrationThreadActivity["payload"],
+              turnId: durable.turnId,
+              ...(durable.sequence !== undefined ? { sequence: durable.sequence } : {}),
+            }
+          : undefined);
       if (previous) {
         yield* Cache.set(claudeReasoningActivityById, activity.id, previous);
         // Interruption/failure is final; a delayed delta must not reopen a
@@ -3783,6 +3803,7 @@ export const ProviderRuntimeIngestionLive = Layer.effect(
   Layer.provide(
     Layer.mergeAll(
       ProjectionTurnRepositoryLive,
+      ProjectionThreadActivityRepositoryLive,
       ProjectionPendingInteractionRepositoryLive,
       ProviderRuntimeEventRepositoryLive,
       OrchestrationCommandReceiptRepositoryLive,

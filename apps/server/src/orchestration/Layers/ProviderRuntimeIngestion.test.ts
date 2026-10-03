@@ -3019,45 +3019,70 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
-  it("preserves durable failed Claude reasoning when ingestion receives a late completion", async () => {
-    const harness = await createHarness({ startIngestion: false });
-    const createdAt = "2026-10-03T10:02:00.000Z";
-    const activity = {
-      id: asEventId("provider-reasoning:thread-1:persisted-thought"),
-      tone: "tool" as const,
-      kind: "task.progress",
-      summary: "Reasoning trace",
-      payload: { status: "failed", detail: "Interrupted thought" },
-      turnId: asTurnId("persisted-turn"),
-      createdAt,
-      sequence: 1,
-    };
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.activity.append",
-        commandId: CommandId.makeUnsafe("seed-settled-reasoning"),
-        threadId: asThreadId("thread-1"),
-        activity,
+  it.each([0, 2_001])(
+    "preserves durable failed Claude reasoning with %s newer rows when ingestion receives a late completion",
+    async (newerRows) => {
+      const harness = await createHarness({ startIngestion: false });
+      const createdAt = "2026-10-03T10:02:00.000Z";
+      const activity = {
+        id: asEventId("provider-reasoning:thread-1:persisted-thought"),
+        tone: "tool" as const,
+        kind: "task.progress",
+        summary: "Reasoning trace",
+        payload: { status: "failed", detail: "Interrupted thought" },
+        turnId: asTurnId("persisted-turn"),
         createdAt,
-      }),
-    );
-    const persisted = (await harness.readProjectedThread())?.activities[0];
-    await Effect.runPromise(
-      harness.runtimeEventRepository.append({
-        type: "item.completed",
-        provider: "claudeAgent",
-        eventId: asEventId("late-persisted-thought-completion"),
-        threadId: asThreadId("thread-1"),
-        turnId: activity.turnId,
-        itemId: asItemId("persisted-thought"),
-        createdAt: "2026-10-03T10:02:01.000Z",
-        payload: { itemType: "reasoning", status: "completed", detail: "Late success" },
-      }),
-    );
-    await harness.startIngestion();
-    await harness.drain();
-    expect((await harness.readProjectedThread())?.activities).toEqual([persisted]);
-  });
+        sequence: 1,
+      };
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.makeUnsafe("seed-settled-reasoning"),
+          threadId: asThreadId("thread-1"),
+          activity,
+          createdAt,
+        }),
+      );
+      const sql = await runtime!.runPromise(Effect.service(SqlClient.SqlClient));
+      if (newerRows > 0) {
+        await Effect.runPromise(sql`
+        WITH RECURSIVE newer(n) AS (
+          SELECT 1 UNION ALL SELECT n + 1 FROM newer WHERE n < ${newerRows}
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+        )
+        SELECT 'newer-' || n, 'thread-1', 'persisted-turn', 'info', 'runtime.warning',
+          'Later activity', '{}', n + 1, '2026-10-03T10:02:01.000Z' FROM newer
+      `);
+        expect(
+          (await harness.readProjectedThread())?.activities.some((row) => row.id === activity.id),
+        ).toBe(false);
+      }
+      const readDurableThought = () =>
+        Effect.runPromise(sql`
+      SELECT payload_json, created_at, sequence FROM projection_thread_activities
+      WHERE activity_id = ${activity.id}
+    `);
+      const persisted = await readDurableThought();
+      expect(persisted).toHaveLength(1);
+      await Effect.runPromise(
+        harness.runtimeEventRepository.append({
+          type: "item.completed",
+          provider: "claudeAgent",
+          eventId: asEventId("late-persisted-thought-completion"),
+          threadId: asThreadId("thread-1"),
+          turnId: activity.turnId,
+          itemId: asItemId("persisted-thought"),
+          createdAt: "2026-10-03T10:02:01.000Z",
+          payload: { itemType: "reasoning", status: "completed", detail: "Late success" },
+        }),
+      );
+      await harness.startIngestion();
+      await harness.drain();
+      expect(await readDurableThought()).toEqual(persisted);
+    },
+  );
 
   it("projects only completed Codex reasoning with a readable summary", async () => {
     const harness = await createHarness();
