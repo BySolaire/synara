@@ -264,11 +264,9 @@ describe("SidechatExpiryReactor", () => {
       false,
     );
 
-    // The settings subscriber is forked during start, so retry until it observes the change.
-    for (let attempt = 0; attempt < 100 && harness.clock.pendingCount() === 0; attempt += 1) {
-      await harness.setSidechatExpiry("24h");
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    // A setting published once immediately after start must not be lost.
+    await harness.setSidechatExpiry("24h");
+    await waitFor(() => harness.clock.pendingCount() > 0);
     harness.clock.advanceTo(harness.clock.now());
     await harness.clock.flushBackgroundEffects();
     expect(harness.commands).toContainEqual(

@@ -172,7 +172,10 @@ export function createSidechatExpiryTimer<TimerHandle>(
     setExpiryMs: (nextExpiryMs) => {
       if (nextExpiryMs === expiryMs) return;
       expiryMs = nextExpiryMs;
-      for (const [threadId, state] of states) scheduleExpiry(threadId, state);
+      for (const [threadId, state] of states) {
+        state.expiryPending = false;
+        scheduleExpiry(threadId, state);
+      }
     },
     getViewedThreadIds: () =>
       [...states.entries()].flatMap(([threadId, state]) =>

@@ -250,9 +250,7 @@ export const makeSidechatExpiryReactor = <TimerHandle>(
       // restoring timers so "never" cannot expire side chats that went idle
       // while the server was down. Each change carries the full value, so a
       // change racing the subscription is corrected by the read below.
-      yield* Stream.runForEach(serverSettings.streamChanges, (next) =>
-        Effect.sync(() => timer.setExpiryMs(sidechatExpiryMs(next.sidechatExpiry))),
-      ).pipe(Effect.forkScoped);
+      const settingsChanges = yield* serverSettings.subscribeChanges;
       const settings = yield* serverSettings.getSettings.pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("failed to read side chat expiry setting", {
@@ -261,6 +259,12 @@ export const makeSidechatExpiryReactor = <TimerHandle>(
         ),
       );
       if (settings) timer.setExpiryMs(sidechatExpiryMs(settings.sidechatExpiry));
+      yield* settingsChanges.pipe(
+        Stream.runForEach((next) =>
+          Effect.sync(() => timer.setExpiryMs(sidechatExpiryMs(next.sidechatExpiry))),
+        ),
+        Effect.forkScoped,
+      );
 
       const liveEvents = yield* orchestrationEngine.subscribeDomainEvents;
       const readModel = yield* orchestrationEngine.getReadModel();
