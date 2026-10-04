@@ -23,16 +23,20 @@ afterEach(() => {
   else root.setAttribute("style", originalRootStyle);
 });
 
-function mountDockPane(options: { glass: boolean; maximized?: boolean }) {
+function mountDockPane(options: { glass: boolean; maximized?: boolean; editor?: boolean }) {
   if (options.glass) root.setAttribute("data-window-translucency", "window");
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <div
-        data-slot="sidebar-container"
+        data-slot={options.editor ? undefined : "sidebar-container"}
         data-dock-maximized={options.maximized ? "true" : undefined}
       >
-        <div data-right-dock-content style={{ width: 320, height: 240, display: "flex" }}>
+        <div
+          data-right-dock-content={options.editor ? undefined : ""}
+          data-editor-workspace={options.editor ? "" : undefined}
+          style={{ width: 320, height: 240, display: "flex" }}
+        >
           <DiffPanelShell mode="sidebar" header={<span>Header</span>}>
             <CodeEditorPane
               fileName="sample.ts"
@@ -72,23 +76,29 @@ function viewerParts() {
 const isClear = (element: Element | null) =>
   element !== null && /[,/] 0\)$/.test(getComputedStyle(element).backgroundColor);
 
-it("clears the pane shell and viewer fill, backing the gutter only under scrolled code", async () => {
-  // The shell's fill is the theme's `--app-content-surface`, applied by useTheme at runtime.
-  root.style.setProperty("--app-content-surface", "transparent");
-  const view = await mountDockPane({ glass: true });
-  await expect.element(page.getByRole("textbox")).toBeVisible();
-  const { shell, host, code, file, line, lineNumber, gutter } = viewerParts();
+it.each([
+  { name: "right dock", editor: false },
+  { name: "editor workspace", editor: true },
+])(
+  "clears the $name shell and viewer fill, backing the gutter only under scrolled code",
+  async ({ editor }) => {
+    // The shell's fill is the theme's `--app-content-surface`, applied by useTheme at runtime.
+    root.style.setProperty("--app-content-surface", "transparent");
+    const view = await mountDockPane({ glass: true, editor });
+    await expect.element(page.getByRole("textbox")).toBeVisible();
+    const { shell, host, code, file, line, lineNumber, gutter } = viewerParts();
 
-  expect([shell, host, file, code, line, lineNumber, gutter].map(isClear)).not.toContain(false);
+    expect([shell, host, file, code, line, lineNumber, gutter].map(isClear)).not.toContain(false);
 
-  code.scrollLeft = 120;
-  await expect.poll(() => isClear(gutter)).toBe(false);
-  code.scrollLeft = 0;
-  await expect.poll(() => isClear(gutter)).toBe(true);
+    code.scrollLeft = 120;
+    await expect.poll(() => isClear(gutter)).toBe(false);
+    code.scrollLeft = 0;
+    await expect.poll(() => isClear(gutter)).toBe(true);
 
-  root.style.removeProperty("--app-content-surface");
-  await view.unmount();
-});
+    root.style.removeProperty("--app-content-surface");
+    await view.unmount();
+  },
+);
 
 it.each([
   { name: "an opaque window", glass: false, maximized: false },
