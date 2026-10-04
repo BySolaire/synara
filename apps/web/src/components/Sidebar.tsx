@@ -36,7 +36,10 @@ import {
   XIcon,
 } from "~/lib/icons";
 import { createCentralIconComponent } from "~/lib/central-icons";
-import { ThreadPrStatusBadge } from "~/components/pullRequest/ThreadPrStatusBadge";
+import {
+  PR_STATE_PRESENTATION_ICONS,
+  resolvePrStatePresentation,
+} from "~/components/pullRequest/pullRequestStatePresentation";
 import { PinStatusIcon, pinActionLabel } from "~/lib/pin";
 import { useTasksNeedingAttentionCount, useTodoEventSubscription } from "./tasks/useTodos";
 import { THREAD_CONTEXT_MENU_ICONS } from "~/lib/contextMenuIcons";
@@ -720,7 +723,7 @@ function groupPickupMessageText(sourceThread: Pick<Thread, "id" | "title">): str
 }
 
 type ThreadMetaChip = {
-  id: "automation" | "handoff" | "fork" | "worktree";
+  id: "automation" | "handoff" | "fork" | "worktree" | "pr";
   tooltip: string;
   icon: ReactNode;
 };
@@ -797,6 +800,23 @@ function resolveThreadRowMetaChips(input: {
   }
 
   return chips;
+}
+
+// The thread's PR state, as a plain meta chip that closes the row (the hover card's PR
+// row is the clickable way to open it).
+function resolveThreadRowPrChip(pr: NonNullable<ThreadPullRequest>): ThreadMetaChip {
+  const presentation = resolvePrStatePresentation(pr);
+  return {
+    id: "pr",
+    tooltip: `#${pr.number} ${presentation.label}: ${pr.title}`,
+    icon: (
+      <SidebarGlyph
+        icon={PR_STATE_PRESENTATION_ICONS[presentation.iconKind]}
+        variant="meta"
+        className={presentation.colorClass}
+      />
+    ),
+  };
 }
 
 function terminalStatusFromThreadState(input: {
@@ -4996,18 +5016,11 @@ export default function Sidebar() {
     );
   }
 
-  // The PR glyph closes the row, after the trailing cluster rather than inside it, so the
-  // hover actions (which overlay that cluster) never cover it and it stays clickable.
-  function renderThreadRowPrBadge(pr: ThreadPullRequest | null) {
-    return pr ? (
-      <ThreadPrStatusBadge pr={pr} onOpen={openPrLink} className="ml-0.5 size-5" />
-    ) : null;
-  }
-
   function renderThreadRowTrailingCluster(input: {
     isSubagentThread: boolean;
     threadJumpLabel: string | null;
     rightMetaChips: ThreadMetaChip[];
+    pr?: ThreadPullRequest | null;
     threadStatus: ReturnType<typeof resolveThreadStatusForSidebar>;
     timestampToneClassName?: string;
     hoverActions: ReactNode;
@@ -5044,6 +5057,11 @@ export default function Sidebar() {
           >
             <SidebarStatusTrailingGlyph status={trailingStatus} />
           </span>
+        ) : null}
+        {input.pr ? (
+          <div className={cn("shrink-0", THREAD_ROW_META_CHIP_HOVER_FADE_CLASS_NAME)}>
+            <SidebarMetaChipStack chips={[resolveThreadRowPrChip(input.pr)]} />
+          </div>
         ) : null}
         {input.hoverActions}
       </div>
@@ -5304,6 +5322,7 @@ export default function Sidebar() {
                 isSubagentThread,
                 threadJumpLabel,
                 rightMetaChips,
+                pr: trailingPr,
                 threadStatus,
                 timestampToneClassName: "text-muted-foreground/38",
                 hoverActions: renderThreadHoverActions({
@@ -5313,7 +5332,6 @@ export default function Sidebar() {
                   compact: isSubagentThread,
                 }),
               })}
-              {renderThreadRowPrBadge(trailingPr)}
             </div>
           </div>
         </TooltipTrigger>
@@ -5476,6 +5494,7 @@ export default function Sidebar() {
                 isSubagentThread,
                 threadJumpLabel,
                 rightMetaChips: showCompactMeta ? rightMetaChips : [],
+                pr: trailingPr,
                 threadStatus,
                 timestampToneClassName: isSubagentThread
                   ? isHighlighted
@@ -5489,7 +5508,6 @@ export default function Sidebar() {
                   compact: isSubagentThread,
                 }),
               })}
-              {renderThreadRowPrBadge(trailingPr)}
             </div>
           </TooltipTrigger>
           {renderThreadHoverCardPopup(thread, hoverAnchorId, isActive)}
