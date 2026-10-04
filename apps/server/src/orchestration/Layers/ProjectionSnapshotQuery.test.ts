@@ -43,18 +43,19 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       yield* sql`INSERT INTO projection_projects
         (project_id, title, workspace_root, scripts_json, created_at, updated_at)
         VALUES ('import-flag-project', 'Import flag', '/tmp/import-flag', '[]', ${now}, ${now})`;
-      for (const [id, imported] of [
-        ["native-history-thread", false],
-        ["imported-history-thread", true],
+      for (const [id, status] of [
+        ["native-history-thread", null],
+        ["imported-history-thread", "completed"],
+        ["pending-history-thread", "pending"],
       ] as const) {
         const threadId = asThreadId(id);
         yield* sql`INSERT INTO projection_threads
           (thread_id, project_id, title, model_selection_json, created_at, updated_at)
           VALUES (${threadId}, 'import-flag-project', ${id}, '{"provider":"codex","model":"gpt-5"}', ${now}, ${now})`;
-        if (imported)
+        if (status)
           yield* sql`INSERT INTO project_import_origins
           (source_key, provider, source_home, external_id, project_id, thread_id, status, created_at)
-          VALUES ('import-flag-source', 'codex', '/tmp/codex', 'external-import-flag', 'import-flag-project', ${threadId}, 'completed', ${now})`;
+          VALUES (${id}, 'codex', '/tmp/codex', ${id}, 'import-flag-project', ${threadId}, ${status}, ${now})`;
         const snapshots = [
           yield* query.getSnapshot(),
           yield* query.getShellSnapshot(),
@@ -67,7 +68,15 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         ];
         for (const thread of threads) {
           assert.isDefined(thread);
-          assert.strictEqual(thread?.isProjectImport ?? false, imported);
+          assert.strictEqual(thread?.isProjectImport ?? false, status === "completed");
+        }
+        if (status === "pending") {
+          yield* sql`UPDATE project_import_origins SET status = 'completed' WHERE thread_id = ${threadId}`;
+          const completed = yield* query.getShellSnapshot();
+          assert.strictEqual(
+            completed.threads.find((thread) => thread.id === threadId)?.isProjectImport,
+            true,
+          );
         }
       }
     }),

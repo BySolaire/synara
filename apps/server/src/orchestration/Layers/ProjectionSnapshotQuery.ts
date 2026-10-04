@@ -970,6 +970,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const projectImportProvenance = sql`EXISTS (
     SELECT 1 FROM project_import_origins
     WHERE project_import_origins.thread_id = projection_threads.thread_id
+      AND project_import_origins.status = 'completed'
   )`;
 
   const listThreadRows = SqlSchema.findAll({
