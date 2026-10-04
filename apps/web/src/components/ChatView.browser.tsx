@@ -11035,7 +11035,7 @@ describe("ChatView transcript geometry (full app)", () => {
     }
   });
 
-  it.each(["saved", "draft", "terminal"] as const)(
+  it.each(["saved", "promoted-draft", "terminal"] as const)(
     "reorders a background horizontal tab across navigation and persists the order (%s)",
     async (kind) => {
       const thirdId = ThreadId.makeUnsafe("drag-tab-third");
@@ -11044,7 +11044,7 @@ describe("ChatView transcript geometry (full app)", () => {
         targetText: "Drag tabs",
       });
       snapshot = addThreadToSnapshot(snapshot, thirdId);
-      if (kind !== "draft") snapshot = addThreadToSnapshot(snapshot, OTHER_THREAD_ID);
+      if (kind !== "promoted-draft") snapshot = addThreadToSnapshot(snapshot, OTHER_THREAD_ID);
       snapshot = {
         ...snapshot,
         threads: snapshot.threads.map((thread) =>
@@ -11053,10 +11053,19 @@ describe("ChatView transcript geometry (full app)", () => {
       };
       const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
       try {
-        if (kind === "draft") {
+        if (kind === "promoted-draft") {
           useComposerDraftStore.getState().registerDraftThread(OTHER_THREAD_ID, {
             projectId: PROJECT_ID,
           });
+          useOpenThreadTabsStore.setState({ threadIds: [THREAD_ID, OTHER_THREAD_ID, thirdId] });
+          await vi.waitFor(() =>
+            expect(
+              document.querySelectorAll('nav[aria-label="Open threads"] [data-surface-tab]'),
+            ).toHaveLength(2),
+          );
+          fixture.snapshot = addThreadToSnapshot(fixture.snapshot, OTHER_THREAD_ID);
+          useStore.getState().syncServerReadModel(fixture.snapshot);
+          useComposerDraftStore.getState().clearDraftThread(OTHER_THREAD_ID);
         } else if (kind === "terminal") {
           useTerminalStateStore.getState().openTerminalThreadPage(OTHER_THREAD_ID);
         }
@@ -11211,27 +11220,74 @@ describe("ChatView transcript geometry (full app)", () => {
     }
   });
 
+  it("keeps the saved editor chat reachable while an unsent draft is on screen", async () => {
+    useOpenThreadTabsStore.setState({ threadIds: [] });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: MessageId.makeUnsafe("editor-draft-return"),
+        targetText: "Saved editor chat",
+      }),
+      initialEntry: `/${THREAD_ID}?view=editor`,
+    });
+    try {
+      // A lone active saved chat still needs no redundant rail tab.
+      expect(page.getByRole("button", { name: "Chat 1", exact: true }).elements()).toHaveLength(0);
+      const draftId = ThreadId.makeUnsafe("019f88ab-cdea-7100-8b00-000000000022");
+      useComposerDraftStore.getState().setProjectDraftThreadId(PROJECT_ID, draftId, {});
+      useComposerDraftStore.getState().setPrompt(draftId, "Keep this unsent prompt");
+      await mounted.router.navigate({
+        to: "/$threadId",
+        params: { threadId: draftId },
+        search: () => ({ view: "editor" as const }),
+      });
+      await vi.waitFor(() =>
+        expect(document.querySelector('[contenteditable="true"]')?.textContent).toBe(
+          "Keep this unsent prompt",
+        ),
+      );
+      const savedTab = page.getByRole("button", { name: "Chat 1", exact: true });
+      await expect.element(savedTab, { timeout: 2_000 }).toBeVisible();
+      expect(savedTab.element().getAttribute("aria-pressed")).toBe("false");
+      expect(page.getByRole("button", { name: "Chat 2", exact: true }).elements()).toHaveLength(0);
+      await savedTab.click();
+      await waitForURL(
+        mounted.router,
+        (path) => path === `/${THREAD_ID}`,
+        "The saved tab should return to its chat from the draft.",
+      );
+      expect(mounted.router.state.location.search.view).toBe("editor");
+      expect(useComposerDraftStore.getState().draftsByThreadId[draftId]?.prompt).toBe(
+        "Keep this unsent prompt",
+      );
+      await expect.element(page.getByTestId("composer-editor")).toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it.each(["terminal", "close", "navigation", "navigation-back", "inflight"] as const)(
     "cancels a pending editor chat tab switch after %s",
     async (action) => {
+      const laterThreadId = ThreadId.makeUnsafe("editor-tab-later-navigation");
+      const snapshot = addThreadToSnapshot(
+        addThreadToSnapshot(
+          createSnapshotForTargetUser({
+            targetMessageId: MessageId.makeUnsafe("editor-tab-cancel"),
+            targetText: "Editor chat",
+          }),
+          OTHER_THREAD_ID,
+        ),
+        laterThreadId,
+      );
       const mounted = await mountChatView({
         viewport: DEFAULT_VIEWPORT,
-        snapshot: createSnapshotForTargetUser({
-          targetMessageId: MessageId.makeUnsafe("editor-tab-cancel"),
-          targetText: "Editor chat",
-        }),
+        snapshot,
         initialEntry: `/${THREAD_ID}?view=editor`,
       });
       try {
-        const laterThreadId = ThreadId.makeUnsafe("editor-tab-later-navigation");
         const laterNavigation =
           action === "navigation" || action === "navigation-back" || action === "inflight";
-        if (laterNavigation) {
-          useComposerDraftStore.getState().registerDraftThread(laterThreadId, {
-            projectId: PROJECT_ID,
-          });
-        }
-        useComposerDraftStore.getState().setProjectDraftThreadId(PROJECT_ID, OTHER_THREAD_ID, {});
         useOpenThreadTabsStore.setState({
           threadIds: [THREAD_ID, OTHER_THREAD_ID, ...(laterNavigation ? [laterThreadId] : [])],
         });

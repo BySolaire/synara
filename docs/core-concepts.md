@@ -30,7 +30,8 @@ is cancelled, the task and its prompt remain available for retry.
   is a fixed column of icon tabs for Home, Spaces, Kanban (Tasks in Beta), Code review, Automations, Hubs (Beta), and
   Settings, with the thread panel beside it and the route shown as a card inset from the window.
   Open saved threads appear as tabs across the top of the chat. Unsent drafts stay out of
-  the tab strip until they become saved threads on the first send.
+  the tab strip until they become saved threads on the first send. Saved tabs remain
+  available to return to while an unsent draft is on screen, including in the editor view.
   Archiving the open thread or marking it **Done** opens the most recently used unfinished chat
   across projects, ordered by its last human message (or creation time). If none remains, New
   thread reopens an unsent draft. Actions on other threads keep the current chat open.
