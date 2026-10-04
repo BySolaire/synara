@@ -88,7 +88,7 @@ import { SidebarSectionToolbar } from "./SidebarSectionToolbar";
 import { SidebarDraftGlyph, SidebarStatusTrailingGlyph } from "./SidebarStatusTrailingGlyph";
 import { ThreadArchiveActionButton } from "./ThreadArchiveActionButton";
 import { ThreadPinToggleButton } from "./ThreadPinToggleButton";
-import { KbdGroup } from "./ui/kbd";
+import { ShortcutKbd } from "./ui/kbd";
 import { DisclosureChevron } from "./ui/DisclosureChevron";
 import {
   Menu,
@@ -245,9 +245,10 @@ export function ActivityThreadRow({
             ) : null}
             {hasPendingDraft ? <SidebarDraftGlyph /> : null}
             {threadJumpLabel ? (
-              <KbdGroup
+              <ShortcutKbd
                 shortcutLabel={threadJumpLabel}
-                className={sidebarHoverRevealHideClassName("activity-row")}
+                title={threadJumpLabel}
+                groupClassName={sidebarHoverRevealHideClassName("activity-row")}
               />
             ) : null}
           </span>

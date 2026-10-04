@@ -180,21 +180,11 @@ export const FileIcon = adaptIcon(IconFile);
 export const FlagIcon = adaptIcon(IconFlag);
 export const FlaskConicalIcon = adaptIcon(IconFlask2);
 export const GitCommitIcon: LucideIcon = centralIconWrapper("commits");
-export const GitBranchIcon: LucideIcon = centralIconWrapper("branch");
-// Forking a thread reuses the branch glyph: the Central "fork" asset reads as a
-// second, unrelated icon next to it, so fork and branch share one visual.
-export const GitForkIcon: LucideIcon = GitBranchIcon;
 export const GitMergeIcon: LucideIcon = centralIconWrapper("merged");
 export const PushIcon: LucideIcon = centralIconWrapper("cloud-simple-upload");
 export const GitHubIcon: LucideIcon = (props) => (
   <SiGithub className={props.className} style={props.style} />
 );
-export const GitPullRequestIcon = centralIconWrapper("pull-request");
-// Pull-request state glyphs from the same three-node Central family as "pull-request",
-// so draft/closed/merged read as variations of one icon rather than four styles.
-export const GitPullRequestDraftIcon: LucideIcon = centralIconWrapper("draft");
-export const GitPullRequestClosedIcon: LucideIcon = centralIconWrapper("request-closed");
-export const GitMergeConflictIcon: LucideIcon = centralIconWrapper("merge-conflict");
 // Issue state glyphs, GitHub's shapes from the same Central outline set: a ring with a dot
 // (open), a checked ring (closed as completed), and a struck ring (closed as not planned).
 export const IssueOpenedIcon: LucideIcon = centralIconWrapper("record");
@@ -347,6 +337,14 @@ export {
   MessageEdit01Icon as FeedbackIcon,
   SlidersHorizontalIcon as CustomizeIcon,
   FolderLibraryIcon as FoldersIcon,
+  GitMergeConflictIcon,
+  GitPullRequestArrowIcon as GitPullRequestIcon,
+  GitPullRequestClosedIcon,
+  GitPullRequestCreateArrowIcon as CreatePullRequestIcon,
+  GitPullRequestDraftIcon,
+  // Forking a thread reuses the branch glyph, so fork and branch share one visual.
+  WorkflowCircle05Icon as GitBranchIcon,
+  WorkflowCircle05Icon as GitForkIcon,
   SidechatIcon,
   SourceCodeSquareIcon as EditorViewIcon,
   GitCompareArrowsIcon as CodeReviewIcon,

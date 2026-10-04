@@ -15,6 +15,7 @@ import {
   DeviceLaptopIcon,
   EYE_OPEN_ICON_NAME,
   FolderOpenIcon,
+  GitBranchIcon,
   HandoffIcon,
   PENCIL_ICON_NAME,
   PIN_ICON_NAME,
@@ -31,7 +32,7 @@ export const THREAD_CONTEXT_MENU_ICONS = {
   // Same glyph as the chat header's Hand off button.
   handoff: renderToStaticMarkup(<HandoffIcon />),
   // Fork shares the branch glyph (see GitForkIcon); its targets match the env-mode glyphs.
-  fork: "branch",
+  fork: renderToStaticMarkup(<GitBranchIcon />),
   forkLocal: renderToStaticMarkup(<DeviceLaptopIcon />),
   forkWorktree: renderToStaticMarkup(<WorktreeIcon />),
   // Same glyph as the project rows' open folder.

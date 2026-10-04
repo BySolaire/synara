@@ -209,7 +209,7 @@ function resolveProgressDescription(progress: ActiveGitActionProgress): string |
 // Map a header quick action onto its shared glyph name; null falls back to a hint icon.
 // Every push-family action collapses to "push" so the button matches the picker rows.
 function resolveGitQuickActionGlyph(quickAction: GitQuickAction): GitGlyphName | null {
-  if (quickAction.kind === "open_pr") return "pr";
+  if (quickAction.kind === "open_pr") return "view_pr";
   if (quickAction.kind === "run_pull") return "sync";
   if (quickAction.kind === "create_branch") return "branch";
   if (quickAction.kind === "run_action") {

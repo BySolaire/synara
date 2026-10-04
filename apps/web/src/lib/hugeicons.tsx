@@ -475,3 +475,93 @@ export const SlidersHorizontalIcon = createHugeicon("SlidersHorizontalIcon", [
   { d: "M11.9996 19.0003L19.9996 19.0003", roundCap: true },
   { d: "M3.99963 19.0005L8.99963 19.0003", roundCap: true },
 ]);
+
+/** Merge conflicts: the PR conflict state, the PR context card, and the Environment panel row (`git-merge-conflict`). */
+export const GitMergeConflictIcon = createHugeicon("GitMergeConflictIcon", [
+  {
+    d: "M12 6H13C14.8692 6 15.8038 6 16.5 6.40192C16.9561 6.66523 17.3348 7.04394 17.5981 7.5C18 8.19615 18 9.13077 18 11",
+    round: true,
+  },
+  { d: "M6 12V21", round: true },
+  { d: "M9 3L3 9", round: true },
+  { d: "M9 9L3 3", round: true },
+  {
+    d: "M18 21C19.6569 21 21 19.6569 21 18C21 16.3431 19.6569 15 18 15C16.3431 15 15 16.3431 15 18C15 19.6569 16.3431 21 18 21Z",
+    round: true,
+  },
+]);
+
+/** Pull request: the classic open-PR glyph, the PR state set, and the "View PR" action (`git-pull-request-arrow`). */
+export const GitPullRequestArrowIcon = createHugeicon("GitPullRequestArrowIcon", [
+  {
+    d: "M5 9C6.65685 9 8 7.65685 8 6C8 4.34315 6.65685 3 5 3C3.34315 3 2 4.34315 2 6C2 7.65685 3.34315 9 5 9Z",
+    round: true,
+  },
+  { d: "M5 13V21", round: true },
+  {
+    d: "M19 21C20.6569 21 22 19.6569 22 18C22 16.3431 20.6569 15 19 15C17.3431 15 16 16.3431 16 18C16 19.6569 17.3431 21 19 21Z",
+    round: true,
+  },
+  {
+    d: "M12 6H14C15.8692 6 16.8038 6 17.5 6.40192C17.9561 6.66523 18.3348 7.04394 18.5981 7.5C19 8.19615 19 9.13077 19 11M15 3C15 3 12 5.20944 12 6C12 6.79056 15 9 15 9",
+    round: true,
+  },
+]);
+
+/** Create a pull request: the Create PR buttons and menu rows (`git-pull-request-create-arrow`). */
+export const GitPullRequestCreateArrowIcon = createHugeicon("GitPullRequestCreateArrowIcon", [
+  {
+    d: "M5 9C6.65685 9 8 7.65685 8 6C8 4.34315 6.65685 3 5 3C3.34315 3 2 4.34315 2 6C2 7.65685 3.34315 9 5 9Z",
+    round: true,
+  },
+  { d: "M5 13V21", round: true },
+  {
+    d: "M12 6H14C15.8692 6 16.8038 6 17.5 6.40192C17.9561 6.66523 18.3348 7.04394 18.5981 7.5C19 8.19615 19 9.13077 19 11M15 3C15 3 12 5.20944 12 6C12 6.79056 15 9 15 9",
+    round: true,
+  },
+  { d: "M19 15V21M22 18H16", round: true },
+]);
+
+/** Branch: the branch pickers, thread rows, and every branch/fork marker (`workflow-circle-05`). */
+export const WorkflowCircle05Icon = createHugeicon("WorkflowCircle05Icon", [
+  {
+    d: "M9 5C9 6.65685 7.65685 8 6 8C4.34315 8 3 6.65685 3 5C3 3.34315 4.34315 2 6 2C7.65685 2 9 3.34315 9 5Z",
+  },
+  {
+    d: "M21 5C21 6.65685 19.6569 8 18 8C16.3431 8 15 6.65685 15 5C15 3.34315 16.3431 2 18 2C19.6569 2 21 3.34315 21 5Z",
+  },
+  {
+    d: "M9 19C9 20.6569 7.65685 22 6 22C4.34315 22 3 20.6569 3 19C3 17.3431 4.34315 16 6 16C7.65685 16 9 17.3431 9 19Z",
+  },
+  { d: "M6 8V16", round: true },
+  {
+    d: "M6 12H14C15.4001 12 16.1002 12 16.635 11.7275C17.1054 11.4878 17.4878 11.1054 17.7275 10.635C18 10.1002 18 9.40013 18 8",
+    round: true,
+  },
+]);
+
+/** Draft pull request, from the same family as the open glyph (`git-pull-request-draft`). */
+export const GitPullRequestDraftIcon = createHugeicon("GitPullRequestDraftIcon", [
+  { d: "M6 8L6 16", round: true },
+  { d: "M4 18A2 2 0 1 0 8 18A2 2 0 1 0 4 18Z" },
+  { d: "M4 6A2 2 0 1 0 8 6A2 2 0 1 0 4 6Z" },
+  { d: "M16 18A2 2 0 1 0 20 18A2 2 0 1 0 16 18Z" },
+  {
+    d: "M18.125 11H18M18.25 11C18.25 11.1381 18.1381 11.25 18 11.25C17.8619 11.25 17.75 11.1381 17.75 11C17.75 10.8619 17.8619 10.75 18 10.75C18.1381 10.75 18.25 10.8619 18.25 11Z",
+    roundCap: true,
+  },
+  {
+    d: "M18.125 6H18M18.25 6C18.25 6.13807 18.1381 6.25 18 6.25C17.8619 6.25 17.75 6.13807 17.75 6C17.75 5.86193 17.8619 5.75 18 5.75C18.1381 5.75 18.25 5.86193 18.25 6Z",
+    roundCap: true,
+  },
+]);
+
+/** Closed pull request, from the same family as the open glyph (`git-pull-request-closed`). */
+export const GitPullRequestClosedIcon = createHugeicon("GitPullRequestClosedIcon", [
+  { d: "M6 8L6 16", round: true },
+  { d: "M18 11L18 16", round: true },
+  { d: "M4 18A2 2 0 1 0 8 18A2 2 0 1 0 4 18Z" },
+  { d: "M4 6A2 2 0 1 0 8 6A2 2 0 1 0 4 6Z" },
+  { d: "M16 18A2 2 0 1 0 20 18A2 2 0 1 0 16 18Z" },
+  { d: "M20 4L18 6M18 6L16 8M18 6L20 8M18 6L16 4", round: true },
+]);
