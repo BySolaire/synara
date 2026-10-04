@@ -43,6 +43,7 @@ function createHugeicon(
       .filter(Boolean)
       .join(" ") || null;
   function Hugeicon(props: SVGProps<SVGSVGElement>) {
+    const labelled = Boolean(props["aria-label"] || props["aria-labelledby"]);
     return (
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -52,7 +53,8 @@ function createHugeicon(
         fill={options.solid ? "currentColor" : "none"}
         stroke="currentColor"
         strokeWidth={options.strokeWidth ?? 1.5}
-        aria-hidden
+        role={labelled ? "img" : undefined}
+        aria-hidden={labelled ? undefined : true}
         data-slot="hugeicon"
         {...props}
       >

@@ -1416,7 +1416,7 @@ export default function GitActionsControl({
           isDefaultBranch,
           defaultBranchName,
         }),
-        icon: "pr",
+        icon: prMenuItem.kind === "open_pr" ? "view_pr" : "pr",
         onSelect: () => openDialogForMenuItem(prMenuItem),
       });
     }

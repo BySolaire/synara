@@ -205,6 +205,14 @@ export const DiffPanelToolbar = function DiffPanelToolbar(props: DiffPanelToolba
   const scopePickerCount =
     props.viewSource.kind === "repo" ? props.scopeFileCounts[props.viewSource.scope] : undefined;
 
+  const scopePickerDescription = [
+    scopePickerLabel,
+    scopePickerCount ? `${scopePickerCount} files` : null,
+    props.activeStats ? `+${props.activeStats.additions} -${props.activeStats.deletions}` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
   const selectedTurnSummary = props.selectedTurnId
     ? props.orderedTurnDiffSummaries.find((summary) => summary.turnId === props.selectedTurnId)
     : undefined;
@@ -253,8 +261,13 @@ export const DiffPanelToolbar = function DiffPanelToolbar(props: DiffPanelToolba
           render={
             <button
               type="button"
-              className={cn(DIFF_PANEL_PICKER_TRIGGER_CLASS_NAME, "max-w-[min(70%,18rem)]")}
+              className={cn(
+                DIFF_PANEL_PICKER_TRIGGER_CLASS_NAME,
+                "max-w-[min(70%,18rem)] overflow-hidden",
+              )}
               aria-label="Choose diff source"
+              aria-description={scopePickerDescription}
+              title={scopePickerDescription}
             />
           }
         >
@@ -329,7 +342,8 @@ export const DiffPanelToolbar = function DiffPanelToolbar(props: DiffPanelToolba
         </ComposerPickerMenuPopup>
       </Menu>
 
-      <div className="ml-auto flex min-w-0 items-center gap-1.5">
+      {/* Keep actions visible and leave an icon-sized source picker when the dock is narrow. */}
+      <div className="ml-auto flex min-w-0 max-w-[calc(100%-2.5rem)] shrink-0 items-center gap-1.5">
         <ButtonGroup label="Diff tools">
           <IconButton
             variant="ghost"
@@ -477,6 +491,8 @@ export const DiffPanelToolbar = function DiffPanelToolbar(props: DiffPanelToolba
                 type="button"
                 className={cn(DIFF_PANEL_PICKER_TRIGGER_CLASS_NAME, "max-w-[min(32%,9.5rem)]")}
                 aria-label="Choose turn diff"
+                aria-description={turnsMenuLabel}
+                title={turnsMenuLabel}
               />
             }
           >

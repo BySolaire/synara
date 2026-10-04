@@ -231,8 +231,11 @@ describe("SidebarActivityView", () => {
           expect(getComputedStyle(glyph!).color).toBe(expectedColor);
           expect(row.querySelector("img")).toBeNull();
         }
-        expect(row.querySelector('[aria-label="Worktree"]')).not.toBeNull();
+        expect(row.querySelector('[aria-label="Worktree"]')?.getAttribute("aria-hidden")).not.toBe(
+          "true",
+        );
       });
+      await expect.element(mounted.getByRole("img", { name: "Worktree" })).toBeVisible();
       await mounted.unmount();
     },
   );
