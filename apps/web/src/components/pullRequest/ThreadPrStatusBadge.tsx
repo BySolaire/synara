@@ -1,5 +1,5 @@
 // FILE: ThreadPrStatusBadge.tsx
-// Purpose: Renders the compact, clickable PR state icon shown before classic sidebar rows.
+// Purpose: Renders the compact, clickable PR state icon that closes classic sidebar rows.
 // Layer: Pull request presentation
 // Exports: ThreadPrStatusBadge
 
@@ -44,6 +44,14 @@ export function ThreadPrStatusBadge({
               presentation.colorClass,
               className,
             )}
+            // The badge sits inside the row's own button: keep a press on it from
+            // priming, focusing, or (via Enter/Space) activating the thread.
+            onPointerDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onKeyDown={(event) => event.stopPropagation()}
             onClick={(event) => onOpen(event, pr.url)}
           >
             <SidebarGlyph icon={PrIcon} variant="meta" className="size-3.5" />

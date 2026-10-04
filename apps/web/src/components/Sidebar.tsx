@@ -171,6 +171,7 @@ import { useCommittedPathname } from "../hooks/useCommittedPathname";
 import { countNeedsYouActions } from "./inbox/inbox.logic";
 import {
   resolveThreadPullRequestFallback,
+  type ThreadPullRequest,
   useThreadPullRequests,
 } from "../hooks/useThreadPullRequests";
 import {
@@ -4995,6 +4996,14 @@ export default function Sidebar() {
     );
   }
 
+  // The PR glyph closes the row, after the trailing cluster rather than inside it, so the
+  // hover actions (which overlay that cluster) never cover it and it stays clickable.
+  function renderThreadRowPrBadge(pr: ThreadPullRequest | null) {
+    return pr ? (
+      <ThreadPrStatusBadge pr={pr} onOpen={openPrLink} className="ml-0.5 size-5" />
+    ) : null;
+  }
+
   function renderThreadRowTrailingCluster(input: {
     isSubagentThread: boolean;
     threadJumpLabel: string | null;
@@ -5210,7 +5219,7 @@ export default function Sidebar() {
     const threadStatus = resolveThreadStatusForSidebar(thread);
     const isSubagentThread = Boolean(thread.parentThreadId);
     const pr = prByThreadId.get(thread.id) ?? null;
-    const leadingPr = isSubagentThread || thread.forkSourceThreadId ? null : pr;
+    const trailingPr = isSubagentThread || thread.forkSourceThreadId ? null : pr;
     const threadJumpLabel = visibleThreadJumpLabelByThreadId.get(thread.id) ?? null;
     const hoverAnchorId = createSidebarThreadHoverAnchorId({
       scope: "pinned",
@@ -5227,13 +5236,6 @@ export default function Sidebar() {
             />
           }
         >
-          {leadingPr ? (
-            <ThreadPrStatusBadge
-              pr={leadingPr}
-              onOpen={openPrLink}
-              className="pointer-events-auto absolute left-1.5 top-1/2 z-30 size-5 -translate-y-1/2"
-            />
-          ) : null}
           <div
             role="button"
             tabIndex={0}
@@ -5243,7 +5245,6 @@ export default function Sidebar() {
               SIDEBAR_HEADER_ROW_CLASS_NAME,
               // Metadata and shortcut hints occupy their actual width in the flex row.
               "relative gap-1.5 pr-2 transition-colors",
-              leadingPr && "pl-8",
               isActive
                 ? SIDEBAR_ROW_ACTIVE_CLASS_NAME
                 : cn(
@@ -5312,6 +5313,7 @@ export default function Sidebar() {
                   compact: isSubagentThread,
                 }),
               })}
+              {renderThreadRowPrBadge(trailingPr)}
             </div>
           </div>
         </TooltipTrigger>
@@ -5361,7 +5363,7 @@ export default function Sidebar() {
       threadAutomations: automationsByThreadId.get(thread.id),
     });
     const isSubagentThread = Boolean(thread.parentThreadId);
-    const leadingPr = isSubagentThread || thread.forkSourceThreadId ? null : pr;
+    const trailingPr = isSubagentThread || thread.forkSourceThreadId ? null : pr;
     const subagentIndentPx = Math.max(0, Math.min(depth - 1, 3) * 10);
     const showCompactMeta = !isSubagentThread;
     const showTemporaryThreadIcon = showCompactMeta && isTemporaryThread;
@@ -5378,13 +5380,6 @@ export default function Sidebar() {
         className="group/thread-row w-full"
         data-thread-item
       >
-        {leadingPr ? (
-          <ThreadPrStatusBadge
-            pr={leadingPr}
-            onOpen={openPrLink}
-            className="pointer-events-auto absolute left-1.5 top-1/2 z-30 size-5 -translate-y-1/2"
-          />
-        ) : null}
         <Tooltip>
           <TooltipTrigger
             {...SIDEBAR_HOVER_CARD_TRIGGER_PROPS}
@@ -5401,7 +5396,7 @@ export default function Sidebar() {
                     isSelected,
                     isSnoozeReminder: threadStatus?.label === "Reminder",
                   }),
-                  leadingPr ? "pl-8" : topLevel && !isSubagentThread ? "pl-2" : null,
+                  topLevel && !isSubagentThread ? "pl-2" : null,
                   "pr-2",
                 )}
                 draggable
@@ -5494,6 +5489,7 @@ export default function Sidebar() {
                   compact: isSubagentThread,
                 }),
               })}
+              {renderThreadRowPrBadge(trailingPr)}
             </div>
           </TooltipTrigger>
           {renderThreadHoverCardPopup(thread, hoverAnchorId, isActive)}
