@@ -8,6 +8,7 @@ import { Maximize2, Minimize2, MinusIcon, XIcon } from "~/lib/icons";
 import { cn, getNavigatorPlatform, isWindowsPlatform } from "~/lib/utils";
 
 import { CHAT_SURFACE_HEADER_HEIGHT_CLASS } from "./chat/chatHeaderControls";
+import { toastManager } from "./ui/toast";
 
 const DEFAULT_WINDOW_STATE: DesktopWindowState = {
   isMaximized: false,
@@ -113,7 +114,16 @@ export function DesktopWindowControls({ className }: { className?: string }) {
         title={isMaximized ? "Restore" : "Maximize"}
         className={CAPTION_BUTTON_CLASS}
         onClick={() => {
-          void controls.toggleMaximize().then(setWindowState);
+          void controls
+            .toggleMaximize()
+            .then(setWindowState)
+            .catch((error: unknown) => {
+              toastManager.add({
+                type: "error",
+                title: "Could not resize window",
+                description: error instanceof Error ? error.message : "Please try again.",
+              });
+            });
         }}
       >
         {useWindowsGlyphs ? (

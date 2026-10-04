@@ -178,9 +178,11 @@ export function useGroupLibrary(input: {
   };
 
   const reloadLoadedDirectories = async () => {
-    for (const dir of loadedDirs.current) {
-      await loadDirectory(dir === ROOT_DIRECTORY ? undefined : dir);
-    }
+    await Promise.all(
+      Array.from(loadedDirs.current, (dir) =>
+        loadDirectory(dir === ROOT_DIRECTORY ? undefined : dir),
+      ),
+    );
   };
 
   const refreshStatus = async (projectId: ProjectId) => {
@@ -267,17 +269,17 @@ export function useGroupLibrary(input: {
         credentials: "include",
         body: file,
       });
-      const payload = (await response.json().catch(() => null)) as unknown;
-      if (projectIdRef.current === projectId) {
-        if (!response.ok) {
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as unknown;
+        if (projectIdRef.current === projectId) {
           setError(libraryUploadErrorMessage(payload, response.status));
-        } else {
+        }
+      } else {
+        if (projectIdRef.current === projectId) {
           await reloadLoadedDirectories();
           await refreshStatus(projectId);
           setError(null);
-          succeeded = true;
         }
-      } else {
         succeeded = true;
       }
     } catch (cause) {
