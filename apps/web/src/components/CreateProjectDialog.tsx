@@ -26,7 +26,7 @@ import type { Space } from "../types";
 import { useVoidSpace } from "../voidSpaceStore";
 import { cn } from "~/lib/utils";
 
-import { FolderClosed } from "./FolderClosed";
+import { FolderAddIcon, FolderIcon } from "~/lib/icons";
 import {
   CreateGitHubProjectFields,
   PROJECT_DIALOG_FIELD_CONTROL_CLASS_NAME,
@@ -451,7 +451,7 @@ export function CreateProjectDialog(props: {
             <>
               <InputGroup className={PROJECT_DIALOG_FIELD_CONTROL_CLASS_NAME}>
                 <InputGroupAddon className="w-10 self-stretch border-e border-foreground/12 ps-0">
-                  <FolderClosed className="size-4 text-muted-foreground/70" aria-hidden="true" />
+                  <FolderIcon className="size-4 text-muted-foreground/70" aria-hidden="true" />
                 </InputGroupAddon>
                 <InputGroupInput
                   id={nameInputId}
@@ -476,11 +476,11 @@ export function CreateProjectDialog(props: {
                 </span>
                 <div
                   className={cn(
-                    "flex min-h-40 flex-col items-center justify-center gap-4 rounded-xl border border-foreground/12 p-5",
+                    "flex flex-col gap-2",
                     isDropTarget && "border-[color:var(--color-border-focus)] bg-foreground/6",
                   )}
                 >
-                  <div className="flex flex-wrap items-center justify-center gap-1 text-ui text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-1 text-ui text-muted-foreground">
                     <span>Add a folder on</span>
                     <ComputerPicker
                       computers={computers}
@@ -506,38 +506,33 @@ export function CreateProjectDialog(props: {
                       }
                     />
                   </div>
-                  {pickedFolderName ? (
-                    <div className="flex min-w-0 max-w-full items-center gap-3">
-                      <FolderClosed className="size-5 shrink-0 text-muted-foreground" />
-                      <div className="min-w-0 text-ui">
-                        <p className="truncate">{pickedFolderName}</p>
-                        <p
-                          className="truncate text-ui-xs text-muted-foreground"
+                  <button
+                    type="button"
+                    aria-labelledby={sourceFolderLabelId}
+                    disabled={!selectedComputer?.available || isPickingFolder || submitting}
+                    className={cn(
+                      "flex min-h-12 w-full cursor-pointer items-center gap-2.5 rounded-xl border border-foreground/12 px-3.5 text-start text-ui text-[var(--color-text-foreground)] transition-colors outline-none hover:bg-foreground/4 focus-visible:border-foreground/30 disabled:opacity-50",
+                      isDropTarget && "border-[color:var(--color-border-focus)] bg-foreground/6",
+                    )}
+                    onClick={() => void handleBrowse()}
+                  >
+                    <FolderAddIcon className="size-4.5" aria-hidden="true" />
+                    {isPickingFolder ? (
+                      "Opening the folder picker…"
+                    ) : pickedFolderName ? (
+                      <span className="flex min-w-0 flex-col">
+                        <span className="truncate">{pickedFolderName}</span>
+                        <span
+                          className="truncate text-ui-xs text-muted-foreground/70"
                           title={pickedPath ?? undefined}
                         >
                           {pickedPath}
-                        </p>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        disabled={submitting || isPickingFolder}
-                        onClick={() => void handleBrowse()}
-                      >
-                        Change
-                      </Button>
-                    </div>
-                  ) : (
-                    <Button
-                      variant="secondary"
-                      shape="capsule"
-                      disabled={!selectedComputer?.available || isPickingFolder || submitting}
-                      onClick={() => void handleBrowse()}
-                    >
-                      <CentralIcon name="folder-add-left" className="size-4" aria-hidden="true" />
-                      {isPickingFolder ? "Opening…" : "Add folder"}
-                    </Button>
-                  )}
+                        </span>
+                      </span>
+                    ) : (
+                      "Add folder"
+                    )}
+                  </button>
                   {!selectedComputer?.available ? (
                     <p role="status" className="text-ui-sm text-muted-foreground">
                       This computer is unavailable. Reconnect or choose another computer.

@@ -147,7 +147,7 @@ import {
   gitHandoffMetadataCommand,
   recordGitHandoffResult,
 } from "./gitHandoffOperations";
-import { Keybindings } from "./keybindings";
+import { DEFAULT_RESOLVED_KEYBINDINGS, Keybindings } from "./keybindings";
 import { createLocalPreviewGrant } from "./localImageFiles";
 import { listLocalServers, stopLocalServer } from "./localServerMonitor";
 import {
@@ -250,6 +250,7 @@ import {
   makeResnapshotEscalationTracker,
 } from "./wsSnapshotLiveStream";
 import { PullRequestService } from "./pullRequests/Services/PullRequestService";
+import { PullRequestAutoFixService } from "./pullRequestAutoFix/Services/PullRequestAutoFixService";
 import {
   GitHubInboxRateLimitedError,
   GitHubInboxService,
@@ -516,6 +517,7 @@ const makeWsRpcHandlersLayer = () =>
       const sidechatExpiryReactor = yield* SidechatExpiryReactor;
       const path = yield* Path.Path;
       const pullRequests = yield* PullRequestService;
+      const pullRequestAutoFix = yield* PullRequestAutoFixService;
       const githubInbox = yield* GitHubInboxService;
       const profileStatsQuery = yield* ProfileStatsQuery;
       const recapStatsQuery = yield* RecapStatsQuery;
@@ -957,6 +959,7 @@ const makeWsRpcHandlersLayer = () =>
           worktreesDir: config.worktreesDir,
           keybindingsConfigPath: config.keybindingsConfigPath,
           keybindings: keybindingsConfig.keybindings,
+          defaultKeybindings: DEFAULT_RESOLVED_KEYBINDINGS,
           issues: keybindingsConfig.issues,
           providers: providerStatuses,
           availableEditors: resolveAvailableEditors(),
@@ -1384,6 +1387,27 @@ const makeWsRpcHandlersLayer = () =>
             }),
             "Remote agent tool failed",
           ),
+        [ORCHESTRATION_WS_METHODS.settleTurnDispatch]: ({ command }) =>
+          rpcEffect(
+            Effect.gen(function* () {
+              const { command: normalizedCommand } = yield* normalizeDispatchCommand({ command });
+              const attachmentPrincipal = yield* CurrentManagedAttachmentPrincipal;
+              return yield* runtimeStartup
+                .enqueueCommand(
+                  orchestrationEngine.dispatch(normalizedCommand, {
+                    attachmentPrincipal,
+                    settleOnly: true,
+                  }),
+                )
+                .pipe(
+                  Effect.map(({ sequence }) => ({ status: "accepted" as const, sequence })),
+                  Effect.catchTag("OrchestrationCommandPreviouslyRejectedError", (error) =>
+                    Effect.succeed({ status: "rejected" as const, message: error.detail }),
+                  ),
+                );
+            }),
+            "Failed to resolve the original message delivery.",
+          ),
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           rpcEffect(
             Effect.gen(function* () {
@@ -1432,6 +1456,11 @@ const makeWsRpcHandlersLayer = () =>
           rpcEffect(importThread(input), "Failed to import thread"),
         [ORCHESTRATION_WS_METHODS.listProjectImports]: (input) =>
           rpcEffect(projectImports.listProjectImports(input), "Failed to find local projects"),
+        [ORCHESTRATION_WS_METHODS.loadProjectImportHistory]: (input) =>
+          rpcEffect(
+            projectImports.loadProjectImportHistory(input),
+            "Failed to load imported history",
+          ),
         [ORCHESTRATION_WS_METHODS.importProject]: (input) =>
           rpcEffect(projectImports.importProject(input), "Failed to import project"),
         [ORCHESTRATION_WS_METHODS.regenerateThreadTitle]: (input) =>
@@ -2036,11 +2065,16 @@ const makeWsRpcHandlersLayer = () =>
             ),
             { label: "git.stacked-action" },
           ),
+        // Summary lookups gate cache misses inside GitHubCli so fresh badge data stays available.
         [WS_METHODS.gitResolvePullRequest]: (input) =>
-          rpcEffect(gitManager.resolvePullRequest(input), "Failed to resolve pull request"),
+          rpcEffect(
+            gitManager.resolvePullRequest(input, { background: true }),
+            "Failed to resolve pull request",
+          ),
+        // Uncached snapshot polling shares the inbox read queue and rate-limit pause.
         [WS_METHODS.gitPullRequestSnapshot]: (input) =>
           rpcEffect(
-            gitManager.pullRequestSnapshot(input),
+            github.withRead(gitManager.pullRequestSnapshot(input)),
             "Failed to load pull request checks and comments",
           ),
         [WS_METHODS.gitPreparePullRequestThread]: (input) =>
@@ -2067,6 +2101,10 @@ const makeWsRpcHandlersLayer = () =>
           pullRequestsEffect(pullRequests.comment(input), "Could not post the comment"),
         [WS_METHODS.pullRequestsSetPinned]: (input) =>
           rpcEffect(pullRequests.setPinned(input), "Failed to update pull request pin"),
+        [WS_METHODS.pullRequestsGetAutoFix]: (input) =>
+          rpcEffect(pullRequestAutoFix.get(input), "Failed to read Auto-fix CI"),
+        [WS_METHODS.pullRequestsSetAutoFix]: (input) =>
+          rpcEffect(pullRequestAutoFix.set(input), "Failed to update Auto-fix CI"),
         [WS_METHODS.gitListBranches]: (input) =>
           rpcEffect(git.listBranches(input), "Failed to list branches"),
         [WS_METHODS.gitListRecentCommits]: (input) =>
@@ -2518,6 +2556,15 @@ const makeWsRpcHandlersLayer = () =>
                 Effect.map((keybindingsConfig) => ({ keybindings: keybindingsConfig, issues: [] })),
               ),
             "Failed to update keybinding",
+          ),
+        [WS_METHODS.serverEditKeybindings]: (input) =>
+          rpcEffect(
+            keybindings
+              .editKeybindings(input.edits)
+              .pipe(
+                Effect.map((keybindingsConfig) => ({ keybindings: keybindingsConfig, issues: [] })),
+              ),
+            "Failed to update keybindings",
           ),
         [WS_METHODS.subscribeServerLifecycle]: (_, { clientId }) =>
           streamAdmission.guard(

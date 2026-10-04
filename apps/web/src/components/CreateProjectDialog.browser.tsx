@@ -48,11 +48,14 @@ describe("CreateProjectDialog GitHub source", () => {
       />,
     );
     expect(
-      (page.getByRole("button", { name: "Add folder", exact: true }).element() as HTMLButtonElement)
-        .disabled,
+      (
+        page
+          .getByRole("button", { name: "Source folder", exact: true })
+          .element() as HTMLButtonElement
+      ).disabled,
     ).toBe(false);
     await page.getByLabelText("Project name", { exact: true }).fill("My workspace");
-    await page.getByRole("button", { name: "Add folder", exact: true }).click();
+    await page.getByRole("button", { name: "Source folder", exact: true }).click();
     await expect
       .element(page.getByRole("heading", { name: "Choose a folder on This computer" }))
       .toBeVisible();

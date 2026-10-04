@@ -19,6 +19,9 @@ import {
   WS_PROTOCOL_MAX_REVISION,
   WS_PROTOCOL_MIN_REVISION,
   WS_PROJECT_FILE_WATCH_CAPABILITY,
+  WS_TURN_DISPATCH_SETTLEMENT_CAPABILITY,
+  type ClientOrchestrationCommand,
+  type OrchestrationSettleTurnDispatchResult,
   DEVICE_WS_CHANNELS,
   DEVICE_WS_METHODS,
   COMPUTER_WS_CHANNELS,
@@ -71,10 +74,11 @@ import {
   Scope,
   Stream,
 } from "effect";
-import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
+import { RpcClient, RpcClientError, RpcSerialization } from "effect/unstable/rpc";
 import * as Socket from "effect/unstable/socket/Socket";
 
 import { APP_VERSION } from "./branding";
+import { isRequestOutcomeUnknown } from "./lib/requestOutcome";
 import {
   getUnaryRpcCapacityRetryDelayMs,
   MAX_UNARY_RPC_CAPACITY_RETRY_ATTEMPTS,
@@ -83,7 +87,7 @@ import {
   buildThreadSubscribeInput,
   clearThreadDetailResumeCursor,
 } from "./threadDetailResumeCursors";
-import type { WsTransportState } from "./wsTransportEvents";
+import { trackWsTurnSettlement, type WsTransportState } from "./wsTransportEvents";
 
 type PushListener<C extends WsPushChannel> = (message: WsPushMessage<C>) => void;
 
@@ -109,7 +113,11 @@ export class WsTransportRequestInterruptedError extends Data.TaggedError(
   "WsTransportRequestInterruptedError",
 )<{
   readonly message: string;
-  readonly code: "WS_REQUEST_TIMEOUT" | "WS_REQUEST_ABORTED" | "WS_REQUEST_RECONNECTED";
+  readonly code:
+    | "WS_REQUEST_TIMEOUT"
+    | "WS_REQUEST_ABORTED"
+    | "WS_REQUEST_RECONNECTED"
+    | "WS_TURN_SETTLEMENT_UNAVAILABLE";
   readonly method: string;
   readonly timeoutMs?: number;
   readonly cause?: unknown;
@@ -344,27 +352,42 @@ export async function negotiateOverHttp(
   } catch {
     return null;
   }
-  const body: unknown = await response.json().catch(() => null);
   if (response.status === 426) {
+    const body: unknown = await response.json().catch(() => null);
     const issue = Schema.decodeUnknownOption(WsCompatibilityError)(body);
     if (Option.isSome(issue)) throw issue.value;
     throw new Error("WebSocket negotiation was refused with an unreadable 426 response.");
   }
-  if (!response.ok) return null;
+  if (!response.ok) {
+    // The legacy bootstrap can recover from this status without waiting for an
+    // irrelevant (possibly stalled) error body. Release that body immediately.
+    void response.body?.cancel().catch(() => undefined);
+    return null;
+  }
+  const body: unknown = await response.json().catch(() => null);
   const result = Schema.decodeUnknownOption(WsBootstrapNegotiateResult)(body);
   return Option.isSome(result) ? result.value : null;
 }
 
-function makeProtocolLayer(url: string) {
+function makeProtocolLayer(url: string, onFailure?: () => void) {
   const socketLayer = Socket.layerWebSocket(url).pipe(
     Layer.provide(Socket.layerWebSocketConstructorGlobal),
   );
   // JSON keeps the wire format symmetric with any server build: a serialization
   // mismatch on this single multiplexed socket is a hard connect failure, and the
   // desktop/dev setup routinely runs web and server on independently-built copies.
-  return RpcClient.layerProtocolSocket().pipe(
-    Layer.provide(Layer.mergeAll(socketLayer, RpcSerialization.layerJson)),
-  );
+  return Layer.effect(RpcClient.Protocol)(
+    Effect.map(RpcClient.makeProtocolSocket(), (protocol) => ({
+      ...protocol,
+      run: (writeResponse) =>
+        protocol.run((response) => {
+          // The socket library retries its connection, but its failed RPCs and
+          // subscriptions have already ended. Rebuild the whole client session.
+          if (response._tag === "ClientProtocolError") onFailure?.();
+          return writeResponse(response);
+        }),
+    })),
+  ).pipe(Layer.provide(Layer.mergeAll(socketLayer, RpcSerialization.layerJson)));
 }
 
 function causeToError(cause: Cause.Cause<unknown>): Error {
@@ -839,6 +862,8 @@ export class WsTransport {
     const requestOptions: WsRequestOptions =
       options?.timeoutMs === undefined ? { ...options, timeoutMs: REQUEST_TIMEOUT_MS } : options;
     const abortScope = makeRequestAbortScope(requestOptions);
+    let uncertainTurn: Extract<ClientOrchestrationCommand, { type: "thread.turn.start" }> | null =
+      null;
     try {
       if (method === ORCHESTRATION_WS_METHODS.unsubscribeShell) {
         this.shellSubscribed = false;
@@ -896,6 +921,18 @@ export class WsTransport {
       }
 
       const client = await awaitWithAbort(this.getClient(), abortScope.signal);
+      if (
+        method === ORCHESTRATION_WS_METHODS.settleTurnDispatch &&
+        !this.compatibility?.capabilities.includes(WS_TURN_DISPATCH_SETTLEMENT_CAPABILITY)
+      ) {
+        throw new WsTransportRequestInterruptedError({
+          message:
+            "This server cannot check message delivery. Reconnect to an updated server and check the conversation before sending again.",
+          code: "WS_TURN_SETTLEMENT_UNAVAILABLE",
+          method,
+          retryable: false,
+        });
+      }
 
       if (method === WS_METHODS.gitRunStackedAction) {
         return (await this.runGitActionStream(client, params, abortScope.signal)) as T;
@@ -912,6 +949,13 @@ export class WsTransport {
           ? (params as { command: unknown }).command
           : (params ?? {});
       const normalizedRpcInput = omitNullUserInputAnswers(rpcInput);
+      if (
+        method === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+        this.compatibility?.capabilities.includes(WS_TURN_DISPATCH_SETTLEMENT_CAPABILITY)
+      ) {
+        const command = normalizedRpcInput as ClientOrchestrationCommand;
+        if (command.type === "thread.turn.start") uncertainTurn = command;
+      }
       const call = (
         client as unknown as Record<
           string,
@@ -933,8 +977,9 @@ export class WsTransport {
         }
       }
     } catch (error) {
+      let failure = error;
       if (abortScope.didTimeout()) {
-        throw new WsTransportRequestInterruptedError({
+        failure = new WsTransportRequestInterruptedError({
           message: `WebSocket RPC ${method} timed out after ${requestOptions.timeoutMs}ms.`,
           code: "WS_REQUEST_TIMEOUT",
           method,
@@ -943,17 +988,18 @@ export class WsTransport {
             : {}),
           cause: error,
         });
-      }
-      if (requestOptions.signal?.aborted) {
-        throw new WsTransportRequestInterruptedError({
+      } else if (requestOptions.signal?.aborted) {
+        failure = new WsTransportRequestInterruptedError({
           message: `WebSocket RPC ${method} was cancelled.`,
           code: "WS_REQUEST_ABORTED",
           method,
           cause: requestOptions.signal.reason ?? error,
         });
-      }
-      if (isRuntimeInterruptFailure(error)) {
-        throw new WsTransportRequestInterruptedError({
+      } else if (
+        isRuntimeInterruptFailure(error) ||
+        Schema.is(RpcClientError.RpcClientError)(error)
+      ) {
+        failure = new WsTransportRequestInterruptedError({
           message: `WebSocket RPC ${method} was interrupted by a transport reconnect.`,
           code: "WS_REQUEST_RECONNECTED",
           method,
@@ -961,9 +1007,59 @@ export class WsTransport {
           retryable: true,
         });
       }
-      throw error;
+      if (
+        uncertainTurn &&
+        isRequestOutcomeUnknown(failure) &&
+        !this.disposed &&
+        !requestOptions.signal?.aborted
+      ) {
+        // Keep composer ownership and staged attachments until the server gives
+        // a durable verdict. A failed acknowledgement is not a failed send.
+        const finishSettlement = trackWsTurnSettlement(uncertainTurn.threadId);
+        try {
+          return (await this.settleTurnDispatch(uncertainTurn, requestOptions.signal)) as T;
+        } finally {
+          finishSettlement();
+        }
+      }
+      throw failure;
     } finally {
       abortScope.cleanup();
+    }
+  }
+
+  private async settleTurnDispatch(
+    command: Extract<ClientOrchestrationCommand, { type: "thread.turn.start" }>,
+    callerSignal?: AbortSignal,
+  ): Promise<{ sequence: number }> {
+    const signal = callerSignal
+      ? AbortSignal.any([callerSignal, this.lifetime.signal])
+      : this.lifetime.signal;
+    let attempt = 0;
+    for (;;) {
+      signal.throwIfAborted();
+      let result: OrchestrationSettleTurnDispatchResult;
+      try {
+        result = await this.request<OrchestrationSettleTurnDispatchResult>(
+          ORCHESTRATION_WS_METHODS.settleTurnDispatch,
+          { command },
+          { signal },
+        );
+      } catch (error) {
+        if (
+          signal.aborted ||
+          isTerminalCompatibilityFailure(error) ||
+          (error instanceof WsTransportRequestInterruptedError &&
+            error.code === "WS_TURN_SETTLEMENT_UNAVAILABLE")
+        )
+          throw error;
+        // Repeating settlement is safe even if its own acknowledgement was
+        // lost: it only reads or rejects the original identity, never starts it.
+        await delayMs(Math.max(500, getReconnectRetryDelayMs(attempt++)), signal);
+        continue;
+      }
+      if (result.status === "accepted") return { sequence: result.sequence };
+      throw new WsTransportRpcError({ message: result.message });
     }
   }
 
@@ -1191,12 +1287,7 @@ export class WsTransport {
       >
     )[ORCHESTRATION_WS_METHODS.unsubscribeShell];
     if (!probe) return;
-    try {
-      await runtime.runPromise(probe({}).pipe(Effect.timeout(FEATURE_CONNECTION_PROBE_TIMEOUT_MS)));
-    } catch (error) {
-      this.setCompatibility(null);
-      throw error;
-    }
+    await runtime.runPromise(probe({}).pipe(Effect.timeout(FEATURE_CONNECTION_PROBE_TIMEOUT_MS)));
   }
 
   private createSession() {
@@ -1211,16 +1302,26 @@ export class WsTransport {
       }
 
       const featureRuntime = ManagedRuntime.make(
-        makeProtocolLayer(makeFeatureSocketUrl(this.explicitUrl, compatibility)),
+        makeProtocolLayer(makeFeatureSocketUrl(this.explicitUrl, compatibility), () => {
+          // Defer teardown out of the failing protocol fiber, and fence failures
+          // from an old socket so they cannot replace a newer healthy session.
+          queueMicrotask(() => {
+            if (this.disposed || this.sessionVersion !== sessionVersion || this.reconnectPromise) {
+              return;
+            }
+            if (this.state !== "open") this.setCompatibility(null);
+            void this.reconnect().catch(() => undefined);
+          });
+        }),
       );
       const featureScope = featureRuntime.runSync(Scope.make());
       this.runtime = featureRuntime;
       this.clientScope = featureScope;
       const client = await featureRuntime.runPromise(Scope.provide(featureScope)(makeRpcClient));
       this.runtimeByClient.set(client, featureRuntime);
-      if (cachedCompatibility) {
-        await this.probeFeatureConnection(client, featureRuntime);
-      }
+      // Negotiation does not prove that the feature socket has opened. Keep
+      // initial sends behind the same liveness check used by reconnects.
+      await this.probeFeatureConnection(client, featureRuntime);
       if (!this.disposed && this.sessionVersion === sessionVersion) {
         this.adoptNegotiation(compatibility);
         this.setState("open");
@@ -1293,6 +1394,8 @@ export class WsTransport {
   private reconnect(): Promise<RpcClientInstance> {
     if (this.reconnectPromise) return this.reconnectPromise;
 
+    // Fence detached probe/stream continuations before asynchronous teardown.
+    this.sessionVersion += 1;
     const oldResources = this.takeCurrentRuntime();
     this.resetAllStreamCapacityRetries();
     this.resetAllStreamCompletionRetries();
@@ -1302,9 +1405,10 @@ export class WsTransport {
 
     this.setState("connecting");
 
-    if (oldResources) void this.closeRuntime(oldResources);
-
-    this.reconnectPromise = this.openReconnectSession().finally(() => {
+    this.reconnectPromise = (async () => {
+      if (oldResources) await this.closeRuntime(oldResources);
+      return this.openReconnectSession();
+    })().finally(() => {
       this.reconnectPromise = null;
     });
     return this.reconnectPromise;
@@ -1941,7 +2045,11 @@ export class WsTransport {
           if (restart && Exit.isFailure(exit) && shouldReconnectAfterStreamFailure(exit.cause)) {
             window.setTimeout(
               () => {
-                if (!this.disposed && !this.streamCleanups.has(key)) {
+                if (
+                  !this.disposed &&
+                  this.sessionVersion === streamSessionVersion &&
+                  !this.streamCleanups.has(key)
+                ) {
                   void this.reconnect()
                     .then(() => restart())
                     .catch((error) => {

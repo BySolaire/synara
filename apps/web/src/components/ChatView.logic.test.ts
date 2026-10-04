@@ -87,7 +87,6 @@ describe("composer focus admission", () => {
     expect(
       canApplyComposerFocus({
         windowHasFocus: false,
-        secondaryChromeReady: true,
         editorAvailable: true,
         editorDisabled: false,
       }),
@@ -98,15 +97,6 @@ describe("composer focus admission", () => {
     expect(
       canApplyComposerFocus({
         windowHasFocus: true,
-        secondaryChromeReady: false,
-        editorAvailable: true,
-        editorDisabled: false,
-      }),
-    ).toBe(false);
-    expect(
-      canApplyComposerFocus({
-        windowHasFocus: true,
-        secondaryChromeReady: true,
         editorAvailable: false,
         editorDisabled: false,
       }),
@@ -114,7 +104,6 @@ describe("composer focus admission", () => {
     expect(
       canApplyComposerFocus({
         windowHasFocus: true,
-        secondaryChromeReady: true,
         editorAvailable: true,
         editorDisabled: true,
       }),
@@ -125,7 +114,6 @@ describe("composer focus admission", () => {
     expect(
       canApplyComposerFocus({
         windowHasFocus: true,
-        secondaryChromeReady: true,
         editorAvailable: true,
         editorDisabled: false,
       }),
@@ -155,38 +143,20 @@ describe("composer strip work-log derivation", () => {
     expect(deriveParentWorkLogEntries).toHaveBeenCalledOnce();
   });
 
-  it("keeps the account picker visible for a missing profile on every provider", () => {
+  it("shows the standalone account menu only for a missing account", () => {
     expect(
       shouldShowComposerProviderInstancePicker({
-        provider: "cursor",
         selectedProviderInstanceId: "cursor_removed",
         providerInstances: [{ instanceId: "cursor" }],
       }),
     ).toBe(true);
+    // Configured accounts are picked in the model picker's own tabs.
     expect(
       shouldShowComposerProviderInstancePicker({
-        provider: "opencode",
-        selectedProviderInstanceId: "opencode_removed",
-        providerInstances: [{ instanceId: "opencode" }],
-      }),
-    ).toBe(true);
-  });
-
-  it("still hides a redundant single-profile picker when the selection exists", () => {
-    expect(
-      shouldShowComposerProviderInstancePicker({
-        provider: "cursor",
-        selectedProviderInstanceId: "cursor",
-        providerInstances: [{ instanceId: "cursor" }],
+        selectedProviderInstanceId: "codex_work",
+        providerInstances: [{ instanceId: "codex" }, { instanceId: "codex_work" }],
       }),
     ).toBe(false);
-    expect(
-      shouldShowComposerProviderInstancePicker({
-        provider: "codex",
-        selectedProviderInstanceId: "codex",
-        providerInstances: [{ instanceId: "codex" }],
-      }),
-    ).toBe(true);
   });
 
   it("targets collapsed Cursor option resets at the selected non-default instance", () => {
@@ -1987,6 +1957,25 @@ describe("runWorktreeCreationFlow", () => {
       flow,
     };
   }
+
+  it("does not start Git if setup was resolved during task registration", async () => {
+    const resolution = createWorktreeSetupResolution();
+    resolution.resolve("cancel");
+    let starts = 0;
+    const result = await runWorktreeCreationFlow({
+      progressId: "cancelled-before-git",
+      resolution,
+      subscribeToProgress: () => () => undefined,
+      onCreationStep: () => undefined,
+      startCreation: async () => {
+        starts += 1;
+        return { worktree: { path: "/unused" } };
+      },
+      removeWorktree: async () => undefined,
+    });
+    expect(result).toEqual({ outcome: "resolved" });
+    expect(starts).toBe(0);
+  });
 
   it("advances steps only for this creation's phase-started events", async () => {
     const harness = startFlowHarness();

@@ -2202,7 +2202,8 @@ describe("ClaudeAdapterLive", () => {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 11).pipe(
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -2222,17 +2223,113 @@ describe("ClaudeAdapterLive", () => {
       harness.query.emit({
         type: "stream_event",
         session_id: "sdk-session-tool-streams",
+        uuid: "thinking-message-start",
+        parent_tool_use_id: null,
+        event: { type: "message_start", message: { id: "thinking-message" } },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tool-streams",
+        uuid: "thinking-block-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 2,
+          content_block: { type: "thinking", thinking: "First ", signature: "never-display" },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tool-streams",
         uuid: "stream-thinking",
         parent_tool_use_id: null,
         event: {
           type: "content_block_delta",
-          index: 0,
+          index: 2,
           delta: {
             type: "thinking_delta",
             thinking: "Let",
           },
         },
       } as unknown as SDKMessage);
+
+      for (let snapshot = 0; snapshot < 2; snapshot += 1) {
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-tool-streams",
+          uuid: `thinking-snapshot-${snapshot}`,
+          parent_tool_use_id: null,
+          message: {
+            id: "thinking-message",
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "First Let us check", signature: "never-display" },
+            ],
+          },
+        } as unknown as SDKMessage);
+      }
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tool-streams",
+        uuid: "thinking-stop",
+        parent_tool_use_id: null,
+        event: { type: "content_block_stop", index: 2 },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tool-streams",
+        uuid: "second-message-start",
+        parent_tool_use_id: null,
+        event: { type: "message_start", message: { id: "second-message" } },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tool-streams",
+        uuid: "second-thinking",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 2,
+          delta: { type: "thinking_delta", thinking: "Next" },
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tool-streams",
+        uuid: "second-thinking-stop",
+        parent_tool_use_id: null,
+        event: { type: "content_block_stop", index: 2 },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-tool-streams",
+        uuid: "second-thinking-snapshot",
+        parent_tool_use_id: null,
+        message: {
+          id: "second-message",
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "Next revised", signature: "never-display" }],
+        },
+      } as unknown as SDKMessage);
+      for (const uuid of ["snapshot-only", "snapshot-only-repeat"]) {
+        harness.query.emit({
+          type: "assistant",
+          session_id: "sdk-session-tool-streams",
+          uuid,
+          parent_tool_use_id: null,
+          message: {
+            id: "snapshot-only-message",
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "Snapshot only", signature: "never-display" },
+              { type: "redacted_thinking", data: "never-display" },
+            ],
+          },
+        } as unknown as SDKMessage);
+      }
 
       harness.query.emit({
         type: "stream_event",
@@ -2312,7 +2409,19 @@ describe("ClaudeAdapterLive", () => {
           "session.state.changed",
           "turn.started",
           "thread.started",
+          "item.started",
           "content.delta",
+          "content.delta",
+          "content.delta",
+          "item.completed",
+          "item.started",
+          "content.delta",
+          "item.completed",
+          "content.delta",
+          "item.completed",
+          "item.started",
+          "content.delta",
+          "item.completed",
           "item.started",
           "item.updated",
           "item.updated",
@@ -2326,11 +2435,33 @@ describe("ClaudeAdapterLive", () => {
       );
       assert.equal(reasoningDelta?.type, "content.delta");
       if (reasoningDelta?.type === "content.delta") {
-        assert.equal(reasoningDelta.payload.delta, "Let");
+        assert.equal(reasoningDelta.payload.delta, "First ");
         assert.equal(String(reasoningDelta.turnId), String(turn.turnId));
       }
 
-      const toolStarted = runtimeEvents.find((event) => event.type === "item.started");
+      const reasoningStarted = runtimeEvents.find(
+        (event) => event.type === "item.started" && event.payload.itemType === "reasoning",
+      );
+      const reasoningCompleted = runtimeEvents.find(
+        (event) => event.type === "item.completed" && event.payload.itemType === "reasoning",
+      );
+      assert.equal(reasoningDelta?.itemId, reasoningStarted?.itemId);
+      assert.equal(reasoningCompleted?.itemId, reasoningStarted?.itemId);
+      if (reasoningCompleted?.type === "item.completed") {
+        assert.equal(reasoningCompleted.payload.detail, "First Let us check");
+      }
+      const completedReasoning = runtimeEvents.filter(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "item.completed" }> =>
+          event.type === "item.completed" && event.payload.itemType === "reasoning",
+      );
+      assert.deepEqual(
+        completedReasoning.map((event) => event.payload.detail),
+        ["First Let us check", "Next", "Next revised", "Snapshot only"],
+      );
+      assert.equal(new Set(completedReasoning.map((event) => event.itemId)).size, 3);
+      const toolStarted = runtimeEvents.find(
+        (event) => event.type === "item.started" && event.payload.itemType === "dynamic_tool_call",
+      );
       assert.equal(toolStarted?.type, "item.started");
       if (toolStarted?.type === "item.started") {
         assert.equal(toolStarted.payload.itemType, "dynamic_tool_call");
@@ -5407,11 +5538,33 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
 
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
+      const noticed = yield* Deferred.make<void>();
+      const observed: ProviderRuntimeEvent[] = [];
+      const exited = yield* adapter.streamEvents.pipe(
+        Stream.tap((event) => {
+          observed.push(event);
+          return event.type === "runtime.warning"
+            ? Deferred.succeed(noticed, undefined)
+            : Effect.void;
+        }),
+        Stream.takeUntil((event) => event.type === "session.exited"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
       yield* adapter.startSession({
         threadId: THREAD_ID,
         provider: "claudeAgent",
         runtimeMode: "full-access",
       });
+
+      query.emit({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "retired-agent", task_type: "local_agent", description: "Working" }],
+        session_id: "sdk-session-retired",
+        uuid: "retired-agent-backgrounded",
+      } as unknown as SDKMessage);
+      yield* Deferred.await(noticed);
 
       const stopping = yield* adapter.stopSession(THREAD_ID).pipe(Effect.forkChild);
       yield* Effect.yieldNow;
@@ -5420,10 +5573,20 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
       assert.equal(query.closeCalls, 1);
       assert.equal(teardownCalls, 1);
       assert.equal((yield* adapter.listSessions()).length, 1);
+      assert.deepEqual(
+        observed.filter((event) => event.type === "task.completed"),
+        [],
+      );
 
       proveExit?.();
       yield* Fiber.join(stopping);
+      yield* Fiber.join(exited);
       assert.equal((yield* adapter.listSessions()).length, 0);
+      const completions = observed.filter((event) => event.type === "task.completed");
+      assert.equal(completions.length, 1);
+      assert.equal(completions[0]?.threadId, THREAD_ID);
+      assert.equal(String(completions[0]?.payload.taskId), "retired-agent");
+      assert.equal(completions[0]?.payload.status, "stopped");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(layer),
@@ -5998,6 +6161,20 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
           } as unknown as SDKMessage);
         }
 
+        for (const attempt of [1, 2]) {
+          harness.query.emit({
+            type: "system",
+            subtype: "api_retry",
+            attempt,
+            max_retries: 3,
+            retry_delay_ms: 1500,
+            error_status: 503,
+            error: "overloaded",
+            session_id: "sdk-session-retry",
+            uuid: `retry-${attempt}`,
+          } as SDKMessage);
+        }
+
         // Two distinct unknown subtypes, each emitted twice — each must surface
         // exactly one warning (per-kind de-dup), so two warnings in total.
         for (const subtype of ["future_unknown_subtype", "another_unknown_subtype"]) {
@@ -6027,7 +6204,11 @@ await agent("Draft the spec", { label: "delta-agent", phase: "Two" });
           event.type === "runtime.warning" ? [event.payload.message] : [],
         );
 
-        assert.equal(warningMessages.length, 2);
+        assert.equal(warningMessages.length, 4);
+        assert.deepEqual(
+          warningMessages.filter((message) => message.includes("Request retry")),
+          ["Request retry 1/3 in 2s (HTTP 503).", "Request retry 2/3 in 2s (HTTP 503)."],
+        );
         assert.equal(
           warningMessages.some((message) => message.includes("thinking_tokens")),
           false,
@@ -12944,6 +13125,81 @@ describe("Claude cache preflight", () => {
     state: "likely-warm" as const,
     source: "request-usage" as const,
   };
+
+  for (const timing of ["early", "late"] as const) {
+    for (const response of ["newer", "same"] as const) {
+      it.effect(`reconciles ${timing} native warmth with the ${response} saved response`, () => {
+        let hookResult: Promise<unknown> | undefined;
+        const reportWarmCache = (options: ClaudeQueryOptions) =>
+          options.hooks!.SessionStart![0]!.hooks[0]!(
+            {
+              hook_event_name: "SessionStart",
+              session_id: nativeSessionId,
+              source: "resume",
+              context_tokens: 120_000,
+              seconds_since_last_response: 0,
+              prompt_cache_likely_expired: false,
+              transcript_path: "/tmp/fixture.jsonl",
+              cwd: "/tmp",
+            },
+            undefined,
+            { signal: new AbortController().signal },
+          );
+        const harness = makeMultiQueryHarness({
+          onCreate: (options) => {
+            if (timing === "early") hookResult = reportWarmCache(options);
+          },
+        });
+        return Effect.gen(function* () {
+          yield* TestClock.adjust("2 hours");
+          const adapter = yield* ClaudeAdapter;
+          const lastResponseAt =
+            response === "same" ? "1970-01-01T02:00:00.000Z" : resumedObservation.lastResponseAt;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            runtimeMode: "full-access",
+            resumeCursor: {
+              resume: nativeSessionId,
+              claudeCache: {
+                ...resumedObservation,
+                observedAt: lastResponseAt,
+                lastResponseAt,
+                cacheReferenceAt: resumedObservation.observedAt,
+                state: "likely-expired",
+              },
+            },
+          });
+          if (timing === "late") {
+            hookResult = reportWarmCache(harness.createInputs[0]!.options);
+          }
+          yield* Effect.promise(() => hookResult!);
+          const observation = yield* adapter.getClaudeCacheObservation!(THREAD_ID);
+          assert.equal(observation?.contextTokens, 120_000);
+          assert.equal(
+            assessClaudeCache(observation, Date.parse(observation!.observedAt) + 1000)
+              .requiresConfirmation,
+            response === "same",
+          );
+          const cursor = (yield* adapter.listSessions())[0]!.resumeCursor;
+          yield* adapter.stopSession(THREAD_ID);
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            runtimeMode: "full-access",
+            resumeCursor: cursor,
+          });
+          const restored = yield* adapter.getClaudeCacheObservation!(THREAD_ID);
+          assert.equal(
+            assessClaudeCache(restored, Date.parse(restored!.observedAt) + 1000)
+              .requiresConfirmation,
+            response === "same",
+          );
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      });
+    }
+  }
 
   for (const timing of ["early", "late"] as const) {
     for (const model of [undefined, "claude-opus-4-6"]) {

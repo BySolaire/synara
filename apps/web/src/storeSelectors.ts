@@ -5,6 +5,7 @@
 import type { ProjectId, ThreadEnvironmentMode, ThreadId } from "@synara/contracts";
 import { isAutomationRunThread } from "@synara/shared/automationMode";
 import { isSidechatThread, sidechatContextMatchesGitHubItem } from "@synara/shared/sidechatThread";
+import { collectSubagentDescendants } from "@synara/shared/threadHierarchy";
 
 import type { AppState } from "./storeState";
 import { ACCOUNT_RATE_LIMIT_ACTIVITY_KINDS } from "./lib/rateLimits";
@@ -232,6 +233,40 @@ export function createAllThreadsMessagelessSelector(): (state: AppState) => bool
   };
 }
 
+/** A thread's shell without `updatedAt`, the one field every streamed delta rewrites. */
+export type ThreadShellSettings = Omit<ThreadShell, "updatedAt">;
+
+function threadShellSettingsEqual(left: ThreadShell, right: ThreadShell): boolean {
+  for (const key of new Set([...Object.keys(left), ...Object.keys(right)])) {
+    if (key !== "updatedAt" && left[key as keyof ThreadShell] !== right[key as keyof ThreadShell]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** One thread's shell for subscribers that act on its settings (project, model, modes,
+ *  workspace) and must not re-render while it streams: the result keeps its identity until
+ *  a field other than `updatedAt` changes. */
+export function createThreadShellSettingsSelector(
+  threadId: ThreadId | null | undefined,
+): (state: AppState) => ThreadShellSettings | undefined {
+  let previousSource: ThreadShell | undefined;
+  let previousResult: ThreadShell | undefined;
+
+  return (state) => {
+    const source = threadId ? state.threadShellById?.[threadId] : undefined;
+    if (source === previousSource) {
+      return previousResult;
+    }
+    previousSource = source;
+    if (!source || !previousResult || !threadShellSettingsEqual(source, previousResult)) {
+      previousResult = source;
+    }
+    return previousResult;
+  };
+}
+
 export function createThreadProjectIdSelector(
   threadId: ThreadId | null | undefined,
 ): (state: AppState) => ProjectId | null {
@@ -368,6 +403,82 @@ export function createSidebarThreadSummariesSelector(): (
   };
 }
 
+/**
+ * Per-thread durable last-activity stamp (epoch ms), keyed by thread id. The
+ * kanban heartbeat reads this because `SidebarThreadSummary.updatedAt` freezes
+ * during streaming (the sidebar summary build is skipped on the streaming hot
+ * path), while the durable thread shell's `updatedAt` advances on every appended
+ * message — a busy-but-quiet turn must keep its heartbeat fresh. Derives only
+ * from reference-stable records (`threadIds` / `threadShellById`) and returns
+ * the previous result by reference when no surfaced timestamp actually advanced,
+ * so the board only re-derives when a thread's durable activity really moved.
+ */
+const EMPTY_LAST_ACTIVITY_TIMESTAMP: Readonly<Record<string, number | null>> = Object.freeze({});
+
+export function createLastActivityTimestampSelector(): (
+  state: AppState,
+) => Readonly<Record<string, number | null>> {
+  let previousThreadIds: readonly ThreadId[] | undefined;
+  let previousThreadShellById: AppState["threadShellById"] | undefined;
+  let previousResult: Readonly<Record<string, number | null>> = EMPTY_LAST_ACTIVITY_TIMESTAMP;
+  let previousShellUpdatedAtByThreadId: Record<string, string | undefined> = {};
+
+  return (state) => {
+    if (
+      state.threadIds === previousThreadIds &&
+      state.threadShellById === previousThreadShellById
+    ) {
+      return previousResult;
+    }
+    previousThreadIds = state.threadIds;
+    previousThreadShellById = state.threadShellById;
+
+    if (!previousThreadIds || previousThreadIds.length === 0) {
+      previousResult = EMPTY_LAST_ACTIVITY_TIMESTAMP;
+      previousShellUpdatedAtByThreadId = {};
+      return previousResult;
+    }
+
+    // Fast path: when no thread's durable stamp moved since the last surface,
+    // keep the existing result object so board consumers do not re-derive for
+    // unrelated shell churn (e.g. meta-only bumps that keep `updatedAt`).
+    let anyChanged = false;
+    for (const threadId of previousThreadIds) {
+      const stamp = previousThreadShellById?.[threadId]?.updatedAt;
+      if (stamp !== previousShellUpdatedAtByThreadId[threadId]) {
+        anyChanged = true;
+        break;
+      }
+    }
+    if (!anyChanged) {
+      return previousResult;
+    }
+    const nextShellUpdatedAtByThreadId: Record<string, string | undefined> = {};
+    for (const threadId of previousThreadIds) {
+      const stamp = previousThreadShellById?.[threadId]?.updatedAt;
+      nextShellUpdatedAtByThreadId[threadId] = stamp;
+    }
+    previousShellUpdatedAtByThreadId = nextShellUpdatedAtByThreadId;
+
+    const nextResult: Record<string, number | null> = {};
+    let hasEntry = false;
+    for (const threadId of previousThreadIds) {
+      const stamp = nextShellUpdatedAtByThreadId[threadId];
+      if (!stamp) {
+        // Absent shell / stamp: do not conflate with an explicit null — a
+        // pruned shell must read as "no durable stamp" (C1) so the heartbeat
+        // never falls back to the frozen sidebar summary.
+        continue;
+      }
+      const parsed = Date.parse(stamp);
+      nextResult[threadId] = Number.isFinite(parsed) ? parsed : null;
+      hasEntry = true;
+    }
+    previousResult = hasEntry ? nextResult : EMPTY_LAST_ACTIVITY_TIMESTAMP;
+    return previousResult;
+  };
+}
+
 export function createComposerThreadMentionSourcesSelector(): (
   state: AppState,
 ) => readonly ComposerThreadMentionSource[] {
@@ -429,6 +540,22 @@ export function createComposerThreadMentionSourcesSelector(): (
 export interface SidebarThreadVisibilityOptions {
   /** Drop the per-run threads standalone automations create (pinned ones stay). */
   readonly hideAutomationRunThreads?: boolean;
+  /** Explicit access for Snoozed sections and user-initiated search. */
+  readonly includeSnoozed?: boolean;
+}
+
+/** A snoozed task also hides its subagent subtree, including pinned children. */
+export function collectSnoozedThreadIds(
+  threads: readonly Pick<SidebarThreadSummary, "id" | "parentThreadId" | "snoozedUntil">[],
+): ReadonlySet<ThreadId> {
+  const snoozed = threads.filter((thread) => thread.snoozedUntil != null);
+  const ids = new Set(snoozed.map((thread) => thread.id));
+  for (const thread of snoozed) {
+    for (const descendant of collectSubagentDescendants(threads, thread.id)) {
+      ids.add(descendant.id);
+    }
+  }
+  return ids;
 }
 
 /**
@@ -442,6 +569,7 @@ export function isSidebarThreadVisible(
 ): boolean {
   // Sidechats live in their host's dock (a thread's, or the inbox's for standalone ones).
   if (isSidechatThread(thread)) return false;
+  if (thread.snoozedUntil != null && !options?.includeSnoozed) return false;
   if (!options?.hideAutomationRunThreads) return true;
   if (thread.isPinned) return true;
   return !isAutomationRunThread(thread);
@@ -540,8 +668,14 @@ export function createSidebarTreeThreadsSelector(
     }
 
     previousSummaries = sidebarSummaries;
+    const snoozedThreadIds = options?.includeSnoozed
+      ? null
+      : collectSnoozedThreadIds(sidebarSummaries);
     previousTreeSummaries = sidebarSummaries.filter(
-      (thread) => thread.archivedAt == null && isSidebarThreadVisible(thread, options),
+      (thread) =>
+        thread.archivedAt == null &&
+        !snoozedThreadIds?.has(thread.id) &&
+        isSidebarThreadVisible(thread, options),
     );
     return previousTreeSummaries;
   };

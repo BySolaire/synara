@@ -291,13 +291,14 @@ async function requestVoiceTranscriptionUpload(
       body: bytes,
     },
   );
+  if (response.status === 404 || response.status === 405) {
+    void response.body?.cancel().catch(() => undefined);
+    throw new VoiceUploadRouteUnavailableError();
+  }
   const payload = (await response.json().catch(() => null)) as
     | ServerVoiceTranscriptionResult
     | { readonly error?: unknown }
     | null;
-  if (response.status === 404 || response.status === 405) {
-    throw new VoiceUploadRouteUnavailableError();
-  }
   if (!response.ok || !payload || !("text" in payload)) {
     const message =
       payload && "error" in payload && typeof payload.error === "string"
@@ -701,6 +702,8 @@ export function createWsNativeApi(): NativeApi {
         executionRequest(WS_METHODS.pullRequestsAction, input, { timeoutMs: null }),
       comment: (input) => executionRequest(WS_METHODS.pullRequestsComment, input),
       setPinned: (input) => executionRequest(WS_METHODS.pullRequestsSetPinned, input),
+      getAutoFix: (input) => executionRequest(WS_METHODS.pullRequestsGetAutoFix, input),
+      setAutoFix: (input) => executionRequest(WS_METHODS.pullRequestsSetAutoFix, input),
     },
     contextMenu: {
       show: async <T extends string>(
@@ -810,6 +813,7 @@ export function createWsNativeApi(): NativeApi {
         }
       },
       upsertKeybinding: (input) => executionRequest(WS_METHODS.serverUpsertKeybinding, input),
+      editKeybindings: (input) => executionRequest(WS_METHODS.serverEditKeybindings, input),
     },
     stats: {
       getProfileStats: (input) => executionRequest(WS_METHODS.statsGetProfileStats, input),
@@ -846,6 +850,8 @@ export function createWsNativeApi(): NativeApi {
       listProjectImports: (input) =>
         executionRequest(ORCHESTRATION_WS_METHODS.listProjectImports, input),
       importProject: (input) => executionRequest(ORCHESTRATION_WS_METHODS.importProject, input),
+      loadProjectImportHistory: (input) =>
+        executionRequest(ORCHESTRATION_WS_METHODS.loadProjectImportHistory, input),
       regenerateThreadTitle: (input) =>
         executionRequest(ORCHESTRATION_WS_METHODS.regenerateThreadTitle, input, {
           timeoutMs: null,

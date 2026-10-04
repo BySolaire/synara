@@ -28,6 +28,7 @@ export const DESKTOP_IPC_CHANNELS = {
   customTitleBarSetPreference: "desktop:custom-title-bar-set-preference",
   customTitleBarRelaunch: "desktop:custom-title-bar-relaunch",
   menuAction: "desktop:menu-action",
+  setMenuShortcuts: "desktop:set-menu-shortcuts",
   quitConfirmationRequest: "desktop:quit-confirmation-request",
   quitConfirmationResponse: "desktop:quit-confirmation-response",
   beta: {
@@ -56,6 +57,11 @@ export const DESKTOP_IPC_CHANNELS = {
   transcribeVoice: "desktop:server-transcribe-voice",
   computerPreviewFrame: "computerPreview.frame",
   computerSetCursorStyle: "desktop:computer-set-cursor-style",
+  audioLevel: {
+    setSource: "desktop:audio-level-set-source",
+    listMicrophones: "desktop:audio-level-list-microphones",
+    level: "desktop:audio-level",
+  },
   storageMigration: {
     read: "desktop:storage-migration-read",
     acknowledge: "desktop:storage-migration-acknowledge",

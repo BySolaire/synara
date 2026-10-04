@@ -314,10 +314,7 @@ export interface ComposerDraftStoreState {
   clearProjectDraftThreadById: (projectId: ProjectId, threadId: ThreadId) => void;
   markDraftThreadPromoting: (threadId: ThreadId, promotedTo?: ThreadId) => void;
   finalizePromotedDraftThread: (threadId: ThreadId) => void;
-  clearDraftThread: (
-    threadId: ThreadId,
-    options?: { readonly preserveComputerControl?: boolean },
-  ) => void;
+  clearDraftThread: (threadId: ThreadId) => void;
   setStickyModelSelection: (modelSelection: ModelSelection | null | undefined) => void;
   setPrompt: (threadId: ThreadId, prompt: string) => void;
   setPromptHistorySavedDraft: (
@@ -980,6 +977,26 @@ export function composerDraftHasUnsentContent(
     draft.pastedTexts.length > 0 ||
     draft.pullRequestContexts.length > 0
   );
+}
+
+/**
+ * Whether a chat's composer holds a message the user started and left unsent. While
+ * prompt history is being browsed, `prompt` holds a recalled entry, so the saved real
+ * draft decides instead.
+ */
+export function composerThreadDraftIsPending(draft: ComposerThreadDraftState): boolean {
+  return composerDraftHasUnsentContent(draft.promptHistorySavedDraft ?? draft);
+}
+
+/** Thread ids with a pending draft, sorted so shallow selectors stay stable while typing. */
+export function selectThreadIdsWithPendingDraft(
+  state: Pick<ComposerDraftStoreState, "draftsByThreadId">,
+): ThreadId[] {
+  const threadIds: ThreadId[] = [];
+  for (const [threadId, draft] of Object.entries(state.draftsByThreadId)) {
+    if (composerThreadDraftIsPending(draft)) threadIds.push(threadId as ThreadId);
+  }
+  return threadIds.toSorted();
 }
 
 export function normalizeDraftThreadEntryPoint(

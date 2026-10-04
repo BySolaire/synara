@@ -8,6 +8,7 @@ import {
   createAllThreadsSelector,
   createAllThreadsMessagelessSelector,
   createComposerThreadMentionSourcesSelector,
+  createLastActivityTimestampSelector,
   createProjectLastActivityAtSelector,
   createSidebarDisplayThreadsSelector,
   createSidechatSummariesForGitHubItemSelector,
@@ -16,6 +17,7 @@ import {
   createThreadExistsSelector,
   createThreadGitActionsMetadataSelector,
   createThreadProjectIdSelector,
+  createThreadShellSettingsSelector,
   createThreadShellsSelector,
   createThreadWorkspaceMetadataSelector,
   isSidebarThreadVisible,
@@ -105,6 +107,44 @@ describe("createThreadShellsSelector", () => {
 
     expect(after).not.toBe(before);
     expect(after[0]?.title).toBe("renamed");
+  });
+});
+
+describe("createThreadShellSettingsSelector", () => {
+  it("keeps its result while a streaming thread only rewrites updatedAt", () => {
+    const selectSettings = createThreadShellSettingsSelector(threadIdA);
+    const before = selectSettings(makeState({ threadShellById: { [threadIdA]: shellA } }));
+    const streamed = selectSettings(
+      makeState({
+        threadShellById: { [threadIdA]: { ...shellA, updatedAt: "2026-01-01T00:00:05.000Z" } },
+      }),
+    );
+
+    expect(before).toBe(shellA);
+    expect(streamed).toBe(before);
+  });
+
+  it("returns the new shell when a setting changes, appears, or is dropped", () => {
+    const selectSettings = createThreadShellSettingsSelector(threadIdA);
+    selectSettings(makeState({ threadShellById: { [threadIdA]: shellA } }));
+
+    const renamed = { ...shellA, title: "renamed", updatedAt: "2026-01-01T00:00:05.000Z" };
+    expect(selectSettings(makeState({ threadShellById: { [threadIdA]: renamed } }))).toBe(renamed);
+
+    const withBranch = { ...renamed, branch: "main" };
+    expect(selectSettings(makeState({ threadShellById: { [threadIdA]: withBranch } }))).toBe(
+      withBranch,
+    );
+    expect(selectSettings(makeState({ threadShellById: { [threadIdA]: renamed } }))).toBe(renamed);
+  });
+
+  it("follows the thread being removed and restored", () => {
+    const selectSettings = createThreadShellSettingsSelector(threadIdA);
+    selectSettings(makeState({ threadShellById: { [threadIdA]: shellA } }));
+
+    expect(selectSettings(makeState({}))).toBeUndefined();
+    expect(selectSettings(makeState({ threadShellById: { [threadIdA]: shellA } }))).toBe(shellA);
+    expect(createThreadShellSettingsSelector(null)(makeState({}))).toBeUndefined();
   });
 });
 
@@ -526,6 +566,32 @@ describe("createProjectLastActivityAtSelector", () => {
     );
 
     expect(after).toBe(before);
+  });
+});
+
+describe("createLastActivityTimestampSelector", () => {
+  const stamped = "2026-03-09T11:00:00.000Z";
+
+  it("maps only shells that carry a durable stamp (sparse map, C1)", () => {
+    const selectTimestamps = createLastActivityTimestampSelector();
+    const state = makeState({
+      threadIds: [threadIdA, threadIdB],
+      threadShellById: {
+        // Shell A has a durable stamp; shell B is present but stale/pruned.
+        [threadIdA]: { ...shellA, updatedAt: stamped },
+        [threadIdB]: { ...shellB },
+      },
+    });
+    const result = selectTimestamps(state);
+    expect(Object.keys(result)).toEqual([threadIdA]);
+    expect(result[threadIdA]).toBe(Date.parse(stamped));
+    // Absent shells must not be conflated with an explicit null.
+    expect(threadIdB in result).toBe(false);
+    expect(
+      selectTimestamps(
+        makeState({ threadIds: [threadIdA], threadShellById: { [threadIdA]: { ...shellA } } }),
+      ),
+    ).toEqual({});
   });
 });
 

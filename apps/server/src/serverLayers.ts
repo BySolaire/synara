@@ -1,5 +1,10 @@
 import { RemoteHostTrustRepositoryLive } from "./persistence/Layers/RemoteHostTrust";
 import { RemoteDeviceTrustRepositoryLive } from "./persistence/Layers/RemoteDeviceTrust";
+import { ProjectionThreadMessageRepositoryLive } from "./persistence/Layers/ProjectionThreadMessages";
+import { OrchestrationCommandReceiptRepositoryLive } from "./persistence/Layers/OrchestrationCommandReceipts";
+import { QueuedTurnPromotionRepositoryLive } from "./persistence/Layers/QueuedTurnPromotions";
+import { HubWorkRepositoryLive } from "./persistence/Layers/HubWorkRepository";
+import { ManagedAttachmentRepositoryLive } from "./persistence/Layers/ManagedAttachments";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Layer } from "effect";
 
@@ -20,6 +25,7 @@ import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderComma
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion";
 import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus";
 import { SidechatExpiryReactorLive } from "./orchestration/Layers/SidechatExpiryReactor";
+import { ThreadSnoozeReactorLive } from "./orchestration/Layers/ThreadSnoozeReactor";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor";
 import { TurnCheckpointCoordinatorLive } from "./orchestration/Layers/TurnCheckpointCoordinator";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer";
@@ -63,6 +69,8 @@ import { ProviderRuntimeEventRepositoryLive } from "./persistence/Layers/Provide
 import { ThreadDiagnosticsQueryLive } from "./diagnostics/Layers/ThreadDiagnosticsQuery";
 import { ManagedAttachmentCleanupLive } from "./managedAttachmentCleanup";
 import { PullRequestServiceLive } from "./pullRequests/Layers/PullRequestService";
+import { PullRequestAutoFixRepositoryLive } from "./persistence/Layers/PullRequestAutoFixRepository";
+import { PullRequestAutoFixServiceLive } from "./pullRequestAutoFix/Layers/PullRequestAutoFixService";
 import { GitHubInboxServiceLive } from "./githubInbox/Layers/GitHubInboxService";
 import { ProviderHealthLive } from "./provider/Layers/ProviderHealth";
 import { makeServerProviderLayer } from "./provider/runtimeLayer";
@@ -130,6 +138,7 @@ export function makeServerRuntimeServicesLayer(
     Layer.provideMerge(runtimeServicesLayer),
   );
   const projectAgentServiceLayer = ProjectAgentServiceLive.pipe(
+    Layer.provideMerge(HubWorkRepositoryLive),
     Layer.provideMerge(ProjectAgentRepositoryLive),
     Layer.provideMerge(automationServiceLayer),
     Layer.provideMerge(TextGenerationLayerLive),
@@ -158,6 +167,9 @@ export function makeServerRuntimeServicesLayer(
   );
   const sidechatExpiryReactorLayer = SidechatExpiryReactorLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),
+  );
+  const threadSnoozeReactorLayer = ThreadSnoozeReactorLive.pipe(
+    Layer.provideMerge(OrchestrationLayerLive),
   );
   const profileStatsArchiveLayer = ProfileStatsArchiveLive.pipe(
     Layer.provideMerge(checkpointStoreLayer),
@@ -231,6 +243,20 @@ export function makeServerRuntimeServicesLayer(
   const agentGatewayLayer = AgentGatewayLive.pipe(
     Layer.provideMerge(ServerEnvironmentLive),
     Layer.provideMerge(HostConnectionRegistryLive),
+    Layer.provideMerge(
+      Layer.mergeAll(
+        ProjectionThreadMessageRepositoryLive,
+        OrchestrationCommandReceiptRepositoryLive,
+      ),
+    ),
+    Layer.provideMerge(
+      Layer.mergeAll(
+        QueuedTurnPromotionRepositoryLive,
+        HubWorkRepositoryLive,
+        ProjectAgentRepositoryLive,
+        ManagedAttachmentRepositoryLive,
+      ),
+    ),
     Layer.provideMerge(agentGatewayCredentialsLayer),
     Layer.provideMerge(automationServiceLayer),
     Layer.provideMerge(projectAgentServiceLayer),
@@ -260,6 +286,11 @@ export function makeServerRuntimeServicesLayer(
   const pullRequestServiceLayer = PullRequestServiceLive.pipe(
     Layer.provideMerge(githubInboxServiceLayer),
   );
+  const pullRequestAutoFixLayer = PullRequestAutoFixServiceLive.pipe(
+    Layer.provideMerge(PullRequestAutoFixRepositoryLive),
+    Layer.provideMerge(GitLayerLive),
+    Layer.provideMerge(runtimeServicesLayer),
+  );
 
   return Layer.mergeAll(
     agentGatewayCredentialsLayer,
@@ -281,9 +312,11 @@ export function makeServerRuntimeServicesLayer(
     providerHealthLayer,
     ProjectPullRequestPinsLive,
     pullRequestServiceLayer,
+    pullRequestAutoFixLayer,
     orchestrationReactorLayer,
     providerCommandReactorLayer,
     sidechatExpiryReactorLayer,
+    threadSnoozeReactorLayer,
     threadGitMetadataReactorLayer,
     threadDeletionReactorLayer,
     devServerManagerLayer,

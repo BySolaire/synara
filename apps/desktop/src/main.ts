@@ -64,7 +64,7 @@ import {
   type UpdateDownloadedEvent,
 } from "electron-updater";
 
-import type { DesktopContextMenuItem } from "@synara/contracts";
+import { buildContextMenuTemplate } from "./contextMenuTemplate";
 import { isKeyboardShortcutsHelpChord } from "@synara/shared/browserShortcuts";
 import { getMacTrafficLightPosition } from "@synara/shared/desktopChrome";
 import { DEVICE_HELPER_SOURCE_DIR_ENV } from "@synara/shared/deviceHelperCache";
@@ -227,10 +227,14 @@ import {
 import { registerDesktopVoiceTranscriptionHandler } from "./voiceTranscription";
 import {
   applyDesktopPhysicalZoomAction,
+  DEFAULT_DESKTOP_MENU_ACCELERATORS,
+  type DesktopMenuAccelerators,
   resolveDesktopMenuAccelerator,
   resolveDesktopPhysicalZoomAction,
   resolveDesktopZoomShortcutAction,
   resolveKeyboardShortcutsMenuAccelerator,
+  resolveReportedMenuAccelerators,
+  sameDesktopMenuAccelerators,
   shouldUseNativeZoomMenuRoles,
 } from "./menuShortcuts";
 import {
@@ -324,6 +328,12 @@ import { DESKTOP_IPC_CHANNELS } from "./ipcChannels";
 import { DesktopAppSnapManager } from "./appSnapManager";
 import { notifyBackendComputerEmergencyStop } from "./computerEmergencyStopNotice";
 import { EscapeKillSwitchMonitor } from "./escapeKillSwitchMonitor";
+import {
+  AudioLevelMonitor,
+  listAudioInputDevices,
+  MAX_MICROPHONE_ID_LENGTH,
+} from "./audioLevelMonitor";
+import { AUDIO_TRAIL_BETA_FEATURE, isBetaFeatureEnabled } from "@synara/shared/betaFeatures";
 import { hardenBrowserAnnotationWebviewPreferences } from "./browserAnnotations/webviewSecurity";
 import { LOCAL_HTML_PREVIEW_SCHEME } from "./localHtmlPreviewProtocol";
 import {
@@ -496,6 +506,9 @@ const BACKEND_MAX_OLD_SPACE_ENV_KEYS = ["SYNARA_BACKEND_MAX_OLD_SPACE_MB"] as co
 const DESKTOP_UPDATE_ALLOW_PRERELEASE = desktopFlavor === "beta";
 const BROWSER_PERF_SAMPLE_INTERVAL_MS = 5_000;
 const DESKTOP_MENU_ZOOM_FACTOR_STEP = 1.1;
+// User keybindings mirrored onto View menu items. Every window reports the same
+// server-owned keybindings, so the latest report wins.
+let desktopMenuAccelerators: DesktopMenuAccelerators = DEFAULT_DESKTOP_MENU_ACCELERATORS;
 const DESKTOP_MENU_MIN_ZOOM_FACTOR = 0.25;
 const DESKTOP_MENU_MAX_ZOOM_FACTOR = 5;
 const SYNARA_BROWSER_LABEL = "Synara browser";
@@ -1854,8 +1867,9 @@ function configureApplicationMenu(): void {
   const template: MenuItemConstructorOptions[] = [];
   const keyboardShortcutsAccelerator = resolveKeyboardShortcutsMenuAccelerator(process.platform);
   const acceleratorProps = (
-    accelerator: MenuItemConstructorOptions["accelerator"],
+    accelerator: MenuItemConstructorOptions["accelerator"] | null,
   ): Pick<MenuItemConstructorOptions, "accelerator"> => {
+    if (!accelerator) return {};
     const resolved = resolveDesktopMenuAccelerator(process.platform, accelerator);
     return resolved ? { accelerator: resolved } : {};
   };
@@ -1928,18 +1942,18 @@ function configureApplicationMenu(): void {
       submenu: [
         {
           label: "New Terminal Tab",
-          ...acceleratorProps("CmdOrCtrl+T"),
+          ...acceleratorProps(desktopMenuAccelerators["terminal.new"]),
           click: () => dispatchMenuAction("new-terminal-tab"),
         },
         { type: "separator" },
         {
           label: "Toggle Sidebar",
-          ...acceleratorProps("CmdOrCtrl+B"),
+          ...acceleratorProps(desktopMenuAccelerators["sidebar.toggle"]),
           click: () => dispatchMenuAction("toggle-sidebar"),
         },
         {
           label: "Toggle Browser",
-          ...acceleratorProps("CmdOrCtrl+Shift+B"),
+          ...acceleratorProps(desktopMenuAccelerators["browser.toggle"]),
           click: () => dispatchMenuAction("toggle-browser"),
         },
         { type: "separator" },
@@ -3844,6 +3858,12 @@ let cuaDriverHost: CuaDriverHost | undefined;
 let disposeComputerDesktopLifecycle: (() => void) | undefined;
 let cuaHostEndpoint: string | undefined;
 let escapeKillSwitchMonitor: EscapeKillSwitchMonitor | undefined;
+let audioLevelMonitor: AudioLevelMonitor | undefined;
+// Renderers currently subscribed to audio levels, keyed by webContents id.
+const audioLevelSubscribers = new Map<
+  number,
+  { readonly contents: Electron.WebContents; readonly release: () => void }
+>();
 let linuxEscapeKillSwitchMonitor: LinuxEscapeKillSwitchMonitor | undefined;
 
 function stopComputerInputFromEscape(): void {
@@ -4721,6 +4741,9 @@ async function disposeBrowserHostPipeServerForShutdown(reason: string): Promise<
   disposeComputerDesktopLifecycle = undefined;
   escapeKillSwitchMonitor?.dispose();
   escapeKillSwitchMonitor = undefined;
+  audioLevelMonitor?.dispose();
+  audioLevelMonitor = undefined;
+  audioLevelSubscribers.clear();
   linuxEscapeKillSwitchMonitor?.dispose();
   linuxEscapeKillSwitchMonitor = undefined;
   await cuaDriverHost?.dispose();
@@ -4996,6 +5019,14 @@ function registerIpcHandlers(): void {
     runningChatsQuitGuard.receiveResponse(payload);
   });
 
+  ipcMain.removeHandler(IPC.setMenuShortcuts);
+  ipcMain.handle(IPC.setMenuShortcuts, (_event, rawShortcuts: unknown) => {
+    const accelerators = resolveReportedMenuAccelerators(rawShortcuts, process.platform);
+    if (!accelerators || sameDesktopMenuAccelerators(accelerators, desktopMenuAccelerators)) return;
+    desktopMenuAccelerators = accelerators;
+    if (app.isReady()) configureApplicationMenu();
+  });
+
   ipcMain.removeHandler(IPC.setTheme);
   ipcMain.handle(IPC.setTheme, async (_event, rawTheme: unknown) => {
     const theme = getSafeTheme(rawTheme);
@@ -5034,20 +5065,7 @@ function registerIpcHandlers(): void {
   ipcMain.removeHandler(IPC.contextMenu);
   ipcMain.handle(
     IPC.contextMenu,
-    async (_event, items: DesktopContextMenuItem[], position?: { x: number; y: number }) => {
-      const normalizedItems = items
-        .filter((item) => typeof item.id === "string" && typeof item.label === "string")
-        .map((item) => ({
-          id: item.id,
-          label: item.label,
-          separatorBefore: item.separatorBefore === true,
-          destructive: item.destructive === true,
-          icon: createContextMenuIcon(item.iconDataUrl),
-        }));
-      if (normalizedItems.length === 0) {
-        return null;
-      }
-
+    async (_event, items: unknown, position?: { x: number; y: number }) => {
       const popupPosition =
         position &&
         Number.isFinite(position.x) &&
@@ -5064,30 +5082,19 @@ function registerIpcHandlers(): void {
       if (!window) return null;
 
       return new Promise<string | null>((resolve) => {
-        const template: MenuItemConstructorOptions[] = [];
-        let hasInsertedDestructiveSeparator = false;
-        for (const item of normalizedItems) {
-          const shouldInsertSeparator =
-            item.separatorBefore ||
-            (item.destructive && !hasInsertedDestructiveSeparator && template.length > 0);
-          if (shouldInsertSeparator && template.length > 0) {
-            template.push({ type: "separator" });
-          }
-          if (item.destructive) {
-            hasInsertedDestructiveSeparator = true;
-          }
-          const itemOption: MenuItemConstructorOptions = {
-            label:
-              process.platform === "darwin"
-                ? `${item.label}${MAC_CONTEXT_MENU_LABEL_TRAILING_PADDING}`
-                : item.label,
-            click: () => resolve(item.id),
-          };
-          const icon = item.icon ?? (item.destructive ? getDestructiveMenuIcon() : undefined);
-          if (icon) {
-            itemOption.icon = icon;
-          }
-          template.push(itemOption);
+        const template = buildContextMenuTemplate(items, {
+          decorateLabel: (label) =>
+            process.platform === "darwin"
+              ? `${label}${MAC_CONTEXT_MENU_LABEL_TRAILING_PADDING}`
+              : label,
+          resolveIcon: (item) =>
+            createContextMenuIcon(item.iconDataUrl) ??
+            (item.destructive === true ? getDestructiveMenuIcon() : undefined),
+          onSelect: resolve,
+        });
+        if (template.length === 0) {
+          resolve(null);
+          return;
         }
 
         const menu = Menu.buildFromTemplate(template);
@@ -5241,6 +5248,66 @@ function registerIpcHandlers(): void {
         safeConsoleError("[desktop] live cursor style push failed", error);
       });
     }
+  });
+
+  ipcMain.removeHandler(IPC.audioLevel.setSource);
+  ipcMain.handle(
+    IPC.audioLevel.setSource,
+    async (event, rawSource: unknown, rawMicrophoneId: unknown) => {
+      // Authoritative gate: macOS only; channel availability follows the shared feature list.
+      if (
+        process.platform !== "darwin" ||
+        !isBetaFeatureEnabled(AUDIO_TRAIL_BETA_FEATURE, desktopFlavor)
+      ) {
+        return "unsupported";
+      }
+      const sender = event.sender;
+      const source =
+        rawSource === "system" || rawSource === "microphone" || rawSource === "both"
+          ? rawSource
+          : null;
+      const microphoneId =
+        typeof rawMicrophoneId === "string" &&
+        rawMicrophoneId.length > 0 &&
+        rawMicrophoneId.length <= MAX_MICROPHONE_ID_LENGTH
+          ? rawMicrophoneId
+          : null;
+      audioLevelMonitor ??= new AudioLevelMonitor({
+        helperPath: resolveAppSnapHelperPath(),
+        onLevel: (level) => {
+          for (const { contents } of audioLevelSubscribers.values()) {
+            if (!contents.isDestroyed()) contents.send(IPC.audioLevel.level, level);
+          }
+        },
+        onError: (message) => safeConsoleError(`[desktop] Audio level: ${message}`),
+      });
+      if (source && !audioLevelSubscribers.has(sender.id)) {
+        // A closed or reloaded window must not keep the audio tap or microphone alive.
+        const release = () => {
+          sender.off("destroyed", release);
+          sender.off("did-navigate", release);
+          audioLevelSubscribers.delete(sender.id);
+          audioLevelMonitor?.setSubscription(sender.id, null);
+        };
+        sender.once("destroyed", release);
+        sender.once("did-navigate", release);
+        audioLevelSubscribers.set(sender.id, { contents: sender, release });
+      } else if (!source) {
+        audioLevelSubscribers.get(sender.id)?.release();
+      }
+      return audioLevelMonitor.setSubscription(sender.id, source, microphoneId);
+    },
+  );
+
+  ipcMain.removeHandler(IPC.audioLevel.listMicrophones);
+  ipcMain.handle(IPC.audioLevel.listMicrophones, async () => {
+    if (
+      process.platform !== "darwin" ||
+      !isBetaFeatureEnabled(AUDIO_TRAIL_BETA_FEATURE, desktopFlavor)
+    ) {
+      return [];
+    }
+    return listAudioInputDevices(resolveAppSnapHelperPath());
   });
 
   const betaChannel = new DesktopBetaChannel({

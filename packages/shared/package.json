@@ -48,6 +48,10 @@
       "types": "./src/account.ts",
       "import": "./src/account.ts"
     },
+    "./kanban": {
+      "types": "./src/kanban.ts",
+      "import": "./src/kanban.ts"
+    },
     "./githubAvatar": {
       "types": "./src/githubAvatar.ts",
       "import": "./src/githubAvatar.ts"
@@ -447,6 +451,10 @@
     "./coordinatorCheckin": {
       "types": "./src/coordinatorCheckin.ts",
       "import": "./src/coordinatorCheckin.ts"
+    },
+    "./keybindingRules": {
+      "types": "./src/keybindingRules.ts",
+      "import": "./src/keybindingRules.ts"
     }
   },
   "scripts": {

@@ -69,6 +69,7 @@ import {
   type GitHubItemAgentTarget,
 } from "./githubItemAgentContext";
 import {
+  isPullRequestPrimaryActionBlocked,
   PullRequestActionMenuItems,
   PullRequestDraftStateItems,
   PullRequestPrimaryButton,
@@ -337,6 +338,7 @@ export function PullRequestDetailPanel({
         stackCount: stackAssessment?.mergeTargetCount ?? null,
       })
     : null;
+  const primaryBlocked = isPullRequestPrimaryActionBlocked(primaryAction);
   const changeDraftState = (next: "draft" | "ready") => void runAction(next);
   const primaryButton = (size: "xs" | "sm", className: string, labelClassName?: string) =>
     primaryAction ? (
@@ -454,7 +456,7 @@ export function PullRequestDetailPanel({
         render={
           <Button
             size="sm"
-            variant={primaryAction ? "default" : "ghost"}
+            variant={primaryAction ? (primaryBlocked ? "subtle" : "default") : "ghost"}
             aria-label="More actions"
             title="More actions"
             className={className}
@@ -489,8 +491,10 @@ export function PullRequestDetailPanel({
                 <ChevronDownIcon aria-hidden className="size-3.5" />,
                 cn(
                   CHAT_HEADER_SPLIT_TRAILING_CLASS_NAME,
-                  // The filled halves share one tinted hairline instead of a border.
-                  "border-s border-s-primary-foreground/20 px-1.5",
+                  // The halves share one hairline instead of a border: tinted on the filled pair,
+                  // the plain border tone on the neutral pair a blocked Merge drops to.
+                  "border-s px-1.5",
+                  primaryBlocked ? "border-s-border" : "border-s-primary-foreground/20",
                 ),
               )}
             </ChatHeaderSplitGroup>
@@ -585,7 +589,7 @@ export function PullRequestDetailPanel({
   }
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col bg-[var(--color-background-surface)] text-foreground">
+    <div className="flex h-full min-h-0 w-full flex-col app-content-surface text-foreground">
       {/* No rule under the header: the tab row already reads as its own band, and the section
           borders further down are the only dividers the panel needs. No state glyph either:
           the dock tab above already carries it, and the Summary tab spells the state out. */}

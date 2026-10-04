@@ -2,7 +2,7 @@
 // Purpose: Covers the pure profile display formatters.
 // Layer: profile-ui tests.
 
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   formatCompact,
   formatDays,
@@ -50,15 +50,36 @@ describe("normalizeHandle", () => {
 });
 
 describe("formatShortDate", () => {
-  it("formats a YYYY-MM-DD day and rejects malformed input", () => {
-    expect(formatShortDate("2026-04-03")).toBe(
-      new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(
-        new Date(Date.UTC(2026, 3, 3)),
-      ),
-    );
+  it("rejects missing or malformed input", () => {
     expect(formatShortDate(null)).toBeNull();
     expect(formatShortDate("not-a-date")).toBeNull();
   });
 });
 
 const WHOLE = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+
+// Day keys arrive as the user's local calendar day ("2026-04-03"); the label
+// must name that same day whether the viewer sits west or east of UTC.
+describe.each(["America/Los_Angeles", "Pacific/Kiritimati"])(
+  "formatShortDate in %s",
+  (timeZone) => {
+    beforeAll(() => {
+      vi.stubEnv("TZ", timeZone);
+      vi.resetModules();
+    });
+    afterAll(() => {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    });
+
+    it("labels a heatmap day key with that same calendar day", async () => {
+      const { formatShortDate } = await import("./formatting");
+      const expected = new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+      }).format(new Date(2026, 3, 3));
+
+      expect(formatShortDate("2026-04-03")).toBe(expected);
+    });
+  },
+);

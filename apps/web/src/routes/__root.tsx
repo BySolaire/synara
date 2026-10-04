@@ -22,7 +22,6 @@ import {
   type ErrorComponentProps,
   useNavigate,
   useParams,
-  useRouterState,
 } from "@tanstack/react-router";
 import {
   Suspense,
@@ -47,6 +46,7 @@ import { BetaWelcomeDialog } from "../components/BetaWelcomeDialog";
 import { useOnboarding } from "../onboarding/useOnboarding";
 import { ProjectImportAnnouncementDialog } from "../projectImport/ProjectImportAnnouncementDialog";
 import { useProjectImportDialogStore } from "../projectImport/projectImportDialogStore";
+import { FeatureTourDialog } from "../components/FeatureTourDialog";
 import { SafariAccessOnboarding } from "../components/SafariAccessOnboarding";
 import { QueuedComposerDrainCoordinator } from "../components/QueuedComposerDrainCoordinator";
 import { GlobalAccountDialogs } from "../components/account/GlobalAccountDialogs";
@@ -84,7 +84,7 @@ import {
 } from "../composerDraftStore";
 import { useStore } from "../store";
 import { EMPTY_THREAD_IDS } from "../storeState";
-import { createAllThreadsSelector } from "../storeSelectors";
+import { createAllThreadsSelector, createThreadSelector } from "../storeSelectors";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { terminalActivityFromEvent } from "../terminalActivity";
 import {
@@ -135,7 +135,9 @@ import { coalesceOrchestrationUiEvents } from "../orchestrationEventCoalescing";
 import { isThreadDetailVerifiedInSync } from "../threadDetailCatchupPolicy";
 import { useAppDensity } from "../hooks/useAppDensity";
 import { useChatWidth } from "../hooks/useChatWidth";
+import { useCommittedPathname } from "../hooks/useCommittedPathname";
 import { useDesktopAppIcon } from "../hooks/useDesktopAppIcon";
+import { useDesktopMenuShortcuts } from "../hooks/useDesktopMenuShortcuts";
 import { useAppTypography } from "../hooks/useAppTypography";
 import { usePreloadRouteChunks } from "../hooks/usePreloadRouteChunks";
 import { useSyncDesktopTopBarTrafficLightGutterZoom } from "../hooks/useDesktopTopBarGutter";
@@ -362,7 +364,9 @@ function RootRouteView() {
           <QueuedComposerDrainCoordinator />
           {!readWorkspaceFrame() && (
             <SafariAccessOnboarding>
-              <AppSnapWelcomeDialog />
+              <AppSnapWelcomeDialog>
+                <FeatureTourDialog />
+              </AppSnapWelcomeDialog>
               <BetaWelcomeDialog />
             </SafariAccessOnboarding>
           )}
@@ -812,6 +816,7 @@ function GlobalShortcutsDialog() {
   const [open, setOpen] = useState(false);
   const { focusedThreadId, activeProject } = useFocusedChatContext();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
+  useDesktopMenuShortcuts(serverConfigQuery.data?.keybindings);
   const keybindings = serverConfigQuery.data?.keybindings ?? [];
   const platform = getNavigatorPlatform();
   const activeThreadTerminalState = useTerminalStateStore((state) =>
@@ -859,8 +864,13 @@ function GlobalShortcutsDialog() {
 }
 
 function GlobalFeedbackDialog() {
-  const { activeProject, activeThread } = useFocusedChatContext();
+  const { activeProject, focusedThreadId } = useFocusedChatContext();
   const isOpen = useFeedbackDialogStore((state) => state.isOpen);
+  // The report describes the live thread, transcript counts included; only follow it while
+  // the dialog is open so a closed dialog does not re-render for every streamed token.
+  const activeThread = useStore(
+    useMemo(() => createThreadSelector(isOpen ? focusedThreadId : null), [focusedThreadId, isOpen]),
+  );
   const requestedContext = useFeedbackDialogStore((state) => state.context);
   const setOpen = useFeedbackDialogStore((state) => state.setOpen);
   const context: FeedbackThreadContext = requestedContext ?? {
@@ -1234,7 +1244,7 @@ function EventRouter() {
   const serverThreadIds = useStore((store) => store.threadIds ?? EMPTY_THREAD_IDS);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const pathname = useCommittedPathname();
   const routeThreadId = useParams({
     strict: false,
     select: (params) => (params.threadId ? ThreadId.makeUnsafe(params.threadId) : null),

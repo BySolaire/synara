@@ -49,16 +49,28 @@ export function createAccountInboxReporter(options: {
     const today = resolveInboxDay(Date.now());
     const client = createAccountClient({ baseUrl: account.accountUrl });
     let cursor: number;
+    let eventSequence = 0;
     try {
       const saved: unknown = JSON.parse(await readFile(cursorPath, "utf8"));
+      // Older versions persisted just the catch-up cursor. The event checkpoint
+      // belongs to the same account/host/timezone and starts at zero on upgrade.
+      const state = typeof saved === "number" ? { cursor: saved, eventSequence: 0 } : saved;
       if (
-        typeof saved !== "number" ||
-        !Number.isFinite(saved) ||
-        saved < 0 ||
-        resolveInboxDay(saved).fromMs !== saved
+        !state ||
+        typeof state !== "object" ||
+        !("cursor" in state) ||
+        !("eventSequence" in state) ||
+        typeof state.cursor !== "number" ||
+        !Number.isFinite(state.cursor) ||
+        state.cursor < 0 ||
+        resolveInboxDay(state.cursor).fromMs !== state.cursor ||
+        typeof state.eventSequence !== "number" ||
+        !Number.isSafeInteger(state.eventSequence) ||
+        state.eventSequence < 0
       )
         throw new Error("Invalid Inbox cursor");
-      cursor = Math.min(saved, today.fromMs);
+      cursor = Math.min(state.cursor, today.fromMs);
+      eventSequence = state.eventSequence;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       // Cover live and purged-thread archives without deriving a second set of metrics.
@@ -77,6 +89,45 @@ export function createAccountInboxReporter(options: {
         Number.isFinite(firstMs) ? Math.min(firstMs, today.fromMs) : today.fromMs,
       ).fromMs;
     }
+
+    const persistCursor = () =>
+      Effect.runPromise(
+        writeFileStringAtomically({
+          filePath: cursorPath,
+          contents: JSON.stringify({ cursor, eventSequence }),
+        }),
+      );
+    // Imports keep their original message/event dates. Scan the durable event
+    // sequence, after projection commit, rather than a wall-clock window. A
+    // bounded scan and the existing four-day loop also bound repair work.
+    const sql = options.sql;
+    const [projection] = await Effect.runPromise(sql<{ sequence: number }>`
+      SELECT last_applied_sequence AS sequence FROM projection_state WHERE projector = 'projection.hot'
+    `);
+    const projectedSequence = projection?.sequence ?? 0;
+    const messages = await Effect.runPromise(sql<{ sequence: number; createdAt: string }>`
+      SELECT sequence, json_extract(payload_json, '$.createdAt') AS createdAt
+      FROM orchestration_events
+      WHERE sequence > ${eventSequence}
+        AND sequence <= ${projectedSequence}
+        AND event_type = 'thread.message-sent'
+        AND json_extract(payload_json, '$.role') = 'user'
+        AND json_extract(payload_json, '$.source') = 'native'
+        AND (json_extract(payload_json, '$.dispatchOrigin') IS NULL
+          OR json_extract(payload_json, '$.dispatchOrigin') = 'user')
+      ORDER BY sequence LIMIT 1000
+    `);
+    const scannedEvents = projectedSequence > eventSequence;
+    for (const message of messages) {
+      const createdAt = Date.parse(message.createdAt);
+      if (Number.isFinite(createdAt) && createdAt < cursor)
+        cursor = resolveInboxDay(createdAt).fromMs;
+      eventSequence = message.sequence;
+    }
+    if (messages.length < 1000) eventSequence = Math.max(eventSequence, projectedSequence);
+    // Acknowledge imports and the rewound cursor atomically BEFORE uploading:
+    // failed uploads/restarts must still own every historical day to repair.
+    if (scannedEvents) await persistCursor();
 
     const upload = async (fromMs: number, current: boolean) => {
       if (stopped) throw new Error("Inbox sync stopped");
@@ -126,19 +177,12 @@ export function createAccountInboxReporter(options: {
     for (let count = 0; cursor < today.fromMs && count < 4 && !stopped; count++) {
       await upload(cursor, false);
       cursor = resolveInboxDay(cursor).toMs;
-      await Effect.runPromise(
-        writeFileStringAtomically({
-          filePath: cursorPath,
-          contents: JSON.stringify(cursor),
-        }),
-      );
+      await persistCursor();
     }
     // Persist an empty installation's starting point too, avoiding a full-history
     // scan every minute and preserving days accumulated while signed out/offline.
     if (!stopped && cursor === today.fromMs) {
-      await Effect.runPromise(
-        writeFileStringAtomically({ filePath: cursorPath, contents: JSON.stringify(cursor) }),
-      );
+      await persistCursor();
     }
   }
 

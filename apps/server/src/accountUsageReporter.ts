@@ -1,4 +1,8 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { accountStateDirectory } from "./accountAuth";
+import { writeFileStringAtomically } from "./atomicWrite";
 /**
  * accountUsageReporter - event-driven sync of per-minute usage buckets to the
  * account service (`POST /api/v1/usage`).
@@ -688,16 +692,24 @@ export function createAccountUsageReporter(deps: AccountUsageReporterDeps): Acco
 
   const push =
     deps.push ??
-    (async (request: PushUsageRequest) => {
+    (async (request: PushUsageRequest, expectedIdentity: string | null) => {
       // Same URL resolution as accountSession.ts: the URL stored at sign-in
       // wins so the reporter always talks to the account the session belongs
       // to, with the configured/default URL as the signed-out fallback.
-      const stored = await readAccountFile(credentialDir);
-      const accountUrl = stored?.accountUrl ?? deps.accountUrl ?? resolveAccountUrl();
+      const stored = await readAccountCredentials(credentialDir);
+      if (
+        !stored ||
+        `${stored.accountUrl}#${stored.organizationId}#${stored.userId}` !== expectedIdentity
+      )
+        throw new Error("Usage account changed");
+      const accountUrl = stored.accountUrl ?? deps.accountUrl ?? resolveAccountUrl();
       const client = deps.client ?? createAccountClient({ baseUrl: accountUrl });
-      await withFreshAccessToken({ baseDir: credentialDir, client }, async (accessToken) => {
-        await client.pushUsage(accessToken, request);
-      });
+      await withFreshAccessToken(
+        { baseDir: credentialDir, client, expectedIdentity: stored },
+        async (accessToken) => {
+          await client.pushUsage(accessToken, request);
+        },
+      );
     });
 
   const readSyncState = () =>
@@ -768,9 +780,71 @@ export function createAccountUsageReporter(deps: AccountUsageReporterDeps): Acco
         watermarkIsForCurrentIdentity && state?.watermarkMinute
           ? Date.parse(state.watermarkMinute)
           : Number.NaN;
-      const fromMinute = Number.isFinite(watermarkMs)
+      let fromMinute = Number.isFinite(watermarkMs)
         ? minuteStartIso(watermarkMs - WATERMARK_SAFETY_LAP_MS)
         : minuteStartIso(flushStartedAtMs - backfillMs);
+
+      if (currentIdentity != null) {
+        // Imports have historical occurred_at/createdAt (including their command
+        // receipts), so the watermark's clock cannot detect a late import. Keep
+        // a bounded, identity-scoped scan checkpoint beside account credentials.
+        const checkpointPath = join(
+          credentialDir,
+          "usage-sync",
+          `${createHash("sha256").update(currentIdentity).digest("hex")}.json`,
+        );
+        let eventSequence = 0;
+        try {
+          const saved: unknown = JSON.parse(await readFile(checkpointPath, "utf8"));
+          if (typeof saved !== "number" || !Number.isSafeInteger(saved) || saved < 0)
+            throw new Error("Invalid usage event checkpoint");
+          eventSequence = saved;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        const [projection] = await Effect.runPromise(sql<{ sequence: number }>`
+          SELECT last_applied_sequence AS sequence FROM projection_state WHERE projector = 'projection.hot'
+        `);
+        const projectedSequence = projection?.sequence ?? 0;
+        const messages = await Effect.runPromise(sql<{ sequence: number; createdAt: string }>`
+          SELECT sequence, json_extract(payload_json, '$.createdAt') AS createdAt
+          FROM orchestration_events
+          WHERE sequence > ${eventSequence}
+            AND sequence <= ${projectedSequence}
+            AND event_type = 'thread.message-sent'
+            AND json_extract(payload_json, '$.role') = 'user'
+            AND json_extract(payload_json, '$.source') = 'native'
+            AND (json_extract(payload_json, '$.dispatchOrigin') IS NULL
+              OR json_extract(payload_json, '$.dispatchOrigin') = 'user')
+          ORDER BY sequence LIMIT 1000
+        `);
+        const scannedEvents = projectedSequence > eventSequence;
+        for (const message of messages) {
+          const createdAt = Date.parse(message.createdAt);
+          if (Number.isFinite(createdAt)) {
+            const minute = minuteStartIso(createdAt);
+            if (minute < fromMinute) fromMinute = minute;
+          }
+          eventSequence = message.sequence;
+        }
+        if (messages.length < 1000) eventSequence = Math.max(eventSequence, projectedSequence);
+        if (scannedEvents) {
+          // Transfer repair ownership to the existing durable watermark BEFORE
+          // acknowledging events. Its existing paced chunks resume after failure
+          // or restart; a crash between these writes only repeats safe upserts.
+          if (
+            !Number.isFinite(watermarkMs) ||
+            fromMinute < minuteStartIso(watermarkMs - WATERMARK_SAFETY_LAP_MS)
+          )
+            await writeSuccess(fromMinute, currentIdentity);
+          await Effect.runPromise(
+            writeFileStringAtomically({
+              filePath: checkpointPath,
+              contents: JSON.stringify(eventSequence),
+            }),
+          );
+        }
+      }
 
       const { models, skills } = await Effect.runPromise(collectUsageBuckets(sql, fromMinute));
 
@@ -803,11 +877,14 @@ export function createAccountUsageReporter(deps: AccountUsageReporterDeps): Acco
             await new Promise<void>((resolve) => setTimeout(resolve, MULTI_PUSH_PACE_MS));
             if (stopped) return;
           }
-          await push({
-            environmentId,
-            models: modelChunks[index] ?? [],
-            skills: skillChunks[index] ?? [],
-          });
+          await push(
+            {
+              environmentId,
+              models: modelChunks[index] ?? [],
+              skills: skillChunks[index] ?? [],
+            },
+            currentIdentity,
+          );
           // Persist backfill progress after every chunk, not only at the end:
           // a 429 halfway through a large first sync must resume from the
           // failed chunk, not replay the whole history (which, under a

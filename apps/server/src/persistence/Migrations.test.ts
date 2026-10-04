@@ -1,19 +1,20 @@
-import RemoteDeviceTrustMigration from "./Migrations/129_RemoteDeviceTrust.ts";
-import RemoteConnectionPreferencesMigration from "./Migrations/130_RemoteConnectionPreferences.ts";
+import RemoteDeviceTrustMigration from "./Migrations/133_RemoteDeviceTrust.ts";
+import RemoteConnectionPreferencesMigration from "./Migrations/134_RemoteConnectionPreferences.ts";
 import historicalAccountLineages from "./fixtures/historicalAccountLineages.json";
-import AccountUsageSyncMigration from "./Migrations/127_AccountUsageSync.ts";
-import AccountUsageSyncIdentityMigration from "./Migrations/128_AccountUsageSyncIdentity.ts";
+import AccountUsageSyncMigration from "./Migrations/131_AccountUsageSync.ts";
+import AccountUsageSyncIdentityMigration from "./Migrations/132_AccountUsageSyncIdentity.ts";
 import { inspectMigrationBackupPlan } from "./MigrationBackup.ts";
 import { assert, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { migrationEntries, runMigrations } from "./Migrations.ts";
+import { LATEST_MIGRATION_ID, migrationEntries, runMigrations } from "./Migrations.ts";
 import { MigrationSchemaTooNewError } from "./Errors.ts";
 import * as NodeSqliteClient from "./NodeSqliteClient.ts";
 import DurableProviderCommandDeliveryMigration from "./Migrations/064_DurableProviderCommandDelivery.ts";
 import ProjectionThreadsGatewayProvenanceMigration from "./Migrations/071_ProjectionThreadsGatewayProvenance.ts";
 import ProjectPullRequestPinsMigration from "./Migrations/069_ProjectPullRequestPins.ts";
+import PullRequestAutoFixMigration from "./Migrations/130_PullRequestAutoFix.ts";
 import SpacesMigration from "./Migrations/079_Spaces.ts";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
@@ -630,10 +631,14 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         [124, "ProjectionTurnsPendingMessageIndex"],
         [125, "Todos"],
         [126, "ProjectionThreadsSidechatContext"],
-        [127, "AccountUsageSync"],
-        [128, "AccountUsageSyncIdentity"],
-        [129, "RemoteDeviceTrust"],
-        [130, "RemoteConnectionPreferences"],
+        [127, "ProjectImportHistory"],
+        [128, "HubWork"],
+        [129, "ProjectionThreadsSnooze"],
+        [130, "PullRequestAutoFix"],
+        [131, "AccountUsageSync"],
+        [132, "AccountUsageSyncIdentity"],
+        [133, "RemoteDeviceTrust"],
+        [134, "RemoteConnectionPreferences"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -712,10 +717,14 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
           { migration_id: 124, name: "ProjectionTurnsPendingMessageIndex" },
           { migration_id: 125, name: "Todos" },
           { migration_id: 126, name: "ProjectionThreadsSidechatContext" },
-          { migration_id: 127, name: "AccountUsageSync" },
-          { migration_id: 128, name: "AccountUsageSyncIdentity" },
-          { migration_id: 129, name: "RemoteDeviceTrust" },
-          { migration_id: 130, name: "RemoteConnectionPreferences" },
+          { migration_id: 127, name: "ProjectImportHistory" },
+          { migration_id: 128, name: "HubWork" },
+          { migration_id: 129, name: "ProjectionThreadsSnooze" },
+          { migration_id: 130, name: "PullRequestAutoFix" },
+          { migration_id: 131, name: "AccountUsageSync" },
+          { migration_id: 132, name: "AccountUsageSyncIdentity" },
+          { migration_id: 133, name: "RemoteDeviceTrust" },
+          { migration_id: 134, name: "RemoteConnectionPreferences" },
         ],
       );
       const groupConfigColumns = yield* sql<{ readonly name: string }>`
@@ -874,10 +883,14 @@ agentGatewayRetentionLegacyLayer(
           [124, "ProjectionTurnsPendingMessageIndex"],
           [125, "Todos"],
           [126, "ProjectionThreadsSidechatContext"],
-          [127, "AccountUsageSync"],
-          [128, "AccountUsageSyncIdentity"],
-          [129, "RemoteDeviceTrust"],
-          [130, "RemoteConnectionPreferences"],
+          [127, "ProjectImportHistory"],
+          [128, "HubWork"],
+          [129, "ProjectionThreadsSnooze"],
+          [130, "PullRequestAutoFix"],
+          [131, "AccountUsageSync"],
+          [132, "AccountUsageSyncIdentity"],
+          [133, "RemoteDeviceTrust"],
+          [134, "RemoteConnectionPreferences"],
         ]);
 
         const columns = yield* sql<{ readonly name: string }>`
@@ -999,10 +1012,14 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [124, "ProjectionTurnsPendingMessageIndex"],
         [125, "Todos"],
         [126, "ProjectionThreadsSidechatContext"],
-        [127, "AccountUsageSync"],
-        [128, "AccountUsageSyncIdentity"],
-        [129, "RemoteDeviceTrust"],
-        [130, "RemoteConnectionPreferences"],
+        [127, "ProjectImportHistory"],
+        [128, "HubWork"],
+        [129, "ProjectionThreadsSnooze"],
+        [130, "PullRequestAutoFix"],
+        [131, "AccountUsageSync"],
+        [132, "AccountUsageSyncIdentity"],
+        [133, "RemoteDeviceTrust"],
+        [134, "RemoteConnectionPreferences"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -1065,10 +1082,14 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [124, "ProjectionTurnsPendingMessageIndex"],
           [125, "Todos"],
           [126, "ProjectionThreadsSidechatContext"],
-          [127, "AccountUsageSync"],
-          [128, "AccountUsageSyncIdentity"],
-          [129, "RemoteDeviceTrust"],
-          [130, "RemoteConnectionPreferences"],
+          [127, "ProjectImportHistory"],
+          [128, "HubWork"],
+          [129, "ProjectionThreadsSnooze"],
+          [130, "PullRequestAutoFix"],
+          [131, "AccountUsageSync"],
+          [132, "AccountUsageSyncIdentity"],
+          [133, "RemoteDeviceTrust"],
+          [134, "RemoteConnectionPreferences"],
         ],
       );
 
@@ -1185,10 +1206,14 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [124, "ProjectionTurnsPendingMessageIndex"],
         [125, "Todos"],
         [126, "ProjectionThreadsSidechatContext"],
-        [127, "AccountUsageSync"],
-        [128, "AccountUsageSyncIdentity"],
-        [129, "RemoteDeviceTrust"],
-        [130, "RemoteConnectionPreferences"],
+        [127, "ProjectImportHistory"],
+        [128, "HubWork"],
+        [129, "ProjectionThreadsSnooze"],
+        [130, "PullRequestAutoFix"],
+        [131, "AccountUsageSync"],
+        [132, "AccountUsageSyncIdentity"],
+        [133, "RemoteDeviceTrust"],
+        [134, "RemoteConnectionPreferences"],
       ]);
 
       const tracker = yield* trackerRows(sql);
@@ -1247,10 +1272,14 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [124, "ProjectionTurnsPendingMessageIndex"],
           [125, "Todos"],
           [126, "ProjectionThreadsSidechatContext"],
-          [127, "AccountUsageSync"],
-          [128, "AccountUsageSyncIdentity"],
-          [129, "RemoteDeviceTrust"],
-          [130, "RemoteConnectionPreferences"],
+          [127, "ProjectImportHistory"],
+          [128, "HubWork"],
+          [129, "ProjectionThreadsSnooze"],
+          [130, "PullRequestAutoFix"],
+          [131, "AccountUsageSync"],
+          [132, "AccountUsageSyncIdentity"],
+          [133, "RemoteDeviceTrust"],
+          [134, "RemoteConnectionPreferences"],
         ],
       );
       const preservedSpaces = yield* sql<{ readonly spaceId: string }>`
@@ -1501,46 +1530,95 @@ divergedBeyondAliasLayer("tracker that diverges beyond a known alias", (it) => {
 });
 
 // The fixture was extracted from the actual private builds, not migrationEntries.
-// Main migration implementations through 108 are immutable and remain the schema owner.
+// Canonical migration implementations remain the schema owner for every private prefix.
 layer("historical account upgrades", (it) => {
-  it.effect(
-    "preserves remote trust and desired connections while upgrading the private 112 lineage",
-    () =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* runMigrations({ toMigrationInclusive: 108 });
-        yield* AccountUsageSyncMigration;
-        yield* AccountUsageSyncIdentityMigration;
-        yield* RemoteDeviceTrustMigration;
-        yield* RemoteConnectionPreferencesMigration;
-        yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES
-        (109, 'AccountUsageSync'), (110, 'AccountUsageSyncIdentity'),
-        (111, 'RemoteDeviceTrust'), (112, 'RemoteConnectionPreferences')`;
-        yield* sql`INSERT INTO remote_host_trust (
-        controller_environment_id, account_authority, user_id, organization_id,
-        environment_id, channel, root_certificate, root_fingerprint, host_id, label,
-        paired_at, desired
-      ) VALUES ('controller', 'https://example.test', 'user', 'org', 'host-env', 'beta',
-        'certificate-sentinel', 'fingerprint', 'host', 'Remote test', '2026-09-30', 1)`;
-        yield* sql`INSERT INTO remote_access_state VALUES ('host-env', 'fingerprint', 1)`;
-        const trust = yield* sql`SELECT * FROM remote_host_trust`;
-        const access = yield* sql`SELECT * FROM remote_access_state`;
-        const prefix =
-          yield* sql`SELECT * FROM effect_sql_migrations WHERE migration_id <= 108 ORDER BY migration_id`;
-        const plan = yield* inspectMigrationBackupPlan;
-        assert.isDefined(plan);
-        assert.isFalse("lineageDivergence" in plan!);
-        yield* runMigrations();
-        assert.deepStrictEqual(yield* sql`SELECT * FROM remote_host_trust`, trust);
-        assert.deepStrictEqual(yield* sql`SELECT * FROM remote_access_state`, access);
-        assert.deepStrictEqual(
-          yield* sql`SELECT * FROM effect_sql_migrations WHERE migration_id <= 108 ORDER BY migration_id`,
-          prefix,
-        );
-        assert.include(yield* projectionThreadsColumnNames(sql), "sidechat_context_json");
-        assert.deepStrictEqual(yield* runMigrations(), []);
-      }).pipe(Effect.provide(NodeSqliteClient.layerMemory())),
-  );
+  for (const lineage of historicalAccountLineages.filter((entry) =>
+    entry.tail.some(([, name]) => name === "RemoteConnectionPreferences"),
+  )) {
+    it.effect(
+      `preserves account and remote auth state while upgrading private ${lineage.canonicalPrefix + lineage.tail.length}`,
+      () =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* runMigrations({ toMigrationInclusive: lineage.canonicalPrefix });
+          const prefix = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+          assert.deepStrictEqual(
+            prefix.map((row) => [row.migration_id, row.name]),
+            lineage.entries.slice(0, lineage.canonicalPrefix),
+          );
+          yield* AccountUsageSyncMigration;
+          yield* AccountUsageSyncIdentityMigration;
+          yield* RemoteDeviceTrustMigration;
+          yield* RemoteConnectionPreferencesMigration;
+          for (const [id, name] of lineage.tail) {
+            yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (${id}, ${name})`;
+          }
+          yield* sql`UPDATE account_usage_sync SET watermark_minute = '2026-01-01T00:00:00Z',
+            last_failure_at = 'failure-sentinel', account_identity = 'https://example.test#org'`;
+          yield* sql`INSERT INTO remote_host_trust (
+            controller_environment_id, account_authority, user_id, organization_id,
+            environment_id, channel, root_certificate, root_fingerprint, host_id, label,
+            paired_at, desired
+          ) VALUES ('controller', 'https://example.test', 'user', 'org', 'host-env', 'beta',
+            'certificate-sentinel', 'fingerprint', 'host', 'Remote test', '2026-09-30', 1)`;
+          yield* sql`INSERT INTO remote_device_trust (
+            environment_id, root_fingerprint, device_jkt, device_public_key,
+            account_authority, owner_user_id, organization_id, label, generation,
+            approved_at, approved_invite_id, revoked_at
+          ) VALUES ('host-env', 'fingerprint', 'device-jkt', 'public-key-sentinel',
+            'https://example.test', 'user', 'org', 'Approved device', 7,
+            '2026-09-30', 'invite-sentinel', '2026-10-01')`;
+          yield* sql`INSERT INTO remote_access_state VALUES ('host-env', 'fingerprint', 1)`;
+          yield* sql`INSERT INTO auth_pairing_links (
+            id, credential, method, role, subject, label, created_at, expires_at,
+            purpose, remote_metadata, pending_device_jkt, pending_device_key, pending_device_label
+          ) VALUES ('pairing', 'credential-sentinel', 'bearer-session-token', 'client',
+            'user', 'Pending device', '2026-09-30', '2026-10-30', 'remote-device',
+            'metadata-sentinel', 'pending-jkt', 'pending-key-sentinel', 'Pending device')`;
+          yield* sql`INSERT INTO auth_sessions (
+            session_id, subject, role, method, issued_at, expires_at, revoked_at
+          ) VALUES ('session-sentinel', 'user', 'client', 'bearer-session-token',
+            '2026-09-30', '2026-10-30', '2026-10-01')`;
+          const account = yield* sql`SELECT * FROM account_usage_sync`;
+          const hosts = yield* sql`SELECT * FROM remote_host_trust`;
+          const devices = yield* sql`SELECT * FROM remote_device_trust`;
+          const access = yield* sql`SELECT * FROM remote_access_state`;
+          const pairing = yield* sql`SELECT * FROM auth_pairing_links`;
+          const sessions = yield* sql`SELECT * FROM auth_sessions`;
+          const plan = yield* inspectMigrationBackupPlan;
+          assert.isDefined(plan);
+          assert.isFalse("lineageDivergence" in plan!);
+          const applied = yield* runMigrations();
+          assert.deepStrictEqual(
+            applied.map(([id]) => id),
+            Array.from(
+              { length: LATEST_MIGRATION_ID - lineage.canonicalPrefix },
+              (_, index) => lineage.canonicalPrefix + index + 1,
+            ),
+          );
+          assert.deepStrictEqual(yield* sql`SELECT * FROM account_usage_sync`, account);
+          assert.deepStrictEqual(yield* sql`SELECT * FROM remote_host_trust`, hosts);
+          assert.deepStrictEqual(yield* sql`SELECT * FROM remote_device_trust`, devices);
+          assert.deepStrictEqual(yield* sql`SELECT * FROM remote_access_state`, access);
+          assert.deepStrictEqual(yield* sql`SELECT * FROM auth_pairing_links`, pairing);
+          assert.deepStrictEqual(yield* sql`SELECT * FROM auth_sessions`, sessions);
+          assert.deepStrictEqual(
+            yield* sql`SELECT * FROM effect_sql_migrations WHERE migration_id <= ${lineage.canonicalPrefix} ORDER BY migration_id`,
+            prefix,
+          );
+          assert.include(yield* projectionThreadsColumnNames(sql), "sidechat_context_json");
+          assert.include(yield* projectionThreadsColumnNames(sql), "snoozed_until");
+          const tables = yield* sql<{
+            name: string;
+          }>`SELECT name FROM sqlite_master WHERE type = 'table'`;
+          assert.includeMembers(
+            tables.map(({ name }) => name),
+            ["project_import_history", "project_agent_work_items", "pull_request_auto_fix"],
+          );
+          assert.deepStrictEqual(yield* runMigrations(), []);
+        }).pipe(Effect.provide(NodeSqliteClient.layerMemory())),
+    );
+  }
   for (const lineage of historicalAccountLineages) {
     for (let tailLength = 1; tailLength <= lineage.tail.length; tailLength++) {
       it.effect(
@@ -1559,13 +1637,16 @@ layer("historical account upgrades", (it) => {
             yield* AccountUsageSyncIdentityMigration;
             yield* sql`UPDATE account_usage_sync SET watermark_minute = '2026-01-01T00:00:00Z', last_failure_at = 'sentinel', account_identity = 'authority#account'`;
             for (const entry of lineage.tail.slice(0, tailLength)) {
+              if (entry[1] === "RemoteDeviceTrust") yield* RemoteDeviceTrustMigration;
+              if (entry[1] === "RemoteConnectionPreferences")
+                yield* RemoteConnectionPreferencesMigration;
               yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (${entry[0]}, ${entry[1]})`;
             }
             const backupPlan = yield* inspectMigrationBackupPlan;
             assert.isDefined(backupPlan);
             assert.isFalse("lineageDivergence" in backupPlan!);
             const expected = Array.from(
-              { length: 130 - lineage.canonicalPrefix },
+              { length: LATEST_MIGRATION_ID - lineage.canonicalPrefix },
               (_, i) => lineage.canonicalPrefix + i + 1,
             );
             const applied = yield* runMigrations();
@@ -1623,4 +1704,48 @@ layer("historical account upgrades", (it) => {
       }).pipe(Effect.provide(NodeSqliteClient.layerMemory())),
     );
   }
+});
+
+layer("Auto-fix migration replay", (it) => {
+  it.effect(
+    "adds the optional alias to an existing Auto-fix table and preserves its watch on replay",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DROP TABLE IF EXISTS pull_request_auto_fix`;
+        yield* sql`CREATE TABLE pull_request_auto_fix (
+      thread_id TEXT NOT NULL, pull_request_url TEXT NOT NULL, status TEXT NOT NULL,
+      pause_reason TEXT, attempts INTEGER NOT NULL DEFAULT 0, last_handled_head_sha TEXT,
+      updated_at TEXT NOT NULL, PRIMARY KEY (thread_id, pull_request_url)
+    )`;
+        yield* sql`INSERT INTO pull_request_auto_fix (thread_id, pull_request_url, status, attempts, last_handled_head_sha, updated_at)
+      VALUES ('chat', 'https://github.com/o/r/pull/1', 'watching', 1, 'original-head', '2026-10-03T10:00:00.000Z')`;
+        yield* PullRequestAutoFixMigration;
+        yield* PullRequestAutoFixMigration;
+        assert.include(
+          yield* tableColumnNames(sql, "pull_request_auto_fix"),
+          "requested_pull_request_url",
+        );
+        assert.include(
+          yield* tableIndexNames(sql, "pull_request_auto_fix"),
+          "pull_request_auto_fix_active_owner",
+        );
+        const rows = yield* sql<{
+          thread_id: string;
+          status: string;
+          attempts: number;
+          last_handled_head_sha: string;
+          requested_pull_request_url: string | null;
+        }>`SELECT thread_id, status, attempts, last_handled_head_sha, requested_pull_request_url FROM pull_request_auto_fix`;
+        assert.deepStrictEqual(rows, [
+          {
+            thread_id: "chat",
+            status: "watching",
+            attempts: 1,
+            last_handled_head_sha: "original-head",
+            requested_pull_request_url: null,
+          },
+        ]);
+      }),
+  );
 });

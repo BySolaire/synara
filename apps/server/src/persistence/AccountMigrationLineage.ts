@@ -16,6 +16,16 @@ export const ACCOUNT_MIGRATION_LINEAGES = [
       "RemoteConnectionPreferences",
     ],
   },
+  {
+    // Private remote builds after the main sidechat-context migration used 127–130.
+    prefix: 126,
+    tail: [
+      "AccountUsageSync",
+      "AccountUsageSyncIdentity",
+      "RemoteDeviceTrust",
+      "RemoteConnectionPreferences",
+    ],
+  },
 ] as const;
 
 export type MigrationIdentity = { readonly migration_id: number; readonly name: string };

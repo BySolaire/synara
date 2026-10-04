@@ -11,8 +11,8 @@ import type {
   ProviderListModelsResult,
   ProviderModelDescriptor,
 } from "@synara/contracts";
-import { useQueries, useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo } from "react";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo } from "react";
 
 import {
   getAppModelOptions,
@@ -35,6 +35,11 @@ import { mergeDynamicModelOptions, type ProviderModelOption } from "../providerM
 import type { ProviderModelOptionsByProviderInstance } from "../components/chat/ProviderModelPicker";
 
 export interface ProviderModelCatalog {
+  refreshModels: (
+    provider: ProviderKind,
+    instanceId: ProviderInstanceId,
+    refresh: "if-stale" | "now",
+  ) => Promise<void>;
   customModelsByProvider: ReturnType<typeof getCustomModelsByProvider>;
   modelOptionsByProvider: Record<
     ProviderKind,
@@ -50,6 +55,10 @@ export interface ProviderModelCatalog {
    * must feed them through (see {@link selectedRuntimeModel}).
    */
   runtimeModelsByProvider: Record<ProviderKind, ReadonlyArray<ProviderModelDescriptor>>;
+  /** Account-local runtime descriptors; known accounts are empty until discovery resolves. */
+  runtimeModelsByProviderInstance: Partial<
+    Record<ProviderInstanceId, ReadonlyArray<ProviderModelDescriptor>>
+  >;
   /** The runtime descriptor matching `selectedProvider` + its selected-model hint. */
   selectedRuntimeModel: ProviderModelDescriptor | undefined;
   /** Runtime-discovered agents/modes for the selected provider (opencode/claude/codex). */
@@ -63,6 +72,13 @@ export interface ProviderModelCatalog {
 }
 
 const EMPTY_PROVIDER_AGENTS: ReadonlyArray<ProviderAgentDescriptor> = [];
+
+// Module scope: `useQueries` recombines whenever this function's identity changes.
+function selectQueryData<Data>(
+  results: ReadonlyArray<{ data: Data | undefined }>,
+): Array<Data | undefined> {
+  return results.map((result) => result.data);
+}
 
 // OMP's catalog is global, but its `modelRoles` merge a project layer, so the
 // composer keeps cwd in the key for roles to reflect the active project.
@@ -89,6 +105,7 @@ function modelQueryOptionsForProviderInstance(input: {
   readonly instanceId: ProviderInstanceId;
   readonly cwd: string | null;
   readonly enabled: boolean;
+  readonly refresh?: "if-stale" | "now";
 }) {
   const providerOptions = getProviderStartOptions(input.settings, input.instanceId)?.[
     input.provider
@@ -102,8 +119,9 @@ function modelQueryOptionsForProviderInstance(input: {
     accountId: readProviderOptionString(providerOptions, "accountId"),
     apiEndpoint: readProviderOptionString(providerOptions, "apiEndpoint"),
     agentDir: readProviderOptionString(providerOptions, "agentDir"),
-    cwd: input.cwd,
+    cwd: CWD_SCOPED_MODEL_DISCOVERY_PROVIDERS.has(input.provider) ? input.cwd : null,
     enabled: input.enabled,
+    ...(input.refresh ? { refresh: input.refresh, priority: "foreground" } : {}),
   });
 }
 
@@ -147,13 +165,46 @@ export function useProviderModelCatalog(input: {
   const agentDiscoveryPolicy = input.agentDiscoveryPolicy ?? "selected";
   const discoveryCwd = input.cwd ?? null;
   const { settings, serverSettings } = useAppSettings();
+  const queryClient = useQueryClient();
+  const refreshModels = useCallback<ProviderModelCatalog["refreshModels"]>(
+    async (provider, instanceId, refresh) => {
+      const options = modelQueryOptionsForProviderInstance({
+        settings,
+        provider,
+        instanceId,
+        cwd: discoveryCwd,
+        enabled: true,
+        refresh,
+      });
+      const releasePriority = prioritizeProviderModelDiscovery(options.queryKey);
+      try {
+        // A prefetch already running may return a stale snapshot or fail. Wait
+        // for it without losing the interactive read's priority or refresh intent.
+        const wasFetching = queryClient.getQueryState(options.queryKey)?.fetchStatus === "fetching";
+        if (wasFetching) {
+          await queryClient.fetchQuery({ ...options, retry: false }).catch(() => undefined);
+        }
+        const result = await queryClient.fetchQuery({
+          ...options,
+          // A recent client snapshot may still be stale on the server. Explicit
+          // reads must reach its freshness/single-flight gate, which owns reuse.
+          staleTime: 0,
+          retry: false,
+        });
+        if (result.error) throw new Error(result.error);
+      } finally {
+        releasePriority?.();
+      }
+    },
+    [queryClient, settings, discoveryCwd],
+  );
   const customModelsByProvider = useMemo(() => getCustomModelsByProvider(settings), [settings]);
   const providerInstances = useMemo(() => getProviderInstanceOptions(settings), [settings]);
   // Callers without an explicit instance selection route to the provider's
   // default instance, so that is the only instance discovery must warm.
   const effectiveSelectedInstanceId = (selectedProviderInstanceId?.trim() ||
     selectedProvider) as ProviderInstanceId;
-  const instanceModelQueries = useQueries({
+  const instanceModelData = useQueries({
     queries: providerInstances.map((instance) =>
       modelQueryOptionsForProviderInstance({
         settings,
@@ -165,11 +216,16 @@ export function useProviderModelCatalog(input: {
         enabled: discoveryEnabled || effectiveSelectedInstanceId === instance.instanceId,
       }),
     ),
+    // Only the data is read. `useQueries` otherwise returns a new array on every render,
+    // which rebuilt every instance's model options (and re-rendered the model picker) on
+    // every keystroke and streamed token; the combined result keeps its identity while
+    // the data is unchanged.
+    combine: selectQueryData,
   });
   const dynamicModelsByProviderInstance = useMemo(() => {
     const byInstance: Partial<Record<ProviderInstanceId, ProviderListModelsResult>> = {};
     providerInstances.forEach((instance, index) => {
-      const data = instanceModelQueries[index]?.data;
+      const data = instanceModelData[index];
       if (data) {
         byInstance[instance.instanceId] =
           instance.provider === "cursor"
@@ -178,7 +234,7 @@ export function useProviderModelCatalog(input: {
       }
     });
     return byInstance;
-  }, [instanceModelQueries, providerInstances]);
+  }, [instanceModelData, providerInstances]);
   const hiddenProviderSet = useMemo(
     () => new Set<ProviderKind>(settings.hiddenProviders),
     [settings.hiddenProviders],
@@ -246,9 +302,7 @@ export function useProviderModelCatalog(input: {
       settings,
       provider,
       instanceId: instance?.instanceId ?? provider,
-      // Only project-scoped catalogs key on cwd, matching the new-thread
-      // prefetch so a warmed catalog serves the composer's first read.
-      cwd: CWD_SCOPED_MODEL_DISCOVERY_PROVIDERS.has(provider) ? discoveryCwd : null,
+      cwd: discoveryCwd,
       enabled,
     });
   };
@@ -550,9 +604,14 @@ export function useProviderModelCatalog(input: {
           ? modelHintByProvider?.[instance.provider]
           : null;
       const staticOptions = getAppModelOptions(instance.provider, customModels, selectedModelHint);
-      const dynamicModels = dynamicModelsByProviderInstance[instance.instanceId]?.models;
+      const discovery = dynamicModelsByProviderInstance[instance.instanceId];
+      const dynamicModels = discovery?.models;
+      const hasCodexCatalog =
+        instance.provider === "codex" &&
+        discovery?.source === "codex-app-server" &&
+        discovery.error === undefined;
       byInstance[instance.instanceId] =
-        dynamicModels && dynamicModels.length > 0
+        dynamicModels && (dynamicModels.length > 0 || hasCodexCatalog)
           ? mergeDynamicModelOptions({
               provider: instance.provider,
               staticOptions,
@@ -619,6 +678,18 @@ export function useProviderModelCatalog(input: {
       ompDynamicModelsQuery.data?.models,
     ],
   );
+
+  const runtimeModelsByProviderInstance = useMemo(() => {
+    const byInstance: Partial<Record<ProviderInstanceId, ReadonlyArray<ProviderModelDescriptor>>> =
+      {};
+    for (const instance of providerInstances) {
+      // A configured account without discovery must not fall back to a sibling's
+      // runtime metadata. Its static/custom model options remain available above.
+      byInstance[instance.instanceId] =
+        dynamicModelsByProviderInstance[instance.instanceId]?.models ?? [];
+    }
+    return byInstance;
+  }, [dynamicModelsByProviderInstance, providerInstances]);
 
   const selectedRuntimeModel = useMemo(
     () =>
@@ -729,11 +800,13 @@ export function useProviderModelCatalog(input: {
 
   return useMemo(
     () => ({
+      refreshModels,
       customModelsByProvider,
       modelOptionsByProvider,
       modelOptionsByProviderInstance,
       loadingModelProviders,
       runtimeModelsByProvider,
+      runtimeModelsByProviderInstance,
       selectedRuntimeModel,
       selectedRuntimeAgents,
       selectedProviderModelsLoading,
@@ -741,12 +814,14 @@ export function useProviderModelCatalog(input: {
       discoveryErrorsByProvider,
     }),
     [
+      refreshModels,
       customModelsByProvider,
       discoveryErrorsByProvider,
       loadingModelProviders,
       modelOptionsByProvider,
       modelOptionsByProviderInstance,
       runtimeModelsByProvider,
+      runtimeModelsByProviderInstance,
       selectedProviderModelsLoading,
       selectedProviderRuntimeModelDiscoveryPending,
       selectedRuntimeAgents,

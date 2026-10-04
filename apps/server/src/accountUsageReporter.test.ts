@@ -5,11 +5,14 @@
 // inertness, and failure backoff.
 // Layer: Server account tests
 
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { PushUsageRequest } from "@synara/contracts";
 import { Effect, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   chunkingForTesting,
@@ -20,6 +23,11 @@ import {
   type AccountUsageReporterDeps,
 } from "./accountUsageReporter";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite";
+
+const repairHomes: string[] = [];
+afterEach(async () => {
+  for (const home of repairHomes.splice(0)) await rm(home, { recursive: true, force: true });
+});
 
 const testLayer = SqlitePersistenceMemory.pipe(Layer.provide(NodeServices.layer));
 
@@ -1013,6 +1021,88 @@ describe("createAccountUsageReporter", () => {
         expect(pushes.length).toBe(0); // harness default push was overridden
 
         reporter.stop();
+      }),
+    );
+  });
+  it("replaces historical usage for a late import and resumes its durable rewind after a failed push", async () => {
+    const home = await mkdtemp(join(tmpdir(), "synara-usage-import-"));
+    repairHomes.push(home);
+    await runReporterTest(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const nowMs = Date.parse("2026-10-10T12:00:00Z");
+        const historical = "2026-08-01T08:00:00.000Z";
+        const identity = "https://accounts.example.com#org_1#user_1";
+        yield* seedThread(sql, "late-import", '{"provider":"codex","model":"gpt-5-codex"}');
+        const initial = makeReporterHarness(sql, {
+          baseDir: home,
+          now: () => nowMs,
+          accountIdentity: async () => identity,
+        });
+        yield* Effect.promise(() => initial.reporter.flushNow());
+        initial.reporter.stop();
+        expect(initial.pushes).toHaveLength(0);
+        yield* seedUserMessage(sql, {
+          messageId: "late-message",
+          threadId: "late-import",
+          turnId: null,
+          createdAt: historical,
+        });
+        const payload = JSON.stringify({
+          threadId: "late-import",
+          messageId: "late-message",
+          role: "user",
+          source: "native",
+          createdAt: historical,
+        });
+        yield* sql`INSERT INTO orchestration_events
+        (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          command_id, actor_kind, payload_json, metadata_json)
+        VALUES ('late-event', 'thread', 'late-import', 1, 'thread.message-sent', ${historical},
+          'project-import:late-import:history:0:0', 'client', ${payload}, '{}')`;
+        yield* sql`INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+        VALUES ('projection.hot', 1, ${historical})`;
+        const failed = makeReporterHarness(sql, {
+          baseDir: home,
+          now: () => nowMs,
+          accountIdentity: async () => identity,
+          push: async () => {
+            throw new Error("offline");
+          },
+        });
+        yield* Effect.promise(() => failed.reporter.flushNow());
+        failed.reporter.stop();
+        expect((yield* readSyncState(sql))?.watermarkMinute).toBe("2026-08-01T08:00:00Z");
+        const restarted = makeReporterHarness(sql, {
+          baseDir: home,
+          now: () => nowMs,
+          accountIdentity: async () => identity,
+        });
+        yield* Effect.promise(() => restarted.reporter.flushNow());
+        expect(restarted.pushes).toHaveLength(1);
+        expect(restarted.pushes[0]?.request.models).toEqual([
+          {
+            minute: "2026-08-01T08:00:00Z",
+            provider: "codex",
+            model: "gpt-5-codex",
+            reasoning: null,
+            prompts: 1,
+            tokens: 0,
+            turns: 0,
+          },
+        ]);
+        yield* Effect.promise(() => restarted.reporter.flushNow());
+        restarted.reporter.stop();
+        expect(restarted.pushes).toHaveLength(1);
+        // Another account cannot inherit either the old watermark or event acknowledgement.
+        const other = makeReporterHarness(sql, {
+          baseDir: home,
+          now: () => nowMs,
+          accountIdentity: async () => "https://accounts.example.com#org_1#user_2",
+        });
+        yield* Effect.promise(() => other.reporter.flushNow());
+        other.reporter.stop();
+        expect(other.pushes[0]?.request.models[0]?.prompts).toBe(1);
       }),
     );
   });

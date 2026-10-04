@@ -25,7 +25,10 @@ const transport = vi.hoisted(() => ({
 }));
 const notifications = vi.hoisted(() => ({ add: vi.fn() }));
 vi.mock("../ui/toast", () => ({ toastManager: notifications }));
-vi.mock("../../nativeApi", () => ({ ensureNativeApi: () => ({ todo: transport }) }));
+vi.mock("../../nativeApi", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../nativeApi")>()),
+  ensureNativeApi: () => ({ todo: transport }),
+}));
 
 function makeTodo(id: string): Todo {
   return {
@@ -158,6 +161,7 @@ it("ignores unrelated chat updates for empty and unlinked task lists, while foll
   const unrelated = {
     ...makeThread({ id: ThreadId.makeUnsafe("unrelated") }),
     hasLiveTailWork: false,
+    pendingBackgroundWorkCount: 0,
     latestUserMessageAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,

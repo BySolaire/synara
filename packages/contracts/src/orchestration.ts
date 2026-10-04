@@ -1,5 +1,7 @@
 import { Effect, Option, Schema, SchemaIssue, SchemaTransformation, Struct } from "effect";
 import {
+  LoadProjectImportHistoryInput,
+  LoadProjectImportHistoryResult,
   ImportProjectInput,
   ImportProjectResult,
   ListProjectImportsInput,
@@ -46,9 +48,11 @@ export const ORCHESTRATION_WS_METHODS = {
   getShellSnapshot: "orchestration.getShellSnapshot",
   getThreadDetailSnapshot: "orchestration.getThreadDetailSnapshot",
   dispatchCommand: "orchestration.dispatchCommand",
+  settleTurnDispatch: "orchestration.settleTurnDispatch",
   importThread: "orchestration.importThread",
   listProjectImports: "orchestration.listProjectImports",
   importProject: "orchestration.importProject",
+  loadProjectImportHistory: "orchestration.loadProjectImportHistory",
   regenerateThreadTitle: "orchestration.regenerateThreadTitle",
   repairState: "orchestration.repairState",
   getTurnDiff: "orchestration.getTurnDiff",
@@ -564,7 +568,12 @@ export const MAX_PINNED_PROJECTS = 3;
 const CHAT_ATTACHMENT_ID_MAX_CHARS = 128;
 export const CHAT_ASSISTANT_SELECTION_TEXT_MAX_CHARS = 4_000;
 export const THREAD_NOTES_MAX_CHARS = 16_384;
-export const THREAD_GOAL_MAX_CHARS = 4_096;
+// Goals travel the same transport budget as turn input; anything longer than
+// THREAD_GOAL_INLINE_MAX_CHARS is materialized to an on-disk file server-side
+// and persisted as a "read this file" reference (Codex-style large-input
+// handling), so the cap exists only to bound the wire payload.
+export const THREAD_GOAL_MAX_CHARS = PROVIDER_SEND_TURN_MAX_INPUT_CHARS;
+export const THREAD_GOAL_INLINE_MAX_CHARS = 1_000;
 export const PINNED_MESSAGES_MAX_COUNT = 100;
 export const PINNED_MESSAGE_LABEL_MAX_CHARS = 60;
 // Correlation id is command id by design in this model.
@@ -1026,6 +1035,8 @@ export const PendingClaudeCacheReview = Schema.Struct({
 export type PendingClaudeCacheReview = typeof PendingClaudeCacheReview.Type;
 
 export const OrchestrationThread = Schema.Struct({
+  /** Durable project-import provenance; ordinary chats never request imported history. */
+  isProjectImport: Schema.optional(Schema.Boolean),
   claudeCacheReview: Schema.optional(Schema.NullOr(PendingClaudeCacheReview)),
   id: ThreadId,
   projectId: ProjectId,
@@ -1101,6 +1112,12 @@ export const OrchestrationThread = Schema.Struct({
     Schema.withDecodingDefault(() => null),
   ),
   settledAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  snoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  snoozeReminderAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -1120,6 +1137,8 @@ export const OrchestrationThread = Schema.Struct({
 export type OrchestrationThread = typeof OrchestrationThread.Type;
 
 export const OrchestrationThreadShell = Schema.Struct({
+  /** Durable project-import provenance; ordinary chats never request imported history. */
+  isProjectImport: Schema.optional(Schema.Boolean),
   claudeCacheReview: Schema.optional(Schema.NullOr(PendingClaudeCacheReview)),
   id: ThreadId,
   projectId: ProjectId,
@@ -1195,6 +1214,12 @@ export const OrchestrationThreadShell = Schema.Struct({
     Schema.withDecodingDefault(() => null),
   ),
   settledAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  snoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  snoozeReminderAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
   handoff: Schema.NullOr(ThreadHandoff).pipe(Schema.withDecodingDefault(() => null)),
@@ -1509,6 +1534,9 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   isPinned: Schema.optional(Schema.Boolean),
   // Desired settled state; the decider stamps the authoritative settledAt timestamp.
   isSettled: Schema.optional(Schema.Boolean),
+  snoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** A matching due deadline authorizes the server to deliver the reminder. */
+  expectedSnoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
   parentThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   subagentAgentId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   subagentNickname: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -1524,6 +1552,9 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   // Marks the active goal accomplished: the decider records a ThreadGoalAchievement
   // (with pause-adjusted elapsed time) and clears the goal in the same event.
   goalAchieved: Schema.optional(Schema.Boolean),
+  // Applies `modelSelection` as a same-thread provider handoff: the server starts
+  // the target session now and records the handoff (or reverts) in the timeline.
+  providerHandoff: Schema.optional(Schema.Boolean),
 });
 
 const ThreadPinnedMessageAddCommand = Schema.Struct({
@@ -2228,6 +2259,11 @@ export const ThreadUnarchivedPayload = Schema.Struct({
   updatedAt: Schema.optional(IsoDateTime),
 });
 
+export const ThreadProviderHandoff = Schema.Struct({
+  sourceModelSelection: ModelSelection,
+});
+export type ThreadProviderHandoff = typeof ThreadProviderHandoff.Type;
+
 export const ThreadMetaUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
@@ -2242,6 +2278,8 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   createBranchFlowCompleted: Schema.optional(Schema.Boolean),
   isPinned: Schema.optional(Schema.Boolean),
   settledAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  snoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
+  snoozeReminderAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   parentThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   subagentAgentId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   subagentNickname: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -2255,6 +2293,7 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   goalStartedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   goalPausedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   goalAchievements: Schema.optional(ThreadGoalAchievements),
+  providerHandoff: Schema.optional(ThreadProviderHandoff),
   updatedAt: IsoDateTime,
 });
 
@@ -2794,6 +2833,18 @@ export const DispatchResult = Schema.Struct({
 });
 export type DispatchResult = typeof DispatchResult.Type;
 
+// Resolves a lost turn-start acknowledgement without starting a new turn. If
+// the command was never accepted, the server durably rejects late arrivals.
+export const OrchestrationSettleTurnDispatchInput = Schema.Struct({
+  command: ClientThreadTurnStartCommand,
+});
+export const OrchestrationSettleTurnDispatchResult = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("accepted"), sequence: NonNegativeInt }),
+  Schema.Struct({ status: Schema.Literal("rejected"), message: Schema.String }),
+]);
+export type OrchestrationSettleTurnDispatchResult =
+  typeof OrchestrationSettleTurnDispatchResult.Type;
+
 export const OrchestrationGetSnapshotInput = Schema.Struct({});
 export type OrchestrationGetSnapshotInput = typeof OrchestrationGetSnapshotInput.Type;
 const OrchestrationGetSnapshotResult = OrchestrationReadModel;
@@ -3005,12 +3056,20 @@ export const OrchestrationRpcSchemas = {
     input: ClientOrchestrationCommand,
     output: DispatchResult,
   },
+  settleTurnDispatch: {
+    input: OrchestrationSettleTurnDispatchInput,
+    output: OrchestrationSettleTurnDispatchResult,
+  },
   importThread: {
     input: OrchestrationImportThreadInput,
     output: OrchestrationImportThreadResult,
   },
   listProjectImports: { input: ListProjectImportsInput, output: ListProjectImportsResult },
   importProject: { input: ImportProjectInput, output: ImportProjectResult },
+  loadProjectImportHistory: {
+    input: LoadProjectImportHistoryInput,
+    output: LoadProjectImportHistoryResult,
+  },
   regenerateThreadTitle: {
     input: OrchestrationRegenerateThreadTitleInput,
     output: OrchestrationRegenerateThreadTitleResult,

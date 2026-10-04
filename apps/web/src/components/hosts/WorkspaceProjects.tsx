@@ -29,7 +29,7 @@ import {
 import type { WorkspaceSidebarActions } from "../../lib/hosts/workspaceFrame";
 import { openWorkspacePath } from "./WorkspacePanels";
 import { resolveProjectStatusIndicator } from "../Sidebar.logic";
-import { FolderClosed, FolderOpen } from "../FolderClosed";
+import { FolderIcon, FolderOpenIcon } from "~/lib/icons";
 import { ProjectEmojiGlyph } from "../ProjectSidebarIcon";
 import { SidebarIconButton } from "../SidebarIconButton";
 import { SidebarProjectRowContent } from "../SidebarProjectRowContent";
@@ -161,7 +161,7 @@ function WorkspaceProjectIcon({
     : undefined;
   if (appearance?.kind === "icon" && appearance.icon !== DEFAULT_PROJECT_ICON)
     return <CentralIcon name={appearance.icon} className="size-4" style={style} />;
-  const Folder = expanded ? FolderOpen : FolderClosed;
+  const Folder = expanded ? FolderOpenIcon : FolderIcon;
   return <Folder className="size-4" style={style} />;
 }
 

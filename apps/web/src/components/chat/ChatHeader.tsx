@@ -15,9 +15,6 @@ import {
 } from "@synara/contracts";
 import { isGenericChatThreadTitle } from "@synara/shared/chatThreads";
 import React, { useEffect, useRef, useState } from "react";
-import { FiGitBranch } from "react-icons/fi";
-import { HiMiniArrowsPointingOut } from "react-icons/hi2";
-import { TbExchange } from "react-icons/tb";
 import type { ThreadPrimarySurface } from "../../types";
 import GitActionsControl from "../GitActionsControl";
 import {
@@ -32,6 +29,7 @@ import {
   TerminalIcon,
   WorkflowIcon,
   XIcon,
+  GitBranchIcon,
 } from "~/lib/icons";
 import { formatRelativeTime } from "~/lib/relativeTime";
 import {
@@ -44,14 +42,13 @@ import {
 } from "./chatHeaderControls";
 import { DiffStat } from "../ui/diff-stat";
 import { IconButton } from "../ui/icon-button";
-import { Menu, MenuItem, MenuTrigger } from "../ui/menu";
+import { Menu, MenuGroup, MenuGroupLabel, MenuItem, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { ComposerPickerMenuPopup } from "./ComposerPickerMenuPopup";
 import { OpenInPicker } from "./OpenInPicker";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SidebarHeaderNavigationControls } from "../SidebarHeaderNavigationControls";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
 import { Toggle } from "../ui/toggle";
-import { useSidebar } from "../ui/sidebar";
 import { useAppSettings } from "../../appSettings";
 import { useStore } from "../../store";
 import { createSidebarDisplayThreadsSelector } from "../../storeSelectors";
@@ -61,7 +58,8 @@ import {
   useReadRouteThreadId,
   useRecordOpenThreadTab,
 } from "../../hooks/useOpenThreadTabs";
-import { createOpenThreadTabCloseQueue } from "../../openThreadTabs.logic";
+import { useOptimisticTabSelection } from "../../hooks/useOptimisticTabSelection";
+import { closeOpenThreadTab, createOpenThreadTabCloseQueue } from "../../openThreadTabs.logic";
 import { useOpenThreadTabsStore } from "../../openThreadTabsStore";
 import { StatusDot } from "~/components/ui/status-chip";
 import { cn } from "~/lib/utils";
@@ -110,6 +108,8 @@ interface ChatHeaderProps {
   handoffActionLabel: string;
   handoffDisabled: boolean;
   handoffActionTargets: ReadonlyArray<ThreadHandoffTarget>;
+  /** Subset of `handoffActionTargets` that can continue in this same thread. */
+  continueHandoffActionTargets: ReadonlyArray<ThreadHandoffTarget>;
   // Coordinator threads pass false — a hand-off copy would read as a second
   // coordinator, so the action itself is hidden rather than disabled.
   showHandoffAction?: boolean;
@@ -129,16 +129,6 @@ interface ChatHeaderProps {
   environment?: EnvironmentToggleState | null;
   projectPanel?: SurfacePanelToggleState | null;
   libraryPanel?: SurfacePanelToggleState | null;
-  chatLayoutAction?: {
-    kind: "split" | "maximize";
-    label: string;
-    shortcutLabel: string | null;
-    onClick: () => void;
-  } | null;
-  changeThreadAction?: {
-    label: string;
-    onClick: () => void;
-  } | null;
   // Editor-rail chat controls rendered beside the title: a "new chat" button and
   // a project chat-history menu. Provided only by the editor workspace chat pane.
   editorChatControls?: {
@@ -160,6 +150,7 @@ interface ChatHeaderProps {
   onToggleDiff: () => void;
   onRegisterCommitAndPushTrigger?: (trigger: (() => void) | null) => void;
   onCreateHandoff: (target: ThreadHandoffTarget) => void;
+  onContinueHandoff: (target: ThreadHandoffTarget) => void;
   onNavigateToThread: (threadId: ThreadId) => void;
   onRenameThread: () => void;
   onCloseThreadPane?: () => void;
@@ -255,6 +246,19 @@ function EditorRailTabs(props: {
   const closeThreadTab = useOpenThreadTabsStore((state) => state.closeThreadTab);
   const readRouteThreadId = useReadRouteThreadId();
   const [enqueueClose] = useState(createOpenThreadTabCloseQueue);
+  // Same click feedback as the chat header strip: the clicked chat tab highlights at once
+  // and its thread opens after that frame. The terminal tab only flips a surface, so it
+  // stays a direct switch.
+  const activeTabKey = props.activeSurface === "chat" ? props.activeThreadId : "terminal";
+  const {
+    shownKey: shownTabKey,
+    select: selectChatTab,
+    cancel: cancelChatTabSelection,
+  } = useOptimisticTabSelection<string>({
+    activeKey: activeTabKey,
+    hasTab: (key) => chatTabs.some((tab) => tab.threadId === key),
+    activate: (key) => props.onOpenChat(key as ThreadId),
+  });
   const [terminalTabOpen, setTerminalTabOpen] = useState(props.terminalAvailable);
   // Timeout-0 keeps the state write asynchronous (no wasted pre-paint render), which also
   // keeps this component eligible for React Compiler; the reveal is invisible at a tick.
@@ -269,12 +273,18 @@ function EditorRailTabs(props: {
   }, [props.terminalAvailable]);
   const terminalTabVisible = terminalTabOpen || props.terminalAvailable;
   const tabCount = chatTabs.length + (terminalTabVisible ? 1 : 0);
-  const shouldShowTabs = tabCount > 1;
+  const shouldShowTabs =
+    tabCount > 1 ||
+    (props.activeSurface === "chat" &&
+      chatTabs.length > 0 &&
+      !chatTabs.some((tab) => tab.threadId === props.activeThreadId));
   const newTerminalTab = () => {
+    cancelChatTabSelection();
     setTerminalTabOpen(true);
     props.onNewTerminal();
   };
   const openTerminalTab = () => {
+    cancelChatTabSelection();
     setTerminalTabOpen(true);
     props.onOpenTerminal();
   };
@@ -283,11 +293,12 @@ function EditorRailTabs(props: {
     props.onCloseTerminal();
   };
   const closeChatTab = (threadId: ThreadId) => {
+    cancelChatTabSelection();
     // Same close flow as the chat header strip: the active chat's tab goes only once the
     // route has left it, so a guarded navigation keeps it in both places.
     void enqueueClose(() => {
       const openThreadIds = useOpenThreadTabsStore.getState().threadIds;
-      return {
+      return closeOpenThreadTab({
         tabs: chatTabs.filter((tab) => openThreadIds.includes(tab.threadId)),
         closedThreadId: threadId,
         activeThreadId: props.activeSurface === "chat" ? readRouteThreadId() : null,
@@ -301,7 +312,7 @@ function EditorRailTabs(props: {
             }
           : undefined,
         readRouteThreadId,
-      };
+      });
     });
   };
 
@@ -348,14 +359,11 @@ function EditorRailTabs(props: {
         // Same chip tabs as the right dock's pane strip so every tab row in the
         // app reads identically. Pushed to the header's right edge (ml-auto) so the
         // title and new/history controls stay grouped on the left.
-        <SurfaceTabStrip
-          className="ml-auto"
-          activeKey={props.activeSurface === "chat" ? props.activeThreadId : "terminal"}
-        >
+        <SurfaceTabStrip className="ml-auto" activeKey={shownTabKey}>
           {chatTabs.map((thread, index) => (
             <SurfaceTabChip
               key={thread.threadId}
-              active={props.activeSurface === "chat" && thread.threadId === props.activeThreadId}
+              active={thread.threadId === shownTabKey}
               title={thread.title}
               label={`Chat ${index + 1}`}
               labelClassName="max-w-24"
@@ -367,13 +375,13 @@ function EditorRailTabs(props: {
                 />
               }
               closeLabel={`Close ${thread.title}`}
-              onSelect={() => props.onOpenChat(thread.threadId)}
+              onSelect={() => selectChatTab(thread.threadId)}
               onClose={() => closeChatTab(thread.threadId)}
             />
           ))}
           {terminalTabVisible ? (
             <SurfaceTabChip
-              active={props.activeSurface === "terminal"}
+              active={shownTabKey === "terminal"}
               title="Terminal"
               label="Terminal"
               labelClassName="max-w-24"
@@ -428,6 +436,7 @@ export function ChatHeader({
   handoffActionLabel,
   handoffDisabled,
   handoffActionTargets,
+  continueHandoffActionTargets,
   showHandoffAction: showHandoffActionProp,
   gitCwd,
   diffTotals,
@@ -442,8 +451,6 @@ export function ChatHeader({
   environment: environmentProp,
   projectPanel = null,
   libraryPanel = null,
-  chatLayoutAction: chatLayoutActionProp,
-  changeThreadAction: changeThreadActionProp,
   editorChatControls: editorChatControlsProp,
   onRunProjectScript,
   onAddProjectScript,
@@ -452,6 +459,7 @@ export function ChatHeader({
   onToggleDiff,
   onRegisterCommitAndPushTrigger,
   onCreateHandoff,
+  onContinueHandoff,
   onNavigateToThread,
   onRenameThread,
   onCloseThreadPane,
@@ -467,17 +475,10 @@ export function ChatHeader({
   const surfaceMode = surfaceModeProp ?? "single";
   const isSidechat = isSidechatProp ?? false;
   const environment = environmentProp ?? null;
-  const chatLayoutAction = chatLayoutActionProp ?? null;
-  const changeThreadAction = changeThreadActionProp ?? null;
   const editorChatControls = editorChatControlsProp ?? null;
-  const { isMobile, state } = useSidebar();
   const headerRef = useRef<HTMLDivElement>(null);
   const [compact, setCompact] = useState(false);
-  const {
-    additions: diffAdditions,
-    deletions: diffDeletions,
-    hasChanges: showDiffTotals,
-  } = diffTotals;
+  const { additions: diffAdditions, deletions: diffDeletions, hasChanges } = diffTotals;
 
   // Own the open-favorite editor shortcut here so it survives regardless of which editor UI
   // is mounted (the legacy Open-in button, the Environment panel's Editor section, or
@@ -490,9 +491,7 @@ export function ChatHeader({
   });
 
   const isSplitPane = surfaceMode === "split";
-  // Split-chat creation moved to a shortcut only; the header keeps just the inline
-  // "maximize" affordance for an already-split focused pane.
-  const inlineChatLayoutAction = chatLayoutAction?.kind === "maximize" ? chatLayoutAction : null;
+  const showDiffTotals = hasChanges && !isSplitPane;
   const threadIconKind = resolveChatHeaderThreadIconKind(activeThreadEntryPoint, activeThreadTitle);
   const showSidechatTitleChip = isSidechat && compact;
 
@@ -512,7 +511,7 @@ export function ChatHeader({
         provider={provider}
         tone="header"
         className={className}
-        fallback={<FiGitBranch className={className} />}
+        fallback={<GitBranchIcon className={className} />}
       />
     );
   };
@@ -596,10 +595,16 @@ export function ChatHeader({
         className={cn(
           "flex min-w-0 flex-1 items-center",
           editorChatControls ? "h-full overflow-visible" : "overflow-hidden",
-          !isMobile && state === "collapsed" ? "gap-4" : "gap-2 sm:gap-3",
+          "gap-2 sm:gap-3",
         )}
       >
-        {hideSidebarControls ? null : <SidebarHeaderNavigationControls />}
+        {hideSidebarControls ? null : (
+          // The extra end padding keeps the wider gap the collapsed header had (gap-4).
+          <SidebarHeaderNavigationControls
+            className="md:pe-1"
+            collapsedGapClassName="-me-2 sm:-me-3"
+          />
+        )}
         {threadTabs ? (
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {!minimalChrome && threadBreadcrumbs.length > 0 ? (
@@ -666,7 +671,7 @@ export function ChatHeader({
                     {activeThreadTitle}
                   </h2>
                   <ChatComputerLabel />
-                  {showSidechatTitleChip && onCloseThreadPane ? (
+                  {showSidechatTitleChip && !isSplitPane && onCloseThreadPane ? (
                     <IconButton
                       variant="chrome"
                       size="icon-xs"
@@ -727,14 +732,39 @@ export function ChatHeader({
               />
               <TooltipPopup side="bottom">{handoffActionLabel}</TooltipPopup>
             </Tooltip>
-            <ComposerPickerMenuPopup align="end" side="bottom" className="w-48 min-w-48">
-              {handoffActionTargets.map((target) => (
-                <MenuItem key={target.instanceId} onClick={() => onCreateHandoff(target)}>
-                  {/* opacity-100 opts brand icons out of the option row's 80% icon dim. */}
-                  {renderProviderIcon(target.provider, "size-3.5 shrink-0 opacity-100")}
-                  <span>Handoff to {target.label}</span>
-                </MenuItem>
-              ))}
+            <ComposerPickerMenuPopup align="end" side="bottom" className="w-56 min-w-56">
+              {continueHandoffActionTargets.length > 0 ? (
+                <>
+                  <MenuGroup>
+                    <MenuGroupLabel>Continue in this thread</MenuGroupLabel>
+                    {continueHandoffActionTargets.map((target) => (
+                      <MenuItem
+                        key={target.instanceId}
+                        data-handoff-destination="this-thread"
+                        onClick={() => onContinueHandoff(target)}
+                      >
+                        {/* opacity-100 opts brand icons out of the option row's 80% icon dim. */}
+                        {renderProviderIcon(target.provider, "size-3.5 shrink-0 opacity-100")}
+                        <span>{target.label}</span>
+                      </MenuItem>
+                    ))}
+                  </MenuGroup>
+                  <MenuSeparator />
+                </>
+              ) : null}
+              <MenuGroup>
+                <MenuGroupLabel>Continue in a new thread</MenuGroupLabel>
+                {handoffActionTargets.map((target) => (
+                  <MenuItem
+                    key={target.instanceId}
+                    data-handoff-destination="new-thread"
+                    onClick={() => onCreateHandoff(target)}
+                  >
+                    {renderProviderIcon(target.provider, "size-3.5 shrink-0 opacity-100")}
+                    <span>{target.label}</span>
+                  </MenuItem>
+                ))}
+              </MenuGroup>
             </ComposerPickerMenuPopup>
           </Menu>
         ) : null}
@@ -757,41 +787,6 @@ export function ChatHeader({
             hideQuickActionLabel
             visibleWhen="pull-available"
           />
-        ) : null}
-
-        {inlineChatLayoutAction ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <ChatHeaderIconButton
-                  type="button"
-                  label={inlineChatLayoutAction.label}
-                  onClick={inlineChatLayoutAction.onClick}
-                >
-                  <HiMiniArrowsPointingOut className="size-3.5" />
-                </ChatHeaderIconButton>
-              }
-            />
-            <TooltipPopup side="bottom">{inlineChatLayoutAction.label}</TooltipPopup>
-          </Tooltip>
-        ) : null}
-
-        {/* Change thread stays as a standalone control (split/sidechat only). */}
-        {changeThreadAction ? (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <ChatHeaderIconButton
-                  type="button"
-                  label={changeThreadAction.label}
-                  onClick={changeThreadAction.onClick}
-                >
-                  <TbExchange className="size-3.5" />
-                </ChatHeaderIconButton>
-              }
-            />
-            <TooltipPopup side="bottom">{changeThreadAction.label}</TooltipPopup>
-          </Tooltip>
         ) : null}
 
         {/* Environment: one button consolidating Open-in-editor and most git actions into
@@ -845,6 +840,27 @@ export function ChatHeader({
             {rightPanelToggleControl}
           </>
         )}
+        {isSplitPane && onCloseThreadPane ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <ChatHeaderIconButton
+                  type="button"
+                  tone="surface"
+                  label="Close chat"
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onCloseThreadPane();
+                  }}
+                >
+                  <XIcon className="size-4" />
+                </ChatHeaderIconButton>
+              }
+            />
+            <TooltipPopup side="bottom">Close chat</TooltipPopup>
+          </Tooltip>
+        ) : null}
       </div>
     </div>
   );

@@ -40,7 +40,7 @@ describe("execution persistence", () => {
   it("isolates the new open-tab and hub stores between connected computers", async () => {
     const disk = memoryStorage();
     vi.stubGlobal("localStorage", disk);
-    vi.stubGlobal("window", { localStorage: disk });
+    vi.stubGlobal("window", Object.assign(new EventTarget(), { localStorage: disk }));
     const readStores = async (environmentId: string) => {
       await windowStorage(disk, environmentId);
       const { useOpenThreadTabsStore } = await import("../../openThreadTabsStore");

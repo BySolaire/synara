@@ -76,16 +76,10 @@ export const DismissedProviderHealthBannersSchema = Schema.Array(Schema.String);
 
 export function canApplyComposerFocus(input: {
   readonly windowHasFocus: boolean;
-  readonly secondaryChromeReady: boolean;
   readonly editorAvailable: boolean;
   readonly editorDisabled: boolean;
 }): boolean {
-  return (
-    input.windowHasFocus &&
-    input.secondaryChromeReady &&
-    input.editorAvailable &&
-    !input.editorDisabled
-  );
+  return input.windowHasFocus && input.editorAvailable && !input.editorDisabled;
 }
 
 export interface PendingFileUndo {
@@ -344,20 +338,15 @@ export function resolveThreadArtifactWorkspaceRoot(input: {
   return input.isGroupContainer ? null : input.projectCwd;
 }
 
+// Accounts are chosen in the model picker (one tab each). The standalone account menu
+// only steps in when the selected account no longer exists, to name it and offer a
+// replacement.
 export function shouldShowComposerProviderInstancePicker(input: {
-  provider: ProviderKind;
   selectedProviderInstanceId: ProviderInstanceId;
   providerInstances: ReadonlyArray<{ readonly instanceId: ProviderInstanceId }>;
 }): boolean {
-  const selectedInstanceIsConfigured = input.providerInstances.some(
+  return !input.providerInstances.some(
     (instance) => instance.instanceId === input.selectedProviderInstanceId,
-  );
-
-  return (
-    input.provider === "codex" ||
-    input.provider === "claudeAgent" ||
-    input.providerInstances.length > 1 ||
-    !selectedInstanceIsConfigured
   );
 }
 
@@ -1258,6 +1247,7 @@ export type WorktreeCreationFlowOutcome<Result> =
 export async function runWorktreeCreationFlow<Result extends { worktree: { path: string } }>(
   deps: WorktreeCreationFlowDeps<Result>,
 ): Promise<WorktreeCreationFlowOutcome<Result>> {
+  if (deps.resolution.action !== null) return { outcome: "resolved" };
   const unsubscribe = deps.subscribeToProgress((event) => {
     if (
       event.progressId !== deps.progressId ||
@@ -1434,14 +1424,20 @@ export function hasServerAcknowledgedLocalDispatch(input: {
 export const LOCAL_DISPATCH_TURN_TAKEOVER_TIMEOUT_MS = 60_000;
 
 /** The exact label set the transcript's working indicator can render. */
-export type WorkingLabel = "Loading" | "Thinking" | `Starting ${string}…`;
+export type WorkingLabel =
+  | "Loading"
+  | "Thinking"
+  | "Checking message delivery…"
+  | `Starting ${string}…`;
 
 export function resolveWorkingLabel(input: {
   isSendBusy: boolean;
   turnTakenOver: boolean;
   isConnecting?: boolean;
+  isSettlingTurnDispatch?: boolean;
   providerName?: string;
 }): WorkingLabel {
+  if (input.isSettlingTurnDispatch) return "Checking message delivery…";
   if (input.isSendBusy && !input.turnTakenOver) {
     return "Loading";
   }

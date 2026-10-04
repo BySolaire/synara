@@ -1,13 +1,13 @@
-import Migration0130 from "./Migrations/130_RemoteConnectionPreferences.ts";
-import Migration0129 from "./Migrations/129_RemoteDeviceTrust.ts";
+import Migration0134 from "./Migrations/134_RemoteConnectionPreferences.ts";
+import Migration0133 from "./Migrations/133_RemoteDeviceTrust.ts";
 import {
   classifyAccountMigrationLineage,
   migrationTrackerFingerprint,
   validateAccountMigrationSchema,
   type MigrationIdentity,
 } from "./AccountMigrationLineage.ts";
-import Migration0127 from "./Migrations/127_AccountUsageSync.ts";
-import Migration0128 from "./Migrations/128_AccountUsageSyncIdentity.ts";
+import Migration0131 from "./Migrations/131_AccountUsageSync.ts";
+import Migration0132 from "./Migrations/132_AccountUsageSyncIdentity.ts";
 /**
  * MigrationsLive - Migration runner with inline loader
  *
@@ -152,6 +152,10 @@ import Migration0123 from "./Migrations/123_ScrubOrchestrationEventProviderOptio
 import Migration0124 from "./Migrations/124_ProjectionTurnsPendingMessageIndex.ts";
 import Migration0125 from "./Migrations/125_Todos.ts";
 import Migration0126 from "./Migrations/126_ProjectionThreadsSidechatContext.ts";
+import Migration0127 from "./Migrations/127_ProjectImportHistory.ts";
+import Migration0128 from "./Migrations/128_HubWork.ts";
+import Migration0129 from "./Migrations/129_ProjectionThreadsSnooze.ts";
+import Migration0130 from "./Migrations/130_PullRequestAutoFix.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -294,10 +298,14 @@ export const migrationEntries = [
   [124, "ProjectionTurnsPendingMessageIndex", Migration0124],
   [125, "Todos", Migration0125],
   [126, "ProjectionThreadsSidechatContext", Migration0126],
-  [127, "AccountUsageSync", Migration0127],
-  [128, "AccountUsageSyncIdentity", Migration0128],
-  [129, "RemoteDeviceTrust", Migration0129],
-  [130, "RemoteConnectionPreferences", Migration0130],
+  [127, "ProjectImportHistory", Migration0127],
+  [128, "HubWork", Migration0128],
+  [129, "ProjectionThreadsSnooze", Migration0129],
+  [130, "PullRequestAutoFix", Migration0130],
+  [131, "AccountUsageSync", Migration0131],
+  [132, "AccountUsageSyncIdentity", Migration0132],
+  [133, "RemoteDeviceTrust", Migration0133],
+  [134, "RemoteConnectionPreferences", Migration0134],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

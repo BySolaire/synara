@@ -8,6 +8,8 @@ import {
   ProjectId,
   ThreadId,
   TurnId,
+  type ChatAttachment,
+  type MessageId,
   type ModelSelection,
   type RemoteAgentCallerPolicy,
   type OrchestrationThreadShell,
@@ -126,6 +128,19 @@ export type GatewayCreationContext =
       readonly callerThreadId: string;
       readonly callerTurnId: string | null;
       readonly assertAuthority: () => Effect.Effect<void, GatewayToolError>;
+    }
+  | {
+      readonly kind: "hub-work";
+      readonly callerThreadId: string;
+      readonly workItemId: string;
+      readonly batchId: string;
+      readonly sourceTurnId: string | null;
+      readonly assertAuthority: () => Effect.Effect<void, GatewayToolError>;
+      readonly prepareAttachments: (
+        threadId: ThreadId,
+        messageId: MessageId,
+      ) => Effect.Effect<readonly ChatAttachment[], Error>;
+      readonly recordWorker: (threadId: ThreadId) => Effect.Effect<void, Error>;
     }
   | {
       readonly kind: "external-client";
@@ -350,21 +365,22 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
           ),
         );
       }
-      const callerTurnId = context.kind === "provider-session" ? context.callerTurnId! : null;
-      const caller =
+      const callerTurnId =
         context.kind === "provider-session"
-          ? (context.remoteCaller ?? (yield* requireThreadShell(context.callerThreadId)))
-          : null;
-      if (authorizeManagedGoalCreation && caller && "id" in caller) {
-        yield* authorizeManagedGoalCreation({
-          callerThreadId: caller.id,
-          requestedCount: input.threads.length,
-        });
-      }
+          ? context.callerTurnId!
+          : context.kind === "hub-work"
+            ? `hub-work:${context.workItemId}`
+            : null;
+      const caller =
+        context.kind === "provider-session" && context.remoteCaller
+          ? context.remoteCaller
+          : context.kind !== "external-client"
+            ? yield* requireThreadShell(context.callerThreadId)
+            : null;
       const operationId = `gateway:create:${stableGatewayDigest({
         principalKind: context.kind,
         principalId:
-          context.kind === "provider-session" ? context.callerThreadId : context.integrationId,
+          context.kind !== "external-client" ? context.callerThreadId : context.integrationId,
         ...(callerTurnId ? { callerTurnId } : {}),
         requestId: input.requestId,
       })}`;
@@ -380,12 +396,12 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
         );
       }
       const operationStore: CreationOperationStore =
-        context.kind === "provider-session"
+        context.kind !== "external-client"
           ? {
               getExisting: () =>
                 operationRepository.getByScope({
                   callerThreadId: context.callerThreadId,
-                  callerTurnId: context.callerTurnId!,
+                  callerTurnId: callerTurnId!,
                   operationKind: "create_threads",
                 }),
               getById: operationRepository.getById,
@@ -393,7 +409,7 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
                 operationRepository.reserve({
                   ...reservation,
                   callerThreadId: context.callerThreadId,
-                  callerTurnId: context.callerTurnId!,
+                  callerTurnId: callerTurnId!,
                   operationKind: "create_threads",
                 }),
               markDispatching: operationRepository.markDispatching,
@@ -489,6 +505,17 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
           context.assertAuthority,
         );
       }
+      if (
+        authorizeManagedGoalCreation &&
+        caller &&
+        "id" in caller &&
+        context.kind === "provider-session"
+      ) {
+        yield* authorizeManagedGoalCreation({
+          callerThreadId: caller.id,
+          requestedCount: input.threads.length,
+        });
+      }
       const deprecatedBranchName = input.threads.find((spec) => spec.branchName !== undefined);
       if (deprecatedBranchName) {
         return yield* Effect.fail(
@@ -503,7 +530,8 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
       const prepared = yield* Effect.forEach(input.threads, (spec, index) =>
         Effect.gen(function* () {
           if (
-            (context.kind === "external-client" || context.remoteCaller) &&
+            (context.kind === "external-client" ||
+              (context.kind === "provider-session" && context.remoteCaller)) &&
             spec.projectId === undefined
           ) {
             return yield* Effect.fail(
@@ -562,7 +590,7 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
               ? "approval-required"
               : caller!.runtimeMode);
           if (
-            context.kind === "provider-session" &&
+            context.kind !== "external-client" &&
             runtimeModeEscalatesPrivilege(caller!.runtimeMode, runtimeMode)
           ) {
             return yield* Effect.fail(
@@ -572,7 +600,7 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
             );
           }
           if (spec.enableComputerControl === true) {
-            if (context.kind === "provider-session") {
+            if (context.kind !== "external-client") {
               return yield* Effect.fail(
                 new ToolInputError(
                   "Threads cannot delegate computer control to tasks they create.",
@@ -1127,7 +1155,7 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
 
                   const interactionMode = interactionModeForGatewayTarget(entry.target);
                   yield* context.assertAuthority();
-                  if (context.kind === "provider-session" && assertCreateTargetProject) {
+                  if (context.kind !== "external-client" && assertCreateTargetProject) {
                     yield* assertCreateTargetProject({
                       callerThreadId: context.callerThreadId,
                       targetProjectId: entry.projectId,
@@ -1148,10 +1176,23 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
                       worktreePath,
                       creationSource:
                         context.kind === "external-client" ? "external_mcp" : "synara_mcp",
-                      ...(context.kind === "provider-session" && !context.remoteCaller
+                      ...(context.kind !== "external-client" &&
+                      !(context.kind === "provider-session" && context.remoteCaller)
                         ? {
                             sourceThreadId: ThreadId.makeUnsafe(context.callerThreadId),
-                            sourceTurnId: TurnId.makeUnsafe(callerTurnId!),
+                            ...((
+                              context.kind === "provider-session"
+                                ? callerTurnId
+                                : context.sourceTurnId
+                            )
+                              ? {
+                                  sourceTurnId: TurnId.makeUnsafe(
+                                    (context.kind === "provider-session"
+                                      ? callerTurnId
+                                      : context.sourceTurnId)!,
+                                  ),
+                                }
+                              : {}),
                           }
                         : {}),
                       gatewayOperationId: operationId,
@@ -1171,6 +1212,11 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
                     );
 
                   yield* context.assertAuthority();
+                  const attachments =
+                    context.kind === "hub-work"
+                      ? yield* context.prepareAttachments(entry.ids.threadId, entry.ids.messageId)
+                      : [];
+                  yield* context.assertAuthority();
                   yield* orchestrationEngine.dispatch({
                     type: "thread.turn.start",
                     commandId: entry.ids.turnStartCommandId,
@@ -1179,7 +1225,7 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
                       messageId: entry.ids.messageId,
                       role: "user",
                       text: entry.spec.prompt,
-                      attachments: [],
+                      attachments,
                     },
                     modelSelection: entry.target,
                     dispatchMode: "queue",
@@ -1239,18 +1285,20 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
           // Once this completes, late cancellation cannot undo the operation.
           yield* operationStore.complete(
             { operationId, resultJson: JSON.stringify(result), now: gatewayIsoNow() },
-            recordManagedWorkerThreads && caller && "id" in caller
-              ? recordManagedWorkerThreads({
+            Effect.gen(function* () {
+              if (recordManagedWorkerThreads && caller && "id" in caller)
+                yield* recordManagedWorkerThreads({
                   callerThreadId: caller.id,
                   requestId: input.requestId,
-                  batchId: operationId,
+                  batchId: context.kind === "hub-work" ? context.batchId : operationId,
                   threadIds: result.threadIds,
                   titles: result.threads.map((thread) => thread.title),
                   prompts: result.threadIds.map(
                     (threadId) => promptByThreadId.get(threadId) ?? null,
                   ),
-                })
-              : Effect.void,
+                });
+              if (context.kind === "hub-work") yield* context.recordWorker(result.threadIds[0]!);
+            }),
           );
           return { kind: "created" as const, result };
         }).pipe(
@@ -1281,8 +1329,8 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
     }).pipe(
       (effect) =>
         withCreationPlanLock(
-          context.kind === "provider-session"
-            ? `${context.callerThreadId}\u0000${context.callerTurnId ?? "inactive"}`
+          context.kind !== "external-client"
+            ? `${context.callerThreadId}\u0000${context.kind === "hub-work" ? context.workItemId : (context.callerTurnId ?? "inactive")}`
             : `${context.integrationId}\u0000${input.requestId}`,
           effect,
         ),

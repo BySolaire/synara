@@ -12,7 +12,7 @@ import {
 } from "../../components/ui/dialog";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
-import { FolderClosed } from "../../components/FolderClosed";
+import { FolderIcon } from "~/lib/icons";
 import { notifyNativeSurfaceOcclusionChange } from "../nativeSurfaceOcclusion";
 
 type PickerOptions = {
@@ -135,7 +135,7 @@ export function ExecutionFolderPicker({
                 className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-ui text-foreground outline-none hover:bg-accent focus-visible:bg-accent"
                 onClick={() => openFolder(entry.fullPath)}
               >
-                <FolderClosed className="size-4 shrink-0 text-muted-foreground" />
+                <FolderIcon className="size-4 shrink-0 text-muted-foreground" />
                 <span className="truncate">{entry.name}</span>
               </button>
             ))}

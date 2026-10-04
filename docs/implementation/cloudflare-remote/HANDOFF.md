@@ -1,6 +1,41 @@
 # Remote connections — punto di ripartenza
 
-Aggiornato il 1 ottobre 2026. Questo è il riepilogo corrente tra desktop e iOS; i documenti precedenti contengono anche stati storici ormai superati. Il ridisegno della UI e dei chip è in pausa. Successivamente l'utente ha richiesto soltanto nome “Connections” e globo Central Icons su desktop e iOS: applicati alle voci di accesso e ai titoli, senza cambiare il comportamento delle connessioni.
+Aggiornato il **4 ottobre 2026**. Questo checkpoint sostituisce gli stati di pubblicazione e i limiti d'integrazione delle sezioni storiche sotto. La richiesta attuale autorizza l'allineamento alle icone e alle viste recenti su desktop, iPhone e iPad; la precedente pausa del restyling non blocca questo aggiornamento.
+
+## Integrazione desktop e mobile — 4 ottobre 2026
+
+Base desktop integrata: `212dd3bc8f0b19ad62033b32f7ed9ae1a1dbf85e`, dopo 271 commit di main dal checkpoint `4f204aef`. È un merge che conserva i commit e le PR condivise, senza riscrivere la cronologia. Backup pre-integrazione: `codex/remote-before-main-20261004` (`b46c3f6`). Continuare sulle PR esistenti: [desktop/API #1412](https://github.com/Emanuele-web04/synara/pull/1412), [iPhone #1](https://github.com/Emanuele-web04/SynaraIOS/pull/1) e [iPad #2](https://github.com/Emanuele-web04/SynaraIOS/pull/2). La PR iPad rimane basata sul branch iPhone. Questo aggiornamento non è un merge delle PR né un rilascio.
+
+Il controllo ha coperto il delta di main, i contratti RPC e gli incroci con connessioni/account/Inbox, oltre ai conflitti testuali:
+
+| Area                    | Stato dopo l'integrazione                                                                                                                                                                                                                                                                                   |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Database locale         | Main conserva 127–130; le quattro migrazioni account/remote diventano 131–134. La recovery riconosce anche la precedente lineage privata fino a 130, con backup e replay idempotente; conserva identità, cursori, trust, revoche e preferenze. Non modifica le home reali durante i test.                   |
+| Gateway e Hub           | Integrata la coda durevole Hub di main. Un chiamante remoto non eredita l'identità o i privilegi di un coordinatore locale. Le nuove route restano vincolate al computer di esecuzione.                                                                                                                     |
+| Sidebar e Activity      | Conservate liste unificate multi-computer, identità qualificate e selezione per task insieme a rail, snooze, draft e navigazione recenti di main. Le azioni locali non ricadono sul computer sbagliato.                                                                                                     |
+| Creazione progetto      | Resta la scelta del computer e della cartella remota; il controllo cartella adotta la presentazione compatta e la nuova icona di main.                                                                                                                                                                      |
+| Sync account            | Un'importazione tardiva di vecchie chat riapre il relativo intervallo di statistiche/recap già sincronizzato. Checkpoint durevole distinto per identità; retry e restart non perdono il recupero. Restano batch limitati, gate esistenti e tombstone dei recap eliminati.                                   |
+| Mobile: dati e recovery | Snooze e provenienza delle chat importate, paginazione della cronologia importata, stato del lavoro in background, avanzamento della coda Hub e quote per provider instance. Gli invii con esito incerto verificano la ricevuta originale quando il server negozia la capability, senza duplicare il turno. |
+| Mobile: viste           | Nuove icone desktop tramite il resolver condiviso; Connections conserva il globo Central. Tasks con stati/board adattiva, Send as Goal e Tasks del giorno in Inbox. Controlli ed azioni mantengono il computer proprietario.                                                                                |
+
+Riutilizzati `SynaraIcon`, picker modello/account, trasporto, outbox e viste native esistenti. Le nuove strutture mobili per pagine importate e lifecycle delle attività rappresentano contratti senza un proprietario equivalente nel codice precedente. Nessun framework alternativo di sincronizzazione.
+
+### Verifiche di questo checkpoint
+
+Formato, lint (warning presenti, zero errori), typecheck, lineage di 91 release e controllo statico Windows passati. Passati 26 test browser su cinque superfici: Activity, creazione progetto, Inbox, storico Inbox e task Inbox. I due nuovi test per importazioni tardive falliscono sul codice precedente e passano dopo il fix; passati 39 test mirati di reporter e policy. Avvio reale su loopback con home temporanea: health, startup, subscription e proiezioni sane; server arrestato e porta liberata.
+
+Suite workspace finale: **15,999 test passati, 251 saltati, 10 package riusciti**. I salti comprendono 200 test API PostgreSQL senza database di test configurato. Build Debug complete e avvio riusciti su simulatori iPhone 18 Pro e iPad Pro 11, iOS 27; 197 test SwiftPM e 79 fixture condivise contro il desktop passati. Le verifiche visive usano due computer in cache offline, non un nuovo test live. Per inventario mobile, screenshot e limiti vedere il [recap mobile](https://github.com/Emanuele-web04/SynaraIOS/blob/codex/ios-remote-connections/Docs/REMOTE-CONNECTIONS-HANDOFF.md).
+
+### Limiti e ripartenza
+
+- Le prove di questo giro non ripetono il pairing live Mac ↔ Mac o iPhone ↔ Mac, né un rilascio firmato Windows/Linux/TestFlight. Il controllo Windows è statico.
+- I test API PostgreSQL sono esclusi dalla suite di questo giro perché non è configurato un database di test isolato. Non utilizzare Supabase di produzione per sostituirlo. Le precedenti prove PostgreSQL sotto sono storiche.
+- **Saved Inbox richiede ancora il deploy autorizzato** delle migrazioni API `0016_private_inbox_recaps.sql` e `0017_inbox_automatic_sync.sql` e dell'API. Nessuna operazione di produzione eseguita qui. Persistenza: Supabase/PostgreSQL attraverso l'API Cloudflare; non Cloudflare Analytics. Il sync dei totali del profilo conserva `SYNARA_ACCOUNT_PROFILE_SYNC=1`.
+- L'allineamento mobile non promette tutte le funzioni desktop: handoff provider nella stessa chat, gestione amministrativa Hub, interazioni avanzate Tasks e PR auto-fix UI restano esplicitamente elencati nel recap mobile. Menu Electron, shortcut e audio/window chrome sono specifici del desktop.
+
+## Checkpoint storici
+
+Le sezioni successive riportano le verifiche e gli stati delle date indicate. Numeri di migrazione, SHA, stato dei worktree e frasi come “nessuna PR” non descrivono il checkpoint corrente.
 
 ## Inbox privata e MVP mobile — 1 ottobre 2026
 

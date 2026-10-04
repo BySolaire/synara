@@ -14,7 +14,7 @@ import {
 /**
  * Features that ship only in non-Stable builds. Keep a feature out of Stable
  * by adding its key here; promote it by deleting the entry. A provider's key
- * is its ProviderKind: today that is "omp". "groups" is Groups (below);
+ * is its ProviderKind. "groups" is Groups (below);
  * "tasks" is the Tasks to-do list, which replaces Kanban in Beta while Stable
  * keeps Kanban.
  */
@@ -26,13 +26,22 @@ export const GROUPS_BETA_FEATURE = "groups";
 /** Inbox: the Inbox page and its `stats.getRecap` RPC. */
 export const INBOX_BETA_FEATURE = "inbox";
 
+/**
+ * Audio trail (Stable and Beta): the chat message trail moves with the Mac's
+ * audio output and/or the microphone, read by the AppSnap helper's `--audio-level` mode.
+ */
+export const AUDIO_TRAIL_BETA_FEATURE = "audio-trail";
+
+/** Auto-fix CI: the PR menu checkbox, its RPCs, and the server check watcher. */
+export const PULL_REQUEST_AUTO_FIX_BETA_FEATURE = "pull-request-auto-fix";
+
 export const BETA_ONLY_FEATURES: readonly BetaOnlyFeature[] = [
-  "omp",
   GROUPS_BETA_FEATURE,
   INBOX_BETA_FEATURE,
   "tasks",
   "remoteConnections",
   "accountProfileSync",
+  PULL_REQUEST_AUTO_FIX_BETA_FEATURE,
 ];
 
 /**

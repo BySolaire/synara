@@ -307,6 +307,7 @@ describe("workspaceSidebarSearch", () => {
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
     hasLiveTailWork: false,
+    pendingBackgroundWorkCount: 0,
     status: null,
   };
   const session: WorkspaceSession = {

@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AppSettingsSchema,
+  buildProviderInstanceSettingsPatch,
   applyLocalAppSettingsPatch,
   appSettingsPatchToServerSettingsPatch,
   buildInitialServerSettingsMigrationPatch,
@@ -29,8 +30,6 @@ import {
   getDefaultNativeFontSmoothing,
   getCustomModelsByProvider,
   getCustomModelsForProviderInstance,
-  getGitTextGenerationModelOptions,
-  getGitTextGenerationPickerOptions,
   getManageableProviderInstances,
   getProviderInstanceOptions,
   getUnsupportedProviderInstanceOptions,
@@ -286,72 +285,6 @@ describe("getAppModelOptions", () => {
   });
 });
 
-describe("getGitTextGenerationModelOptions", () => {
-  it("merges codex and OpenCode model options for git writing settings", () => {
-    const options = getGitTextGenerationModelOptions({
-      customCodexModels: ["custom/codex-model"],
-      customOpenCodeModels: ["openrouter/gpt-oss-120b"],
-      textGenerationModel: "openai/gpt-5",
-      textGenerationProvider: "opencode",
-    });
-
-    expect(options.some((option) => option.slug === "gpt-5.4-mini")).toBe(true);
-    expect(options.some((option) => option.slug === "openai/gpt-5")).toBe(true);
-    expect(options.some((option) => option.slug === "openrouter/gpt-oss-120b")).toBe(true);
-  });
-
-  it("prefers runtime-discovered OpenCode models for git writing settings", () => {
-    const options = getGitTextGenerationModelOptions(
-      {
-        customCodexModels: [],
-        customOpenCodeModels: [],
-        textGenerationModel: "openrouter/custom-model",
-        textGenerationProvider: "opencode",
-      },
-      {
-        opencode: [{ slug: "openrouter/gpt-oss-120b", name: "GPT OSS 120B" }],
-      },
-    );
-
-    expect(options.some((option) => option.slug === "openrouter/gpt-oss-120b")).toBe(true);
-    expect(options.some((option) => option.slug === "openrouter/custom-model")).toBe(true);
-  });
-
-  it("includes Git text-generation providers and omits chat-only providers", () => {
-    const options = getGitTextGenerationModelOptions({
-      customCodexModels: [],
-      customClaudeModels: ["claude-opus-4-8"],
-      customGrokModels: ["grok-4.6"],
-      customOpenCodeModels: [],
-      textGenerationModel: "gpt-5.6-luna",
-      textGenerationProvider: "codex",
-    });
-
-    expect(options.some((option) => option.provider === "claudeAgent")).toBe(true);
-    expect(options.some((option) => option.provider === "grok")).toBe(false);
-    expect(options.some((option) => option.provider === "antigravity")).toBe(false);
-    expect(options.some((option) => option.provider === "pi")).toBe(false);
-    expect(options.some((option) => option.provider === "devin")).toBe(false);
-  });
-
-  it("omits chat-only providers that have no Git text-generation backend", () => {
-    const options = getGitTextGenerationModelOptions({
-      customCodexModels: [],
-      customClaudeModels: ["claude-opus-4-8"],
-      customGrokModels: ["grok-4.6"],
-      customOpenCodeModels: [],
-      textGenerationModel: "gpt-5.6-luna",
-      textGenerationProvider: "codex",
-    });
-
-    expect(options.some((option) => option.provider === "claudeAgent")).toBe(true);
-    expect(options.some((option) => option.provider === "grok")).toBe(false);
-    expect(options.some((option) => option.provider === "antigravity")).toBe(false);
-    expect(options.some((option) => option.provider === "pi")).toBe(false);
-    expect(options.some((option) => option.provider === "devin")).toBe(false);
-  });
-});
-
 describe("isGitTextGenerationSettingsDirty", () => {
   it("compares the normalized provider and model defaults", () => {
     const defaults = AppSettingsSchema.makeUnsafe({});
@@ -366,6 +299,14 @@ describe("isGitTextGenerationSettingsDirty", () => {
   });
 });
 
+describe("code review sort", () => {
+  it("defaults existing settings to newest and preserves a stored activity order", () => {
+    const decode = Schema.decodeUnknownSync(AppSettingsSchema);
+    expect(decode({}).githubInboxSort).toBe("created");
+    expect(decode({ githubInboxSort: "updated" }).githubInboxSort).toBe("updated");
+  });
+});
+
 describe("removed settings", () => {
   it("ignores a code review list width stored before widths became fractions", () => {
     const decoded = Schema.decodeUnknownSync(AppSettingsSchema)({
@@ -374,13 +315,6 @@ describe("removed settings", () => {
     });
     expect(decoded).not.toHaveProperty("githubInboxListWidth");
     expect(decoded.githubInboxKind).toBe("issue");
-  });
-});
-
-describe("sidebar layout", () => {
-  it("decodes settings without a layout choice as the rail default", () => {
-    const decoded = Schema.decodeUnknownSync(AppSettingsSchema)({ showChatsSection: false });
-    expect(normalizeStoredAppSettings(decoded).sidebarLayout).toBe("rail");
   });
 });
 
@@ -400,52 +334,6 @@ describe("environment panel defaults", () => {
       showEnvironmentInstructions: true,
       showEnvironmentNotepad: true,
     });
-  });
-
-  it("keeps runtime-discovered git-writing models isolated by provider instance", () => {
-    const options = getGitTextGenerationPickerOptions(
-      {
-        customCodexModels: [],
-        customClaudeModels: [],
-        customCursorModels: [],
-        customAntigravityModels: [],
-        customGrokModels: [],
-        customDroidModels: [],
-        customDevinModels: [],
-        customOpenCodeModels: [],
-        customPiModels: [],
-        customOmpModels: [],
-        codexAccounts: [],
-        codexHomePath: "",
-        selectedCodexAccountId: "default",
-        textGenerationModel: "openrouter/work-model",
-        textGenerationProvider: "opencode",
-        textGenerationProviderInstanceId: "opencode_work",
-        providerInstances: {
-          opencode_work: {
-            driver: "opencode",
-            enabled: true,
-            displayName: "OpenCode Work",
-          },
-        },
-      },
-      {
-        opencode: [{ slug: "openrouter/personal-model", name: "Personal Model" }],
-        opencode_work: [{ slug: "openrouter/work-model", name: "Work Model" }],
-      },
-    );
-
-    const defaultModels = options
-      .filter((entry) => entry.instance.instanceId === "opencode")
-      .map((entry) => entry.option.slug);
-    const workModels = options
-      .filter((entry) => entry.instance.instanceId === "opencode_work")
-      .map((entry) => entry.option.slug);
-
-    expect(defaultModels).toContain("openrouter/personal-model");
-    expect(defaultModels).not.toContain("openrouter/work-model");
-    expect(workModels).toContain("openrouter/work-model");
-    expect(workModels).not.toContain("openrouter/personal-model");
   });
 });
 
@@ -1208,6 +1096,49 @@ describe("getProviderInstanceOptions", () => {
     expect(Schema.is(ProviderInstanceId)(accountOption?.instanceId)).toBe(true);
   });
 
+  it("keeps the provider's own name on a default account that only stores overrides", () => {
+    const options = getProviderInstanceOptions({
+      codexAccounts: [],
+      codexHomePath: "",
+      providerInstances: {
+        claudeAgent: { driver: "claudeAgent", accentColor: "#7c3aed" },
+        opencode: { driver: "opencode", displayName: "Team OpenCode" },
+        codex_work: { driver: "codex", accentColor: "#16a34a" },
+      },
+      selectedCodexAccountId: "default",
+    });
+    const byId = new Map(options.map((option) => [String(option.instanceId), option]));
+
+    expect(byId.get("claudeAgent")).toMatchObject({
+      label: "Claude",
+      accentColor: "#7c3aed",
+      isDefault: true,
+    });
+    expect(byId.get("opencode")).toMatchObject({ label: "Team OpenCode", isDefault: true });
+    // A named-by-id account falls back to its humanized id.
+    expect(byId.get("codex_work")).toMatchObject({
+      label: "Codex Work",
+      accentColor: "#16a34a",
+      isDefault: false,
+    });
+    expect(byId.get("codex")?.accentColor).toBeUndefined();
+  });
+
+  it("keeps a migrated Codex account's saved name when its explicit entry only overrides", () => {
+    const instanceId = codexAccountInstanceId("work");
+    const options = getProviderInstanceOptions({
+      codexAccounts: [{ id: "work", label: "Office", homePath: "", shadowHomePath: "" }],
+      codexHomePath: "",
+      providerInstances: { [instanceId]: { driver: "codex", enabled: false } },
+      selectedCodexAccountId: "default",
+    });
+
+    expect(options.find((option) => option.instanceId === instanceId)).toMatchObject({
+      label: "Office",
+      enabled: false,
+    });
+  });
+
   it("keeps unsupported instances visible for missing-driver affordances", () => {
     expect(
       getUnsupportedProviderInstanceOptions({
@@ -1304,6 +1235,150 @@ describe("getProviderInstanceOptions", () => {
       providerInstances: {},
       selectedCodexAccountId: "default",
     });
+  });
+});
+
+describe("buildProviderInstanceSettingsPatch", () => {
+  const instanceId = codexAccountInstanceId("work@example.com");
+  const migrated = {
+    codexAccounts: [
+      {
+        id: "work@example.com",
+        label: "Work",
+        homePath: "/Users/you/.codex-work",
+        shadowHomePath: "",
+      },
+      { id: "side", label: "Side", homePath: "", shadowHomePath: "" },
+    ],
+    codexHomePath: "",
+    providerInstances: {},
+    selectedCodexAccountId: "work@example.com",
+  };
+
+  it("routes a migrated account's rename and homes to its codexAccounts entry", () => {
+    expect(
+      buildProviderInstanceSettingsPatch(
+        migrated,
+        instanceId,
+        { displayName: "Office", config: { shadowHomePath: "/Users/you/.codex-shadow" } },
+        "work@example.com",
+      ),
+    ).toEqual({
+      codexAccounts: [
+        {
+          id: "work@example.com",
+          label: "Office",
+          homePath: "/Users/you/.codex-work",
+          shadowHomePath: "/Users/you/.codex-shadow",
+        },
+        { id: "side", label: "Side", homePath: "", shadowHomePath: "" },
+      ],
+    });
+  });
+
+  it("clears a stale explicit copy of the identity it moves, keeping other overrides", () => {
+    expect(
+      buildProviderInstanceSettingsPatch(
+        {
+          ...migrated,
+          providerInstances: {
+            [instanceId]: {
+              driver: "codex",
+              displayName: "Stale name",
+              enabled: false,
+              config: {
+                homePath: "/stale/home",
+                shadowHomePath: "/stale/shadow",
+                binaryPath: "/opt/work-codex",
+              },
+            },
+          },
+        },
+        instanceId,
+        { config: { homePath: "/Users/you/.codex-office" } },
+        "work@example.com",
+      ),
+    ).toEqual({
+      codexAccounts: [
+        {
+          id: "work@example.com",
+          label: "Work",
+          homePath: "/Users/you/.codex-office",
+          shadowHomePath: "",
+        },
+        { id: "side", label: "Side", homePath: "", shadowHomePath: "" },
+      ],
+      providerInstances: {
+        [instanceId]: {
+          driver: "codex",
+          enabled: false,
+          config: { binaryPath: "/opt/work-codex" },
+        },
+      },
+    });
+  });
+
+  it("keeps a migrated account's other edits on an explicit entry that carries no identity", () => {
+    expect(
+      buildProviderInstanceSettingsPatch(
+        migrated,
+        instanceId,
+        { enabled: false, accentColor: "#16a34a", config: { binaryPath: "/opt/work-codex" } },
+        "work@example.com",
+      ),
+    ).toEqual({
+      providerInstances: {
+        [instanceId]: {
+          driver: "codex",
+          accentColor: "#16a34a",
+          enabled: false,
+          config: { binaryPath: "/opt/work-codex" },
+        },
+      },
+    });
+  });
+
+  it("edits an explicit account in place and clears what the patch empties", () => {
+    expect(
+      buildProviderInstanceSettingsPatch(
+        {
+          ...migrated,
+          providerInstances: {
+            claude_work: {
+              driver: "claudeAgent",
+              displayName: "Work",
+              accentColor: "#2563eb",
+              enabled: true,
+              config: { configDir: "~/.claude-work" },
+            },
+          },
+        },
+        "claude_work",
+        { displayName: "  ", accentColor: null, config: { configDir: "~/.claude-office" } },
+      ),
+    ).toEqual({
+      providerInstances: {
+        claude_work: {
+          driver: "claudeAgent",
+          enabled: true,
+          config: { configDir: "~/.claude-office" },
+        },
+      },
+    });
+  });
+
+  it("gives a default account its first explicit entry", () => {
+    expect(
+      buildProviderInstanceSettingsPatch(migrated, "claudeAgent", { displayName: "Personal" }),
+    ).toEqual({
+      providerInstances: { claudeAgent: { driver: "claudeAgent", displayName: "Personal" } },
+    });
+  });
+
+  it("ignores an account that does not exist", () => {
+    expect(
+      buildProviderInstanceSettingsPatch(migrated, "codex_gone", { enabled: false }),
+    ).toBeNull();
   });
 });
 
@@ -1682,6 +1757,28 @@ describe("provider-indexed custom model settings", () => {
 });
 
 describe("AppSettingsSchema", () => {
+  it("keeps sent-message anchoring enabled for settings saved before the preference existed", () => {
+    const decode = Schema.decodeSync(Schema.fromJsonString(AppSettingsSchema));
+
+    expect(decode(JSON.stringify({ chatFontSizePx: 17 }))).toMatchObject({
+      anchorSentMessagesToTop: true,
+      chatFontSizePx: 17,
+    });
+  });
+
+  it("preserves disabled sent-message anchoring across persistence until defaults are restored", () => {
+    const codec = Schema.fromJsonString(AppSettingsSchema);
+    const decode = Schema.decodeSync(codec);
+    const defaults = decode("{}");
+    const settings = applyLocalAppSettingsPatch(defaults, { anchorSentMessagesToTop: false });
+    const restored = decode(Schema.encodeSync(codec)(settings));
+
+    expect(restored).toMatchObject({ anchorSentMessagesToTop: false });
+    expect(applyLocalAppSettingsPatch(restored, defaults)).toMatchObject({
+      anchorSentMessagesToTop: true,
+    });
+  });
+
   it("opens Tasks as the list until the user picks the Kanban view", () => {
     const decode = Schema.decodeSync(Schema.fromJsonString(AppSettingsSchema));
     expect(decode(JSON.stringify({})).tasksViewMode).toBe("list");
@@ -1747,20 +1844,24 @@ describe("AppSettingsSchema", () => {
       JSON.stringify({
         hiddenProviders: ["some-future-provider", "codex"],
         providerOrder: ["gemini", "codex"],
+        railUsageProviders: ["some-future-provider", "codex", "gemini"],
+        chatFontSizePx: 17,
       }),
     );
 
     expect(decoded).toMatchObject({
       hiddenProviders: ["codex"],
       providerOrder: ["antigravity", "codex"],
+      railUsageProviders: ["codex", "antigravity"],
+      chatFontSizePx: 17,
     });
   });
 
-  it("drops rail and nav ids this build does not know instead of resetting every setting", () => {
+  it("drops rail ids this build does not know and ignores the retired classic-sidebar keys", () => {
     const decode = Schema.decodeSync(Schema.fromJsonString(AppSettingsSchema));
     const decoded = decode(
       JSON.stringify({
-        sidebarLayout: "rail",
+        sidebarLayout: "classic",
         railItemOrder: ["some-future-item", "kanban", "home"],
         hiddenRailItems: ["some-future-item", "studio"],
         sidebarNavOrder: ["some-future-item", "kanban"],
@@ -1769,12 +1870,13 @@ describe("AppSettingsSchema", () => {
     );
 
     expect(decoded).toMatchObject({
-      sidebarLayout: "rail",
       railItemOrder: ["kanban", "home"],
       hiddenRailItems: ["studio"],
-      sidebarNavOrder: ["kanban"],
-      hiddenSidebarNavItems: [],
     });
+    // Settings saved while the classic sidebar existed still decode; its keys are dropped.
+    expect(decoded).not.toHaveProperty("sidebarLayout");
+    expect(decoded).not.toHaveProperty("sidebarNavOrder");
+    expect(decoded).not.toHaveProperty("hiddenSidebarNavItems");
   });
 
   it("defaults the Environment panel closed and preserves an explicit open preference", () => {
@@ -1784,6 +1886,20 @@ describe("AppSettingsSchema", () => {
     expect(
       decode(JSON.stringify({ environmentPanelDefaultOpen: true })).environmentPanelDefaultOpen,
     ).toBe(true);
+  });
+
+  it("keeps usage popover details collapsed by default and preserves an explicit choice", () => {
+    const decode = Schema.decodeSync(Schema.fromJsonString(AppSettingsSchema));
+
+    expect(decode("{}").usageDetailsDefaultOpen).toBe(false);
+    expect(decode("{}").usagePopoverShowResetCredits).toBe(true);
+    expect(decode("{}").usagePopoverShowUsageLines).toBe(true);
+    expect(
+      decode(JSON.stringify({ usagePopoverShowUsageLines: false })).usagePopoverShowUsageLines,
+    ).toBe(false);
+    expect(decode(JSON.stringify({ usageDetailsDefaultOpen: true })).usageDetailsDefaultOpen).toBe(
+      true,
+    );
   });
 
   it("preserves a disabled simulator auto-open preference across settings persistence", () => {

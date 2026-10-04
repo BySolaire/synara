@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -106,7 +106,7 @@ describe("automatic private Inbox history", () => {
           expect(
             JSON.parse(
               yield* Effect.promise(() => readFile(join(f.home, "inbox-sync", file!), "utf8")),
-            ),
+            ).cursor,
           ).toBe(new Date(2026, 9, 2, 4).getTime());
           f.fail();
           const restarted = createAccountInboxReporter(options);
@@ -134,6 +134,79 @@ describe("automatic private Inbox history", () => {
       );
     },
   );
+
+  it("repairs a late historical import after failure/restart within the four-day budget and source identity", async () => {
+    const f = await fixture();
+    vi.mocked(Date.now).mockReturnValue(new Date(2026, 9, 10, 12).getTime());
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const recapQuery = yield* makeRecapStatsQuery();
+        const options = { baseDir: f.home, sql, recapQuery };
+        const initial = createAccountInboxReporter(options);
+        yield* Effect.promise(() => initial.flushNow());
+        initial.stop();
+        const [file] = yield* Effect.promise(() => readdir(join(f.home, "inbox-sync")));
+        const cursorPath = join(f.home, "inbox-sync", file!);
+        // Upgrade an already caught-up installation's original numeric cursor.
+        yield* Effect.promise(() =>
+          writeFile(cursorPath, JSON.stringify(new Date(2026, 9, 10, 4).getTime())),
+        );
+        yield* sql`INSERT INTO projection_projects
+        (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES ('import-project', 'Imported project', '/import', '{}', ${stamp(1)}, ${stamp(1)})`;
+        yield* sql`INSERT INTO projection_threads
+        (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          env_mode, created_at, updated_at)
+        VALUES ('import-thread', 'import-project', 'Imported thread',
+          '{"provider":"codex","model":"gpt-5-codex"}', 'full-access', 'default', 'local', ${stamp(1)}, ${stamp(1)})`;
+        yield* sql`INSERT INTO projection_thread_messages
+        (message_id, thread_id, role, text, is_streaming, source, created_at, updated_at)
+        VALUES ('import-message', 'import-thread', 'user', 'historical prompt', 0, 'native', ${stamp(1)}, ${stamp(1)})`;
+        // Import events keep historical occurred_at, not the time they reached this DB.
+        const payload = JSON.stringify({
+          threadId: "import-thread",
+          messageId: "import-message",
+          role: "user",
+          source: "native",
+          createdAt: stamp(1),
+        });
+        yield* sql`INSERT INTO orchestration_events
+        (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          command_id, actor_kind, payload_json, metadata_json)
+        VALUES ('import-event', 'thread', 'import-thread', 1, 'thread.message-sent', ${stamp(1)},
+          'project-import:import-thread:history:0:0', 'client', ${payload}, '{}')`;
+        yield* sql`INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+        VALUES ('projection.hot', 1, ${stamp(1)})`;
+        f.fail("2026-10-01");
+        const failing = createAccountInboxReporter(options);
+        yield* Effect.promise(() => failing.flushNow());
+        failing.stop();
+        expect(f.pushes.map((p) => [p.day, p.recap.totals.prompts])).toEqual([["2026-10-01", 1]]);
+        f.fail();
+        const restarted = createAccountInboxReporter(options);
+        yield* Effect.promise(() => restarted.flushNow());
+        restarted.stop();
+        expect(f.pushes.map((p) => [p.day, p.recap.totals.prompts])).toEqual([
+          ["2026-10-01", 1],
+          ["2026-10-01", 1],
+        ]);
+        const saved = JSON.parse(yield* Effect.promise(() => readFile(cursorPath, "utf8")));
+        expect(saved.cursor).toBe(new Date(2026, 9, 5, 4).getTime());
+        // Reusing the machine under another source identity gets independent catch-up.
+        const otherHost = "00000000-0000-4000-8000-000000000002";
+        yield* Effect.promise(() =>
+          writeAccountCredentials(f.home, { ...account, hostId: otherHost }),
+        );
+        const other = createAccountInboxReporter(options);
+        yield* Effect.promise(() => other.flushNow());
+        other.stop();
+        expect(f.pushes.at(-1)?.sourceHostId).toBe(otherHost);
+        expect(f.pushes.at(-1)?.recap.totals.prompts).toBe(1);
+        expect(yield* Effect.promise(() => readdir(join(f.home, "inbox-sync")))).toHaveLength(2);
+      }),
+    );
+  });
 
   it("runs without a UI, remains inert on Stable or signed out, and stops its timer", async () => {
     const f = await fixture();

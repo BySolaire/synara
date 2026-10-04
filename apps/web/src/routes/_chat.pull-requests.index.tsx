@@ -7,6 +7,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 
 import {
+  CHAT_BACKGROUND_CLASS_NAME,
   CHAT_MAIN_CONTENT_SURFACE_CLASS_NAME,
   CHAT_MAIN_VIEWPORT_SHELL_CLASS_NAME,
 } from "~/components/chat/composerPickerStyles";
@@ -43,15 +44,20 @@ function GitHubInboxRouteView() {
   return (
     <div className={cn(CHAT_MAIN_VIEWPORT_SHELL_CLASS_NAME, CHAT_MAIN_CONTENT_SURFACE_CLASS_NAME)}>
       <RouteInsetSurface surfaceClassName="bg-transparent">
-        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--color-background-surface)]">
+        <div
+          className={cn(
+            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
+            CHAT_BACKGROUND_CLASS_NAME,
+          )}
+        >
           {/* Like Settings: the title lives at the top of the list column, so this strip only
               holds the sidebar toggle (shown while the sidebar is collapsed) and stays a drag
               region. */}
           <RouteSurfaceHeader
             divider={false}
             className="app-top-bar shrink-0"
-            // Rail keeps the shell band; Classic only needs the visible toggle's height.
-            rowClassName="h-auto [[data-sidebar-layout=rail]_&]:h-[var(--app-top-strip-height)]"
+            // Keeps the shell band's height even though the strip holds only the toggle.
+            rowClassName="h-[var(--app-top-strip-height)]"
           />
           <GitHubInbox
             search={search}

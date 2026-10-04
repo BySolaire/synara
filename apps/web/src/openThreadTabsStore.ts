@@ -13,6 +13,7 @@ import { createJSONStorage, persist, type StateStorage } from "zustand/middlewar
 import { createMemoryStorage } from "./lib/storage";
 import {
   addOpenThreadTab,
+  moveOpenThreadTab,
   normalizeOpenThreadTabIds,
   pruneOpenThreadTabs,
   removeOpenThreadTab,
@@ -22,6 +23,7 @@ interface OpenThreadTabsStoreState {
   threadIds: readonly ThreadId[];
   openThreadTab: (threadId: ThreadId) => void;
   closeThreadTab: (threadId: ThreadId) => void;
+  moveThreadTab: (threadId: ThreadId, overThreadId: ThreadId) => void;
   pruneThreadTabs: (isKept: (threadId: ThreadId) => boolean) => void;
 }
 
@@ -46,25 +48,29 @@ function createOpenThreadTabsStorage(): StateStorage {
 
 export const useOpenThreadTabsStore = create<OpenThreadTabsStoreState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       threadIds: [],
+      // Zustand persist writes even when set returns the same state. Skip set
+      // entirely for unchanged tabs, especially on the layout-effect navigation path.
       openThreadTab: (threadId) => {
-        set((state) => {
-          const threadIds = addOpenThreadTab(state.threadIds, threadId);
-          return threadIds === state.threadIds ? state : { threadIds };
-        });
+        const current = get().threadIds;
+        const threadIds = addOpenThreadTab(current, threadId);
+        if (threadIds !== current) set({ threadIds });
       },
       closeThreadTab: (threadId) => {
-        set((state) => {
-          const threadIds = removeOpenThreadTab(state.threadIds, threadId);
-          return threadIds === state.threadIds ? state : { threadIds };
-        });
+        const current = get().threadIds;
+        const threadIds = removeOpenThreadTab(current, threadId);
+        if (threadIds !== current) set({ threadIds });
+      },
+      moveThreadTab: (threadId, overThreadId) => {
+        const current = get().threadIds;
+        const threadIds = moveOpenThreadTab(current, threadId, overThreadId);
+        if (threadIds !== current) set({ threadIds });
       },
       pruneThreadTabs: (isKept) => {
-        set((state) => {
-          const threadIds = pruneOpenThreadTabs(state.threadIds, isKept);
-          return threadIds === state.threadIds ? state : { threadIds };
-        });
+        const current = get().threadIds;
+        const threadIds = pruneOpenThreadTabs(current, isKept);
+        if (threadIds !== current) set({ threadIds });
       },
     }),
     {

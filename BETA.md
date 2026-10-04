@@ -284,10 +284,10 @@ To put a feature behind the list:
 
 Promote a feature to Stable by deleting its entry; every gate resolves itself.
 
-The list currently contains `omp` (Oh My Pi), `groups` (Hubs), `tasks` (Tasks), `inbox` (Inbox),
-`remoteConnections`, and `accountProfileSync`,
-all available in Beta and gated off in Stable. The rail sidebar layout is available in
-both Stable and Beta.
+The list currently contains `groups` (Hubs), `tasks` (Tasks), `inbox` (Inbox),
+`remoteConnections`, `accountProfileSync`, and `pull-request-auto-fix`, all gated off
+in Stable. Oh My Pi, the rail sidebar layout, and message trail sound are available
+in both Stable and Beta.
 
 On Stable, Hubs are inert rather than hidden data: the server refuses the hub
 APIs, Library routes and gateway tools, stops coordinator wakes and monitoring,
@@ -307,15 +307,24 @@ A Beta client connected to a server that refuses Tasks returns to Kanban.
 account recap RPCs on Stable, the
 web hides its rail and sidebar entries and redirects the route, and a saved rail or
 sidebar order that mentions it is ignored there.
-In Beta, **Save privately** stores an account/workspace-owned snapshot, including
-project names, only on that explicit action. Saved history can be read from the
-account API while its source computers are offline and survives source removal.
-This history is separate from public profile publication and aggregate usage sync.
+In Beta, a signed-in computer automatically saves account/workspace-owned daily
+snapshots, including project names, and catches up its local history. **Save privately**
+requests an immediate update. Saved history can be read from the account API while
+its source computers are offline and survives source removal. Deleting a recap
+prevents automatic re-creation; an explicit Save can restore it. This history is
+separate from public profile publication and aggregate usage sync.
 
 Account profiles additionally require the server opt-in `SYNARA_ACCOUNT_PROFILE_SYNC=1`;
 it activates historical aggregate usage sync for the signed-in account. The UI reads
 the server capability, and publication remains a separate explicit choice.
 See the [profiles trial guide](apps/profiles/README.md).
+
+Message trail sound is opt-in under **Settings → Chat → Message trail sound**
+on macOS desktop in both Stable and Beta. It follows system audio (macOS 14.2+),
+the microphone, or both. The desktop IPC handler refuses other platforms,
+and the web hides the selector on hosts without a supported desktop bridge.
+Only loudness levels are sent to the trail, and the reader stops when the
+visible trail no longer subscribes. First use can request macOS audio access.
 
 ## Diagnostics
 

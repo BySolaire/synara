@@ -13,6 +13,57 @@ import { makeActivity } from "./storeTestFixtures";
 import { isComputerToolName } from "./lib/computerToolPresentation";
 
 describe("deriveWorkLogEntries", () => {
+  it.each([false, true])(
+    "keeps the latest authentication state visible between turns (finished: %s)",
+    (finished) => {
+      const rows = deriveWorkLogEntries(
+        [
+          makeActivity({
+            id: "auth-start",
+            sequence: 1,
+            tone: "info",
+            kind: "auth.status",
+            summary: "Claude authentication started",
+            payload: { provider: "claudeAgent" },
+          }),
+          makeActivity({
+            id: "auth-error",
+            sequence: 2,
+            kind: "auth.status",
+            summary: "Claude authentication needs attention.",
+            tone: "error",
+            payload: { provider: "claudeAgent", detail: "Check your Claude account in Settings." },
+          }),
+          ...(finished
+            ? [
+                makeActivity({
+                  id: "auth-finished",
+                  sequence: 3,
+                  tone: "info",
+                  kind: "auth.status",
+                  summary: "Claude authentication finished",
+                  payload: { provider: "claudeAgent" },
+                }),
+              ]
+            : []),
+        ],
+        TurnId.makeUnsafe("turn-1"),
+        { visibleTurnIds: new Set([TurnId.makeUnsafe("turn-1")]) },
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject(
+        finished
+          ? { label: "Claude authentication finished", tone: "info" }
+          : {
+              label: "Claude authentication needs attention.",
+              detail: "Check your Claude account in Settings.",
+              tone: "error",
+            },
+      );
+      if (finished) expect(rows[0]?.detail).toBeUndefined();
+    },
+  );
+
   it("strips terminal formatting from persisted provider activity details", () => {
     const [entry] = deriveWorkLogEntries(
       [
@@ -120,6 +171,59 @@ describe("deriveWorkLogEntries", () => {
 
     const entries = deriveWorkLogEntries(activities, undefined);
     expect(entries.map((entry) => entry.id)).toEqual(["task-progress"]);
+  });
+
+  it("adds a visible row when a task moved to the background finishes", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "moved",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "runtime.warning",
+        summary: "Moved to background",
+        tone: "info",
+        turnId: "turn-1",
+        payload: {
+          message: "Server startup",
+          detail: "Server startup",
+          nativeEventType: "background_tasks_changed",
+          data: {
+            subtype: "background_tasks_changed",
+            tasks: [
+              { task_id: "agent-1", task_type: "local_agent", description: "Server startup" },
+            ],
+          },
+        },
+      }),
+      // A foreground command task finishing must not add a row.
+      makeActivity({
+        id: "bash-done",
+        createdAt: "2026-02-23T00:00:30.000Z",
+        kind: "task.completed",
+        summary: "Task completed",
+        tone: "info",
+        payload: { taskId: "bash-1", status: "completed" },
+      }),
+      makeActivity({
+        id: "agent-done",
+        createdAt: "2026-02-23T00:01:00.000Z",
+        kind: "task.completed",
+        summary: "Task completed",
+        tone: "info",
+        payload: { taskId: "agent-1", status: "completed", detail: "Report" },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined, {
+      visibleTurnIds: new Set([TurnId.makeUnsafe("turn-1")]),
+    });
+    const completion = entries.find((entry) => entry.backgroundTaskCompletion);
+    expect(entries.map((entry) => entry.id)).toEqual(["moved", "agent-done"]);
+    expect(completion?.label).toBe("Subagent finished: Server startup");
+    expect(completion?.backgroundTaskCompletion).toEqual({
+      taskId: "agent-1",
+      taskType: "local_agent",
+      description: "Server startup",
+    });
   });
 
   it("collapses task-list snapshots into one progressing row per turn", () => {
@@ -389,6 +493,67 @@ describe("deriveWorkLogEntries", () => {
       },
     });
     expect(entry?.providerContextLifecycle?.recapPreview?.length).toBeLessThanOrEqual(600);
+  });
+
+  it("derives same-thread handoff rows with source, target, and transferred context", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "provider-handoff",
+          kind: "provider.handoff",
+          summary: "Handed off from Codex (gpt-5.4) to Claude (claude-sonnet-4-6)",
+          tone: "info",
+          payload: {
+            sourceProvider: "codex",
+            sourceModel: "gpt-5.4",
+            targetProvider: "claudeAgent",
+            targetModel: "claude-sonnet-4-6",
+            contextText: "User:\nfix the flaky test",
+            contextCharacters: 24,
+          },
+        }),
+        makeActivity({
+          id: "provider-handoff-failed",
+          kind: "provider.handoff.failed",
+          summary: "Handoff to Claude (claude-sonnet-4-6) failed",
+          tone: "error",
+          payload: {
+            sourceProvider: "codex",
+            sourceModel: "gpt-5.4",
+            targetProvider: "claudeAgent",
+            targetModel: "claude-sonnet-4-6",
+            detail: "Claude could not start.",
+          },
+        }),
+      ],
+      TurnId.makeUnsafe("turn-visible"),
+      { visibleTurnIds: new Set([TurnId.makeUnsafe("turn-visible")]) },
+    );
+
+    expect(entries.map((entry) => entry.providerHandoff)).toEqual([
+      {
+        status: "completed",
+        sourceProvider: "codex",
+        sourceModel: "gpt-5.4",
+        targetProvider: "claudeAgent",
+        targetModel: "claude-sonnet-4-6",
+        sourceModelSelection: { provider: "codex", model: "gpt-5.4" },
+        targetModelSelection: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+        contextText: "User:\nfix the flaky test",
+        failureDetail: null,
+      },
+      {
+        status: "failed",
+        sourceProvider: "codex",
+        sourceModel: "gpt-5.4",
+        targetProvider: "claudeAgent",
+        targetModel: "claude-sonnet-4-6",
+        sourceModelSelection: { provider: "codex", model: "gpt-5.4" },
+        targetModelSelection: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+        contextText: null,
+        failureDetail: "Claude could not start.",
+      },
+    ]);
   });
 
   it("keeps native-history loss visible when the provider sent no recap", () => {
@@ -2963,31 +3128,29 @@ describe("deriveWorkLogEntries", () => {
 
   it("settles orphaned activity from latest-turn state after a reconnect gap", () => {
     const turnId = TurnId.makeUnsafe("turn-with-reconnect-gap");
-    const entries = deriveWorkLogEntries(
-      [
-        makeActivity({
-          id: "reconnected-command-start",
-          createdAt: "2026-02-23T00:00:01.000Z",
-          kind: "tool.started",
-          summary: "Bash started",
-          turnId,
-          payload: {
-            itemType: "command_execution",
-            title: "Bash",
-            data: {
-              toolCallId: "reconnected-command",
-              command: "sleep 5",
-            },
-          },
-        }),
-      ],
-      turnId,
-      {
-        activeTurnId: null,
-        latestTurnState: "error",
-        latestTurnCompletedAt: "2026-02-23T00:00:04.000Z",
+    const payload = {
+      itemType: "command_execution",
+      title: "Bash",
+      data: {
+        toolCallId: "reconnected-command",
+        command: "sleep 5",
       },
-    );
+    };
+    const activity = makeActivity({
+      id: "reconnected-command-start",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      kind: "tool.started",
+      summary: "Bash started",
+      turnId,
+      payload,
+    });
+    const running = deriveWorkLogEntries([activity], turnId, { activeTurnId: turnId });
+    expect(running[0]?.toolStatus).toBe("running");
+    const entries = deriveWorkLogEntries([activity], turnId, {
+      activeTurnId: null,
+      latestTurnState: "error",
+      latestTurnCompletedAt: "2026-02-23T00:00:04.000Z",
+    });
 
     expect(entries[0]?.liveActivity).toMatchObject({
       state: "failed",
@@ -2995,6 +3158,17 @@ describe("deriveWorkLogEntries", () => {
       elapsedSeconds: 3,
     });
     expect(entries[0]?.toolStatus).toBe("failed");
+    // Reconciliation belongs to the current thread projection, not the retained
+    // activity: recovering the running projection must not keep a cached failure.
+    expect(deriveWorkLogEntries([activity], turnId, { activeTurnId: turnId })).toEqual(running);
+    // A replacement of the same event id carries fresh provider metadata.
+    const replacement = {
+      ...activity,
+      payload: { ...payload, detail: "Provider resumed the command" },
+    };
+    expect(deriveWorkLogEntries([replacement], turnId, { activeTurnId: turnId })[0]?.detail).toBe(
+      "Provider resumed the command",
+    );
   });
 
   it("advances retained elapsed time across metadata-only updates", () => {
@@ -4333,6 +4507,18 @@ describe("deriveWorkLogEntries context window handling", () => {
     expect(entries[0]?.label).toBe("Ran command");
   });
 
+  it.each(["pull-request.auto-fix.paused", "pull-request.auto-fix.stopped"])(
+    "keeps thread-level %s notices in a turn-filtered transcript",
+    (kind) => {
+      const entries = deriveWorkLogEntries(
+        [makeActivity({ id: kind, kind, summary: "Auto-fix CI needs attention" })],
+        TurnId.makeUnsafe("visible-turn"),
+        { visibleTurnIds: new Set([TurnId.makeUnsafe("visible-turn")]) },
+      );
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.label).toBe("Auto-fix CI needs attention");
+    },
+  );
   it("keeps thread-level compaction progress entries visible without a turn id", () => {
     const entries = deriveWorkLogEntries(
       [

@@ -40,6 +40,7 @@ const thread = (date: string, projectId = "same-project"): WorkspaceSummary["thr
   hasPendingUserInput: false,
   hasActionableProposedPlan: false,
   hasLiveTailWork: false,
+  pendingBackgroundWorkCount: 0,
   status: null,
 });
 const session = (environmentId = "mini"): WorkspaceSession => ({

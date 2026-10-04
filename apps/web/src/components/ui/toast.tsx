@@ -50,10 +50,12 @@ type ThreadToastData = {
   threadId?: ThreadId | null;
   tooltipStyle?: boolean;
   dismissAfterVisibleMs?: number;
+  /** Compact Undo toast for chat actions. Archive links to its Settings list; snooze passes a message. */
   archiveUndo?: {
     onUndo: () => boolean | Promise<boolean>;
-    onViewArchived: () => void | Promise<void>;
+    onViewArchived?: () => void | Promise<void>;
     onNoUndo?: () => void;
+    message?: string;
   };
 };
 
@@ -101,7 +103,7 @@ function toastRootClassName(
   tone: NotificationTone,
 ): string {
   return cn(
-    notificationSurfaceClassName({ compact, tone }),
+    notificationSurfaceClassName({ compact, tone, floating: true }),
     position.includes("center") ? "mx-auto" : compact ? "" : "w-full",
   );
 }
@@ -323,7 +325,6 @@ function ToastActions({
       ))}
       {actionProps && (
         <Toast.Action
-          {...actionProps}
           className={cn(
             buttonVariants({
               size: TOAST_ACTION_BUTTON_SIZE,
@@ -431,7 +432,7 @@ function ArchiveUndoToastSurface({
   const handleViewArchivedClick = () => {
     if (actionsDisabled) return;
     archiveUndo.onNoUndo?.();
-    void archiveUndo.onViewArchived();
+    void archiveUndo.onViewArchived?.();
   };
 
   return (
@@ -454,6 +455,7 @@ function ArchiveUndoToastSurface({
           data-slot="toast-title"
           render={<div />}
         >
+          {archiveUndo.message ? <>{archiveUndo.message}. </> : null}
           <button
             type="button"
             className={ARCHIVE_UNDO_TOAST_LINK_CLASS_NAME}
@@ -462,16 +464,21 @@ function ArchiveUndoToastSurface({
             onClick={handleUndoClick}
           >
             Undo
-          </button>{" "}
-          or view archived chats in{" "}
-          <Toast.Close
-            className={ARCHIVE_UNDO_TOAST_LINK_CLASS_NAME}
-            data-base-ui-swipe-ignore
-            disabled={actionsDisabled}
-            onClick={handleViewArchivedClick}
-          >
-            Settings
-          </Toast.Close>
+          </button>
+          {archiveUndo.onViewArchived ? (
+            <>
+              {" "}
+              or view archived chats in{" "}
+              <Toast.Close
+                className={ARCHIVE_UNDO_TOAST_LINK_CLASS_NAME}
+                data-base-ui-swipe-ignore
+                disabled={actionsDisabled}
+                onClick={handleViewArchivedClick}
+              >
+                Settings
+              </Toast.Close>
+            </>
+          ) : null}
         </Toast.Title>
         <ToastCloseButton compact disabled={undoPending} onClose={archiveUndo.onNoUndo} />
       </Toast.Content>
@@ -556,7 +563,6 @@ function ToastSurface({
 
       {compactContextual && toast.actionProps ? (
         <Toast.Action
-          {...toast.actionProps}
           className={cn(
             "mt-0.5 shrink-0 rounded-md px-1.5 py-0.5 font-medium text-[var(--notification-fg)]/76 transition-colors hover:bg-[var(--notification-fg)]/10 hover:text-[var(--notification-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--notification-fg)]/35",
             toast.actionProps.className,
@@ -671,6 +677,10 @@ function Toasts({ position: positionProp }: { position: ToastPosition }) {
                 "data-[position=top-center]:[--toast-peek:0px] data-[position=top-center]:[--toast-scale:1] data-[position=top-center]:[--toast-shrink:0]",
                 "data-[position=top-center]:transform-[translateX(var(--toast-swipe-movement-x))_translateY(var(--toast-swipe-movement-y))]",
                 "data-[position=top-center]:data-expanded:transform-[translateX(var(--toast-swipe-movement-x))_translateY(calc(var(--toast-offset-y)+var(--toast-swipe-movement-y)))]",
+                // With no peek, toasts behind the front one would sit exactly under it and
+                // show their edges when wider; hide them until hover expands the stack.
+                hideCollapsedContent &&
+                  "data-[position=top-center]:not-data-expanded:pointer-events-none data-[position=top-center]:not-data-expanded:opacity-0",
                 // Define offset-y variable
                 "data-[position*=top]:[--toast-calc-offset-y:calc(var(--toast-offset-y)+var(--toast-index)*var(--toast-gap)+var(--toast-swipe-movement-y))]",
                 "data-[position*=bottom]:[--toast-calc-offset-y:calc(var(--toast-offset-y)*-1+var(--toast-index)*var(--toast-gap)*-1+var(--toast-swipe-movement-y))]",
@@ -794,7 +804,11 @@ function AnchoredToasts() {
                     "relative text-balance transition-[scale,opacity] data-ending-style:scale-98 data-starting-style:scale-98 data-ending-style:opacity-0 data-starting-style:opacity-0",
                     tooltipStyle
                       ? "rounded-lg border bg-popover text-popover-foreground text-ui leading-snug shadow-md/5 [-webkit-app-region:no-drag] before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]"
-                      : notificationSurfaceClassName({ compact, tone: toastTone(toast.type) }),
+                      : notificationSurfaceClassName({
+                          compact,
+                          tone: toastTone(toast.type),
+                          floating: true,
+                        }),
                   )}
                   data-slot="toast-popup"
                   toast={toast}

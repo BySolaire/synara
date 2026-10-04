@@ -3,7 +3,7 @@
 // Layer: Web settings UI
 // Exports: ThemePackEditor
 
-import { DESKTOP_WINDOW_BLUR_RADIUS_MAX } from "@synara/contracts";
+import { DESKTOP_WINDOW_BLUR_RADIUS_MAX, DESKTOP_WINDOW_BLUR_RADIUS_MIN } from "@synara/contracts";
 import { type CSSProperties, useEffect, useId, useMemo, useRef, useState } from "react";
 import { HexColorPicker } from "react-colorful";
 import { Button } from "./ui/button";
@@ -21,6 +21,7 @@ import { Input } from "./ui/input";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
 import { Select, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { DisclosureRegion } from "./ui/DisclosureRegion";
+import { Switch } from "./ui/switch";
 import { Textarea } from "./ui/textarea";
 import { toastManager } from "./ui/toast";
 import { SettingsSegmentedControl } from "./settings/SettingControls";
@@ -37,6 +38,8 @@ import { ELEVATED_HOVER_SURFACE_RAISED_TEXT_CLASS_NAME } from "../surfaceStyles"
 import {
   CODE_THEME_OPTIONS,
   DEFAULT_THEME_STATE,
+  VIBRANCY_EQUIVALENT_BLUR_RADIUS,
+  WINDOW_TRANSLUCENCY_OPACITY_MIN,
   buildThemeCssVariables,
   getAvailableCodeThemes,
   getCodeThemeSeed,
@@ -50,7 +53,7 @@ type ThemePackEditorProps = {
 };
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
-const SIDEBAR_MATERIAL_OPTIONS = [
+const WINDOW_MATERIAL_OPTIONS = [
   { value: "solid", label: "Solid" },
   { value: "translucent", label: "Translucent" },
 ] as const;
@@ -79,6 +82,7 @@ export function ThemePackEditor({
     resolvedTheme,
     theme: themeMode,
     systemUiFont,
+    desktopBlurUnavailable,
     setWindowTranslucency,
     translucency: translucencyByVariant,
     updateThemePack,
@@ -312,14 +316,14 @@ export function ThemePackEditor({
         </ThemeRow>
 
         <div>
-          <ThemeRow label="Sidebar">
+          <ThemeRow label="Window">
             <SettingsSegmentedControl
               value={theme.opaqueWindows ? "solid" : "translucent"}
               onValueChange={(value) =>
                 updateThemePack(variant, { opaqueWindows: value === "solid" })
               }
-              ariaLabel={`${titleLabel} sidebar material`}
-              options={SIDEBAR_MATERIAL_OPTIONS}
+              ariaLabel={`${titleLabel} window material`}
+              options={WINDOW_MATERIAL_OPTIONS}
             />
           </ThemeRow>
           <DisclosureRegion open={!theme.opaqueWindows}>
@@ -329,18 +333,40 @@ export function ThemePackEditor({
                 "border-t border-[color:var(--color-border)]",
               )}
             >
+              <ThemeRow label="Sidebar only">
+                <Switch
+                  checked={translucency.sidebarOnly}
+                  onCheckedChange={(checked) =>
+                    setWindowTranslucency(variant, { sidebarOnly: checked })
+                  }
+                  aria-label={`${titleLabel} translucent sidebar only`}
+                />
+              </ThemeRow>
               <ThemeRow label="Opacity">
                 <ThemeSlider
                   value={translucency.opacity}
+                  min={WINDOW_TRANSLUCENCY_OPACITY_MIN}
                   max={100}
                   suffix="%"
                   onChange={(next) => setWindowTranslucency(variant, { opacity: next })}
-                  ariaLabel={`${titleLabel} sidebar opacity`}
+                  ariaLabel={`${titleLabel} translucency opacity`}
                 />
               </ThemeRow>
               <ThemeRow label="Blur">
+                {translucency.blur !== null ? (
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    onClick={() => setWindowTranslucency(variant, { blur: null })}
+                    aria-label={`${titleLabel} automatic background blur`}
+                  >
+                    {isActive && desktopBlurUnavailable ? "Unavailable, use Auto" : "Auto"}
+                  </Button>
+                ) : null}
                 <ThemeSlider
-                  value={translucency.blur}
+                  value={translucency.blur ?? VIBRANCY_EQUIVALENT_BLUR_RADIUS}
+                  {...(translucency.blur === null ? { valueLabel: "Auto" } : {})}
+                  min={DESKTOP_WINDOW_BLUR_RADIUS_MIN}
                   max={DESKTOP_WINDOW_BLUR_RADIUS_MAX}
                   onChange={(next) => setWindowTranslucency(variant, { blur: next })}
                   ariaLabel={`${titleLabel} background blur`}
@@ -608,25 +634,30 @@ function FontInput({
 
 function ThemeSlider({
   value,
+  min = 0,
   max,
   suffix = "",
+  valueLabel,
   onChange,
   ariaLabel,
 }: {
   value: number;
+  min?: number;
   max: number;
   suffix?: string;
+  /** Shown instead of the number, e.g. while the value is still the automatic default. */
+  valueLabel?: string;
   onChange: (next: number) => void;
   ariaLabel: string;
 }) {
   const id = useId();
-  const fillPct = Math.max(0, Math.min(100, (value / max) * 100));
+  const fillPct = Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
   return (
     <div className="flex items-center gap-3">
       <input
         id={id}
         type="range"
-        min={0}
+        min={min}
         max={max}
         step={1}
         value={value}
@@ -638,8 +669,7 @@ function ThemeSlider({
         }}
       />
       <span className="w-10 text-right font-chat-code text-ui leading-snug text-muted-foreground tabular-nums">
-        {value}
-        {suffix}
+        {valueLabel ?? `${value}${suffix}`}
       </span>
     </div>
   );
