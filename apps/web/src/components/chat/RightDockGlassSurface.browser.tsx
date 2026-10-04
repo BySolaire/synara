@@ -122,53 +122,58 @@ it.each([
   { theme: "light" as const, split: true },
   { theme: "dark" as const, split: false },
   { theme: "dark" as const, split: true },
-])("keeps $theme changed rows tinted glass in glass diffs (split: $split)", async ({ theme, split }) => {
-  root.classList.toggle("dark", theme === "dark");
-  root.setAttribute("data-window-translucency", "window");
-  const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
-  const view = await render(
-    <QueryClientProvider client={client}>
-      <div data-slot="sidebar-container">
-        <div data-right-dock-content style={{ width: 600, height: 240, display: "flex" }}>
-          <CodeDiffEditorPane
-            original="const unchanged = 0;\nconst before = 1;\n"
-            originalVersion={0}
-            modified="const unchanged = 0;\nconst after = 2;\n"
-            modifiedVersion={0}
-            fileName="sample.ts"
-            resolvedTheme={theme}
-            renderSideBySide={split}
-            onChange={() => {}}
-            onSave={() => {}}
-          />
+])(
+  "keeps $theme changed rows tinted glass in glass diffs (split: $split)",
+  async ({ theme, split }) => {
+    root.classList.toggle("dark", theme === "dark");
+    root.setAttribute("data-window-translucency", "window");
+    const client = new QueryClient({
+      defaultOptions: { queries: { enabled: false, retry: false } },
+    });
+    const view = await render(
+      <QueryClientProvider client={client}>
+        <div data-slot="sidebar-container">
+          <div data-right-dock-content style={{ width: 600, height: 240, display: "flex" }}>
+            <CodeDiffEditorPane
+              original="const unchanged = 0;\nconst before = 1;\n"
+              originalVersion={0}
+              modified="const unchanged = 0;\nconst after = 2;\n"
+              modifiedVersion={0}
+              fileName="sample.ts"
+              resolvedTheme={theme}
+              renderSideBySide={split}
+              onChange={() => {}}
+              onSave={() => {}}
+            />
+          </div>
         </div>
-      </div>
-    </QueryClientProvider>,
-  );
-  await expect.element(page.getByRole("textbox")).toBeVisible();
-  const shadow = page.getByRole("textbox").element().getRootNode() as ShadowRoot;
-  const changes = [
-    ...shadow.querySelectorAll<HTMLElement>(
-      '[data-line-type="change-addition"], [data-line-type="change-deletion"]',
-    ),
-  ];
-  expect(changes.length).toBeGreaterThan(0);
-  // Tinted (not washed out to clear) yet see-through. Context stays clear.
-  for (const row of changes) {
-    const color = getComputedStyle(
-      row,
-      row.hasAttribute("data-line") ? "::after" : null,
-    ).backgroundColor;
+      </QueryClientProvider>,
+    );
+    await expect.element(page.getByRole("textbox")).toBeVisible();
+    const shadow = page.getByRole("textbox").element().getRootNode() as ShadowRoot;
+    const changes = [
+      ...shadow.querySelectorAll<HTMLElement>(
+        '[data-line-type="change-addition"], [data-line-type="change-deletion"]',
+      ),
+    ];
+    expect(changes.length).toBeGreaterThan(0);
+    // Tinted (not washed out to clear) yet see-through. Context stays clear.
+    for (const row of changes) {
+      const color = getComputedStyle(
+        row,
+        row.hasAttribute("data-line") ? "::after" : null,
+      ).backgroundColor;
 
-    const alpha = color.includes("/")
-      ? Number(color.match(/\/ ([\d.]+)\)$/)?.[1])
-      : color.startsWith("rgba")
-        ? Number(color.match(/, ([\d.]+)\)$/)?.[1])
-        : 1;
-    expect(alpha, color).toBeGreaterThan(0.05);
-    expect(alpha, color).toBeLessThan(0.5);
-  }
-  expect(isClear(shadow.querySelector("[data-code]"))).toBe(true);
-  await view.unmount();
-  root.classList.remove("dark");
-});
+      const alpha = color.includes("/")
+        ? Number(color.match(/\/ ([\d.]+)\)$/)?.[1])
+        : color.startsWith("rgba")
+          ? Number(color.match(/, ([\d.]+)\)$/)?.[1])
+          : 1;
+      expect(alpha, color).toBeGreaterThan(0.05);
+      expect(alpha, color).toBeLessThan(0.5);
+    }
+    expect(isClear(shadow.querySelector("[data-code]"))).toBe(true);
+    await view.unmount();
+    root.classList.remove("dark");
+  },
+);
