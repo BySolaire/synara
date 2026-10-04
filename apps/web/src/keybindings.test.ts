@@ -635,12 +635,12 @@ describe("thread tab shortcuts", () => {
     terminalFocus = false,
   ) => resolveShortcutCommand(event(overrides), [], { platform, context: { terminalFocus } });
 
-  it("uses Cmd+Option+Arrow on macOS, including from a focused terminal", () => {
-    const right = { key: "ArrowRight", metaKey: true, altKey: true };
+  it("uses Cmd+Ctrl+Arrow on macOS, including from a focused terminal", () => {
+    const right = { key: "ArrowRight", metaKey: true, ctrlKey: true };
     assert.strictEqual(resolve(right, "MacIntel"), "threadTab.next");
     assert.strictEqual(resolve(right, "MacIntel", true), "threadTab.next");
     assert.strictEqual(
-      resolve({ key: "ArrowLeft", metaKey: true, altKey: true }, "MacIntel"),
+      resolve({ key: "ArrowLeft", metaKey: true, ctrlKey: true }, "MacIntel"),
       "threadTab.previous",
     );
     // Cmd+Shift+Arrow stays text selection in the composer.

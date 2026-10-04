@@ -5020,7 +5020,7 @@ export default function Sidebar() {
     isSubagentThread: boolean;
     threadJumpLabel: string | null;
     rightMetaChips: ThreadMetaChip[];
-    pr?: ThreadPullRequest | null;
+    prChip: ThreadMetaChip | null;
     threadStatus: ReturnType<typeof resolveThreadStatusForSidebar>;
     timestampToneClassName?: string;
     hoverActions: ReactNode;
@@ -5058,9 +5058,9 @@ export default function Sidebar() {
             <SidebarStatusTrailingGlyph status={trailingStatus} />
           </span>
         ) : null}
-        {input.pr ? (
+        {input.prChip ? (
           <div className={cn("shrink-0", THREAD_ROW_META_CHIP_HOVER_FADE_CLASS_NAME)}>
-            <SidebarMetaChipStack chips={[resolveThreadRowPrChip(input.pr)]} />
+            <SidebarMetaChipStack chips={[input.prChip]} />
           </div>
         ) : null}
         {input.hoverActions}
@@ -5237,7 +5237,8 @@ export default function Sidebar() {
     const threadStatus = resolveThreadStatusForSidebar(thread);
     const isSubagentThread = Boolean(thread.parentThreadId);
     const pr = prByThreadId.get(thread.id) ?? null;
-    const trailingPr = isSubagentThread || thread.forkSourceThreadId ? null : pr;
+    const prChip =
+      !isSubagentThread && !thread.forkSourceThreadId && pr ? resolveThreadRowPrChip(pr) : null;
     const threadJumpLabel = visibleThreadJumpLabelByThreadId.get(thread.id) ?? null;
     const hoverAnchorId = createSidebarThreadHoverAnchorId({
       scope: "pinned",
@@ -5259,6 +5260,7 @@ export default function Sidebar() {
             tabIndex={0}
             data-thread-item
             aria-label={resolveThreadRowAriaLabel(thread)}
+            aria-description={prChip?.tooltip}
             className={cn(
               SIDEBAR_HEADER_ROW_CLASS_NAME,
               // Metadata and shortcut hints occupy their actual width in the flex row.
@@ -5322,7 +5324,7 @@ export default function Sidebar() {
                 isSubagentThread,
                 threadJumpLabel,
                 rightMetaChips,
-                pr: trailingPr,
+                prChip,
                 threadStatus,
                 timestampToneClassName: "text-muted-foreground/38",
                 hoverActions: renderThreadHoverActions({
@@ -5381,7 +5383,8 @@ export default function Sidebar() {
       threadAutomations: automationsByThreadId.get(thread.id),
     });
     const isSubagentThread = Boolean(thread.parentThreadId);
-    const trailingPr = isSubagentThread || thread.forkSourceThreadId ? null : pr;
+    const prChip =
+      !isSubagentThread && !thread.forkSourceThreadId && pr ? resolveThreadRowPrChip(pr) : null;
     const subagentIndentPx = Math.max(0, Math.min(depth - 1, 3) * 10);
     const showCompactMeta = !isSubagentThread;
     const showTemporaryThreadIcon = showCompactMeta && isTemporaryThread;
@@ -5408,6 +5411,7 @@ export default function Sidebar() {
                 size="sm"
                 isActive={isActive}
                 aria-label={resolveThreadRowAriaLabel(thread)}
+                aria-description={prChip?.tooltip}
                 className={cn(
                   resolveThreadRowClassName({
                     isActive,
@@ -5494,7 +5498,7 @@ export default function Sidebar() {
                 isSubagentThread,
                 threadJumpLabel,
                 rightMetaChips: showCompactMeta ? rightMetaChips : [],
-                pr: trailingPr,
+                prChip,
                 threadStatus,
                 timestampToneClassName: isSubagentThread
                   ? isHighlighted

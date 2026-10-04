@@ -228,12 +228,12 @@ export const DEFAULT_SHORTCUT_FALLBACKS: ResolvedKeybindingsConfig = [
   // Open thread tabs, browser-style; see the server defaults for why the chords differ.
   {
     command: "threadTab.next",
-    shortcut: commandShortcut("arrowright", { altKey: true }),
+    shortcut: commandShortcut("arrowright", { ctrlKey: true }),
     whenAst: whenIdentifier("isMac"),
   },
   {
     command: "threadTab.previous",
-    shortcut: commandShortcut("arrowleft", { altKey: true }),
+    shortcut: commandShortcut("arrowleft", { ctrlKey: true }),
     whenAst: whenIdentifier("isMac"),
   },
   {

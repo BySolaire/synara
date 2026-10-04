@@ -11336,60 +11336,133 @@ describe("ChatView transcript geometry (full app)", () => {
     },
   );
 
+  it.each([false, true])(
+    "keeps the trailing sidebar PR state accessible and clear of hover actions (pinned: %s)",
+    async (pinned) => {
+      const snapshot = createSnapshotForTargetUser({
+        targetMessageId: MessageId.makeUnsafe("sidebar-pr-chip"),
+        targetText: "Review the linked pull request",
+      });
+      const pr = {
+        number: 841,
+        title: "Fix session recovery",
+        url: "https://github.com/acme/synara/pull/841",
+        baseBranch: "main",
+        headBranch: "fix/session-recovery",
+        state: "open" as const,
+        isDraft: false,
+        mergeability: "mergeable" as const,
+      };
+      const previousPins = usePinnedThreadsStore.getState().pinnedThreadIds;
+      usePinnedThreadsStore.setState({ pinnedThreadIds: pinned ? [THREAD_ID] : [] });
+      onTestFinished(() => {
+        usePinnedThreadsStore.setState({ pinnedThreadIds: previousPins });
+      });
+      const mounted = await mountChatView({
+        viewport: { ...DEFAULT_VIEWPORT, width: 1280, height: 800 },
+        snapshot: {
+          ...snapshot,
+          threads: snapshot.threads.map((thread) => ({ ...thread, lastKnownPr: pr })),
+        },
+      });
+      try {
+        const sidebar = document.querySelector<HTMLElement>('[data-slot="sidebar-container"]')!;
+        const row = page.getByRole("button", { name: `Open ${THREAD_TITLE}`, exact: true });
+        await vi.waitFor(() =>
+          expect(useStore.getState().sidebarThreadSummaryById[THREAD_ID]?.lastKnownPr?.number).toBe(
+            841,
+          ),
+        );
+        await expect
+          .element(row, { timeout: 2_000 })
+          .toHaveAccessibleDescription("#841 PR open: Fix session recovery");
+        const rowElement = row.element() as HTMLElement;
+        expect(rowElement.querySelector('button[aria-label*="#841"]')).toBeNull();
+        const wrapper = sidebar.closest<HTMLElement>('[data-slot="sidebar-wrapper"]')!;
+        for (const fontSize of [13, 18]) {
+          const scale = getAppTypographyScale(fontSize);
+          for (const [token, value] of Object.entries({
+            ui: scale.uiPx,
+            "ui-lg": scale.uiLgPx,
+            "ui-sm": scale.uiSmPx,
+            "ui-xs": scale.uiXsPx,
+            "ui-meta": scale.uiMetaPx,
+          })) {
+            document.documentElement.style.setProperty(`--app-font-size-${token}`, `${value}px`);
+          }
+          for (const width of [208, 320]) {
+            wrapper.style.setProperty("--sidebar-width", `${width}px`);
+            await vi.waitFor(() =>
+              expect(sidebar.getBoundingClientRect().width).toBeCloseTo(width, 0),
+            );
+            await userEvent.hover(rowElement);
+            const actions = rowElement.querySelector<HTMLElement>(
+              `[data-testid="thread-hover-actions-${THREAD_ID}"]`,
+            )!;
+            await vi.waitFor(() => {
+              expect(Number(getComputedStyle(actions).opacity)).toBe(1);
+              const title = rowElement.querySelector<HTMLElement>(".truncate-fade")!;
+              expect(title.getBoundingClientRect().right).toBeLessThanOrEqual(
+                actions.getBoundingClientRect().left,
+              );
+            });
+            await userEvent.unhover(rowElement);
+          }
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
   it("steps through horizontal tabs with the previous/next tab shortcuts, wrapping at the ends", async () => {
     useOpenThreadTabsStore.setState({ threadIds: [] });
     const snapshot = createSnapshotForTargetUser({
       targetMessageId: MessageId.makeUnsafe("tab-shortcuts"),
       targetText: "Tab shortcuts conversation",
     });
-    const source = snapshot.threads[0]!;
+    const thirdId = ThreadId.makeUnsafe("tab-shortcuts-third");
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
-      snapshot: {
-        ...snapshot,
-        threads: [
-          ...snapshot.threads,
-          {
-            ...source,
-            id: OTHER_THREAD_ID,
-            title: "Other tab",
-            session: source.session ? { ...source.session, threadId: OTHER_THREAD_ID } : null,
-          },
-        ],
-      },
+      snapshot: addThreadToSnapshot(addThreadToSnapshot(snapshot, OTHER_THREAD_ID), thirdId),
     });
-    const pressTabShortcut = (direction: "next" | "previous") => {
-      const isMac = isMacNavigatorPlatform();
-      window.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          bubbles: true,
-          cancelable: true,
-          ...(isMac
-            ? {
-                key: direction === "next" ? "ArrowRight" : "ArrowLeft",
-                metaKey: true,
-                altKey: true,
-              }
-            : { key: direction === "next" ? "PageDown" : "PageUp", ctrlKey: true }),
-        }),
+    const pressTabShortcut = async (direction: "next" | "previous") => {
+      const key = isMacNavigatorPlatform()
+        ? direction === "next"
+          ? "ArrowRight"
+          : "ArrowLeft"
+        : direction === "next"
+          ? "PageDown"
+          : "PageUp";
+      await userEvent.keyboard(
+        isMacNavigatorPlatform()
+          ? `{Meta>}{Control>}{${key}}{/Control}{/Meta}`
+          : `{Control>}{${key}}{/Control}`,
       );
     };
     const expectRoute = (threadId: ThreadId) =>
       vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe(`/${threadId}`));
     try {
-      useOpenThreadTabsStore.setState({ threadIds: [THREAD_ID, OTHER_THREAD_ID] });
+      useOpenThreadTabsStore.setState({ threadIds: [THREAD_ID, OTHER_THREAD_ID, thirdId] });
       await vi.waitFor(() =>
         expect(
           document.querySelectorAll('nav[aria-label="Open threads"] [data-surface-tab]'),
-        ).toHaveLength(2),
+        ).toHaveLength(3),
       );
 
-      pressTabShortcut("next");
+      document.querySelector<HTMLElement>('[contenteditable="true"]')!.focus();
+      await userEvent.keyboard("Unsent source draft");
+      await pressTabShortcut("next");
       await expectRoute(OTHER_THREAD_ID);
-      pressTabShortcut("next");
+      await pressTabShortcut("next");
+      await expectRoute(thirdId);
+      await pressTabShortcut("next");
       await expectRoute(THREAD_ID);
-      pressTabShortcut("previous");
-      await expectRoute(OTHER_THREAD_ID);
+      expect(document.querySelector('[contenteditable="true"]')?.textContent).toContain(
+        "Unsent source draft",
+      );
+      await pressTabShortcut("previous");
+      await expectRoute(thirdId);
     } finally {
       await mounted.cleanup();
     }
