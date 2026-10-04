@@ -115,14 +115,14 @@ it.each([
   await view.unmount();
 });
 
-// Change tint must remain readable independently of the transparent context fill.
+// Changed rows stay glass on a clear viewer, but keep a visible tint of their own.
 // Exercise actual Pierre split/unified rows, rather than testing CSS source strings.
 it.each([
   { theme: "light" as const, split: false },
   { theme: "light" as const, split: true },
   { theme: "dark" as const, split: false },
   { theme: "dark" as const, split: true },
-])("keeps $theme changed rows dense in glass diffs (split: $split)", async ({ theme, split }) => {
+])("keeps $theme changed rows tinted glass in glass diffs (split: $split)", async ({ theme, split }) => {
   root.classList.toggle("dark", theme === "dark");
   root.setAttribute("data-window-translucency", "window");
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
@@ -153,7 +153,7 @@ it.each([
     ),
   ];
   expect(changes.length).toBeGreaterThan(0);
-  // Alpha >= 0.9 protects readable tint over arbitrary window backdrops. Context stays clear.
+  // Tinted (not washed out to clear) yet see-through. Context stays clear.
   for (const row of changes) {
     const color = getComputedStyle(
       row,
@@ -165,7 +165,8 @@ it.each([
       : color.startsWith("rgba")
         ? Number(color.match(/, ([\d.]+)\)$/)?.[1])
         : 1;
-    expect(alpha, color).toBeGreaterThanOrEqual(0.9);
+    expect(alpha, color).toBeGreaterThan(0.05);
+    expect(alpha, color).toBeLessThan(0.5);
   }
   expect(isClear(shadow.querySelector("[data-code]"))).toBe(true);
   await view.unmount();

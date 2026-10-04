@@ -2871,6 +2871,8 @@ diffs-container {
   --app-code-viewer-surface: transparent;
   --app-code-viewer-sticky-surface: color-mix(in srgb, var(--popover) 96%, transparent);
   --app-code-viewer-gutter-animation: synara-code-gutter-backing;
+  --app-code-viewer-addition-row: color-mix(in srgb, var(--success) 10%, transparent);
+  --app-code-viewer-deletion-row: color-mix(in srgb, var(--destructive) 10%, transparent);
 }
 
 /* Terminals follow the window's glass: xterm resolves its background from this token
