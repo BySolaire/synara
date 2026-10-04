@@ -14,4 +14,4 @@ WorkOS authenticates users; it does not attest a paid subscription. Until an exi
 
 The old relay source, control protocol, ticket issuance and polling feed have been removed alongside its deployment container, Docker workflow and application configuration. Their historical regressions remain in Git history. Live host-session close codes belong to `packages/contracts/src/hostSessions.ts`; current opaque transport and backpressure regressions run against the host gateway and Cloudflare boundary fixture. API and PostgreSQL hosting are separate from the removed traffic relay.
 
-See [operations](../cloudflare-remote.md), [v2 boundaries](../remote-connections-v2.md) and the [T3 compatibility record](../implementation/cloudflare-remote/T3-COMPATIBILITY.md). A fixture proxy, local Electron run or unsigned build is not Cloudflare live qualification.
+See [operations](../cloudflare-remote.md), [v2 boundaries](../remote-connections-v2.md) and the [upstream compatibility record](../implementation/cloudflare-remote/UPSTREAM-COMPATIBILITY.md). A fixture proxy, local Electron run or unsigned build is not Cloudflare live qualification.

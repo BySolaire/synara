@@ -19,8 +19,10 @@ const accountApi = vi.hoisted(() => ({
   openVerificationUrl: vi.fn(),
 }));
 
-vi.mock("~/nativeApi", () => ({
+vi.mock("~/nativeApi", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/nativeApi")>()),
   ensureNativeApi: () => ({ account: accountApi }),
+  readNativeApi: () => ({ account: accountApi }),
 }));
 
 import { SignInDialog } from "./SignInDialog";

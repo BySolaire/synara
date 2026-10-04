@@ -86,17 +86,17 @@ Produrre una mappa corta del ciclo login → registrazione host → tunnel → d
 
 Uscita: piano aggiornato con file reali e criteri di accettazione, senza riaprire la scelta Cloudflare già fatta dall'utente.
 
-## Confronto obbligatorio con T3 Connect / T3 Code
+## Confronto obbligatorio con il riferimento upstream
 
-Prima di scegliere gli innesti concreti, consultare l'implementazione corrente di T3 Connect in pingdotgg/t3code e registrare il commit esaminato. Leggere almeno docs/internals/t3-connect.md, docs/operations/connect-setup.md, docs/user/remote-access.md e infra/relay/README.md, poi seguire soltanto i simboli necessari nel codice. Usare una consultazione in lettura o un checkout separato; non importare in blocco l'upstream nel branch Synara.
+Prima di scegliere gli innesti concreti, consultare l'implementazione corrente del [riferimento upstream](UPSTREAM-COMPATIBILITY.md) e registrare il commit esaminato. Leggere le quattro guide elencate nel record di provenienza, poi seguire soltanto i simboli necessari nel codice. Usare una consultazione in lettura o un checkout separato; non importare in blocco l'upstream nel branch Synara.
 
-Produrre una tabella di compatibilità con queste colonne: funzione, come la realizza T3, owner attuale in Synara, differenza rilevante, decisione di riuso/adattamento, test che la giustifica. Le righe minime sono provisioning tunnel/DNS, distribuzione e lifecycle cloudflared, auth/account/workspace, discovery/presenza, pairing/root trust, trasporto RPC/risorse, rinnovo/reconnect, revoca/unlink e cleanup.
+Produrre una tabella di compatibilità con queste colonne: funzione, come la realizza upstream, owner attuale in Synara, differenza rilevante, decisione di riuso/adattamento, test che la giustifica. Le righe minime sono provisioning tunnel/DNS, distribuzione e lifecycle cloudflared, auth/account/workspace, discovery/presenza, pairing/root trust, trasporto RPC/risorse, rinnovo/reconnect, revoca/unlink e cleanup.
 
 È un riferimento utile soprattutto per tunnel, avvio connector, gestione degli hostname e recupero dagli errori. Verificare nei sorgenti se il loro servizio chiamato relay coordina il collegamento o trasporta realmente i dati: il nome non implica Railway né equivalenza con il relay Bun Synara.
 
-Conservare i contratti e gli owner di Synara: WorkOS già integrato, controller locale distinto dall'execution host, TLS interno pinned, approvazione dell'esatta chiave dispositivo, revoche durabili e risorse remote. Non introdurre Clerk, PlanetScale, Workers o una riscrittura delle sessioni solo perché compaiono nell'esempio T3.
+Conservare i contratti e gli owner di Synara: WorkOS già integrato, controller locale distinto dall'execution host, TLS interno pinned, approvazione dell'esatta chiave dispositivo, revoche durabili e risorse remote. Non introdurre Clerk, PlanetScale, Workers o una riscrittura delle sessioni solo perché compaiono nell'esempio upstream.
 
-Se un pezzo T3 è compatibile, riutilizzarne il pattern o il codice consentito dalla licenza con provenienza chiara. Se non è compatibile, descrivere il motivo concreto e implementare l'adattamento minimo nello stack attuale. Una differenza architetturale ordinaria non richiede di bloccare il lavoro o di riproporre la scelta del trasporto all'utente.
+Se un pezzo upstream è compatibile, riutilizzarne il pattern o il codice consentito dalla licenza con provenienza chiara. Se non è compatibile, descrivere il motivo concreto e implementare l'adattamento minimo nello stack attuale. Una differenza architetturale ordinaria non richiede di bloccare il lavoro o di riproporre la scelta del trasporto all'utente.
 
 ## Fase 1 — Tunnel e coordinamento nel servizio account
 
@@ -259,6 +259,6 @@ Non confondere questi stati e non segnare completato ciò che è rimasto simulat
 - Codex remote prerequisites: https://learn.chatgpt.com/docs/remote-connections
 - Cloudflare Tunnel: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/
 - Creazione tramite API: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel-api/
-- T3 Connect, riferimento da verificare sul commit corrente: https://github.com/pingdotgg/t3code/blob/main/docs/internals/t3-connect.md
+- [Riferimento architetturale upstream e provenienza](UPSTREAM-COMPATIBILITY.md), da verificare sul commit corrente.
 
-Codex è un riferimento di esperienza utente, non un backend da riutilizzare. T3 Code è un riferimento architetturale, non prova automatica di compatibilità o costi per Synara. Durante l'implementazione ricontrollare documentazione ufficiale, versioni e licenze del codice eventualmente riusato.
+Codex è un riferimento di esperienza utente, non un backend da riutilizzare. Il progetto upstream è un riferimento architetturale, non prova automatica di compatibilità o costi per Synara. Durante l'implementazione ricontrollare documentazione ufficiale, versioni e licenze del codice eventualmente riusato.
