@@ -23,7 +23,7 @@ import {
   GitDialogHeading,
   GitDialogShell,
 } from "./GitDialogChrome";
-import { ArrowUpRightIcon, GitPullRequestDraftIcon, GitPullRequestIcon } from "~/lib/icons";
+import { ExternalLinkIcon, GitPullRequestDraftIcon, GitPullRequestIcon } from "~/lib/icons";
 import { cn } from "~/lib/utils";
 
 export interface GitCreatePrDialogSubmission {
@@ -154,7 +154,7 @@ export function GitCreatePrDialog({
         />
         <GitDialogActionRow
           disabled={!canOpenInBrowser}
-          icon={<ArrowUpRightIcon />}
+          icon={<ExternalLinkIcon />}
           label="Open PR in browser"
           onClick={() => onOpenInBrowser({ preparation: browserPreparation, includeLocalChanges })}
         />

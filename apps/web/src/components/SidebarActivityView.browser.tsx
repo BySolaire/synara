@@ -214,10 +214,14 @@ describe("SidebarActivityView", () => {
           expect(row.textContent).toContain(appearance.emoji);
           expect(row.querySelector("img")).toBeNull();
         } else if (appearance?.kind === "icon") {
-          const glyphs = [...row.querySelectorAll<HTMLElement>('[data-slot="central-icon"]')];
-          const glyph = glyphs.find((element) =>
-            element.style.maskImage.includes(`/${appearance.icon}.svg`),
-          );
+          // The default project icon is the shared Hugeicons folder (an svg); every other
+          // choice is a masked Central asset named after the icon.
+          const glyph =
+            appearance.icon === DEFAULT_PROJECT_ICON
+              ? row.querySelector<SVGElement>('[data-slot="hugeicon"]')
+              : [...row.querySelectorAll<HTMLElement>('[data-slot="central-icon"]')].find(
+                  (element) => element.style.maskImage.includes(`/${appearance.icon}.svg`),
+                );
           expect(glyph).toBeDefined();
           const reference = document.createElement("span");
           reference.style.color = `var(--project-${appearance.color})`;

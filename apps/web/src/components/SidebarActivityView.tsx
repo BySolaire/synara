@@ -27,6 +27,7 @@ import {
   SortIcon,
   Undo2Icon,
   WorktreeIcon,
+  FolderIcon,
 } from "~/lib/icons";
 import { beginThreadDrag, endThreadDrag } from "~/lib/threadDrag";
 import { cn } from "~/lib/utils";
@@ -43,7 +44,6 @@ import { resolveThreadPullRequestFallback } from "../hooks/useThreadPullRequests
 import { useThreadIdsWithPendingDraft } from "../composerDraftStore";
 import type { Project, SidebarThreadSummary } from "../types";
 import { ComposerPickerMenuPopup } from "./chat/ComposerPickerMenuPopup";
-import { FolderClosed } from "./FolderClosed";
 import { ProviderIcon } from "./ProviderIcon";
 import { SnoozeCountdown } from "./SnoozeCountdown";
 import { ProjectSidebarIcon } from "./ProjectSidebarIcon";
@@ -261,7 +261,7 @@ export function ActivityThreadRow({
                 presentation="favicon"
               />
             ) : (
-              <FolderClosed
+              <FolderIcon
                 className={sidebarGlyphClass("meta", "text-muted-foreground/70")}
                 aria-hidden
               />

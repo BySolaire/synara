@@ -11,7 +11,6 @@ import {
   DeviceLaptopIcon,
   DownloadIcon,
   FolderAddIcon,
-  FolderOpenFrontIcon,
   ImportThreadIcon,
   MoonIcon,
   NewThreadIcon,
@@ -19,6 +18,8 @@ import {
   SidechatIcon,
   SunIcon,
   UsageGaugeIcon,
+  FolderIcon,
+  FolderOpenIcon,
 } from "~/lib/icons";
 import {
   type FilesystemBrowseResult,
@@ -31,7 +32,6 @@ import { Autocomplete as AutocompletePrimitive } from "@base-ui/react/autocomple
 import { LuArrowLeft, LuCornerLeftUp } from "react-icons/lu";
 import { type ComponentType, useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { FolderClosed } from "./FolderClosed";
 import { ProjectSidebarIcon } from "./ProjectSidebarIcon";
 import { ProviderIcon as SharedProviderIcon } from "./ProviderIcon";
 import { readNativeApi } from "~/nativeApi";
@@ -952,7 +952,7 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
                         }}
                         onClick={() => setQuery(appendBrowsePathSegment(query, entry.name))}
                       >
-                        <FolderClosed className={PALETTE_ICON_CLASS} />
+                        <FolderIcon className={PALETTE_ICON_CLASS} />
                         <span className={PALETTE_TEXT_CLASS}>{entry.name}</span>
                       </CommandItem>
                     ))}
@@ -1085,7 +1085,7 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
                             />
                           </span>
                         ) : (
-                          <FolderOpenFrontIcon className={PALETTE_ICON_CLASS} />
+                          <FolderOpenIcon className={PALETTE_ICON_CLASS} />
                         )}
                         <span className={PALETTE_TEXT_CLASS}>
                           {project.name || "Untitled project"}
