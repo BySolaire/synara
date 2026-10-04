@@ -226,6 +226,13 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+shift+c", command: "thread.copyId", when: "!terminalFocus || isMac" },
   { key: "mod+shift+]", command: "chat.visible.next", when: "!terminalFocus" },
   { key: "mod+shift+[", command: "chat.visible.previous", when: "!terminalFocus" },
+  // Open thread tabs, browser-style: Cmd+Option+Left/Right on macOS (Cmd+Shift+Left/Right
+  // selects to the line edge in the composer, and xterm never sees a Cmd-chord), and
+  // Ctrl+PageUp/PageDown elsewhere, where Ctrl+Alt+Left/Right switches desktop workspaces.
+  { key: "mod+alt+arrowright", command: "threadTab.next", when: "isMac" },
+  { key: "mod+alt+arrowleft", command: "threadTab.previous", when: "isMac" },
+  { key: "ctrl+pagedown", command: "threadTab.next", when: "!terminalFocus && !isMac" },
+  { key: "ctrl+pageup", command: "threadTab.previous", when: "!terminalFocus && !isMac" },
   { key: "meta+ctrl+p", command: "git.commitAndPush", when: "!terminalFocus && isMac" },
   { key: "ctrl+alt+p", command: "git.commitAndPush", when: "!terminalFocus && !isMac" },
   { key: "mod+o", command: "editor.openFavorite" },
