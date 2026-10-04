@@ -3,7 +3,7 @@ import "../index.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { isBetaFeatureEnabled } from "@synara/shared/betaFeatures";
 import { useState } from "react";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
@@ -225,4 +225,40 @@ it("keeps the tour usable on a narrow screen and with large UI text", async () =
     for (const key of Object.keys(sizes)) document.documentElement.style.removeProperty(key);
     await page.viewport(1280, 900);
   }
+});
+
+it("restores manual replay focus after keyboard navigation and Escape", async () => {
+  localStorage.setItem(tourKey, JSON.stringify([installation]));
+  await show(
+    <>
+      <Button onClick={() => useFeatureTourStore.getState().open()}>Replay highlights</Button>
+      <FeatureTourDialog />
+    </>,
+  );
+  await page.getByRole("button", { name: "Replay highlights" }).click();
+  await expect
+    .element(page.getByRole("dialog", { name: "A new home for your work" }))
+    .toBeVisible();
+  await userEvent.keyboard("{ArrowRight}");
+  await expect.element(page.getByRole("dialog", { name: "Your agents, together" })).toBeVisible();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  await vi.waitFor(() =>
+    expect(document.activeElement).toBe(
+      page.getByRole("button", { name: "Replay highlights" }).element(),
+    ),
+  );
+});
+
+it("closes an automatic tour when another window acknowledges this installation", async () => {
+  await show();
+  await expect
+    .element(page.getByRole("dialog", { name: "A new home for your work" }))
+    .toBeVisible();
+  const value = JSON.stringify([installation]);
+  localStorage.setItem(tourKey, value);
+  window.dispatchEvent(
+    new StorageEvent("storage", { key: tourKey, newValue: value, storageArea: localStorage }),
+  );
+  await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
 });

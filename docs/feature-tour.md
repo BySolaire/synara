@@ -20,6 +20,10 @@ the installed runtime and accounts; the illustrations do not initiate requests.
 ## Startup and replay
 
 - Safari and AppSnap support probes finish before the tour mounts.
+- Completing or skipping first-run onboarding acknowledges these highlights, so a new
+  installation is not greeted with a second tour. Provisional startup auto-hiding and
+  a manual welcome replay do not acknowledge them. Configured installations see the
+  edition once, regardless of their previous application version.
 - Onboarding, Beta welcome, project import, the announcement slot, and other open
   dialogs block the tour. A short quiet interval also waits for exit transitions.
 - Confirming an announcement that opens a follow-on flow defers automatic display

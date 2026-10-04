@@ -1,11 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
-import { Schema } from "effect";
 import { useEffect, useState } from "react";
 
 import { isBetaFeatureOn } from "~/betaFeatures";
 import { FEATURE_TOUR_SLIDES } from "~/featureTour/content";
 import { FeatureTourPreview } from "~/featureTour/FeatureTourPreview";
-import { useFeatureTourStore } from "~/featureTour/store";
+import {
+  EMPTY_FEATURE_TOUR_SEEN,
+  FEATURE_TOUR_STORAGE_KEY,
+  FeatureTourSeenSchema,
+  useFeatureTourStore,
+} from "~/featureTour/store";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { serverConfigQueryOptions } from "~/lib/serverReactQuery";
 import { ChevronLeftIcon } from "~/lib/icons";
@@ -16,10 +20,6 @@ import { useProjectImportDialogStore } from "~/projectImport/projectImportDialog
 import { AnnouncementSheet } from "./AnnouncementSheet";
 import { useAnnouncementSheetSlotStore } from "./announcementSheetSlot";
 import { Button } from "./ui/button";
-
-const STORAGE_KEY = "synara:feature-tour:since-0.9.2:v1";
-const SeenSchema = Schema.Array(Schema.String);
-const EMPTY_SEEN: readonly string[] = [];
 
 /** Wait for other modals to leave the DOM, including their exit transitions. */
 function useOtherDialogOpen(enabled: boolean) {
@@ -50,7 +50,11 @@ export function FeatureTourDialog() {
     ...serverConfigQueryOptions(),
     select: (config) => config.worktreesDir,
   }).data;
-  const [seen, setSeen] = useLocalStorage(STORAGE_KEY, EMPTY_SEEN, SeenSchema);
+  const [seen, setSeen] = useLocalStorage(
+    FEATURE_TOUR_STORAGE_KEY,
+    EMPTY_FEATURE_TOUR_SEEN,
+    FeatureTourSeenSchema,
+  );
   const startupBlocking = useOnboardingDialogStore(
     (state) => !state.startupGateSettled || state.isOpen || state.betaWelcomePending,
   );
@@ -159,7 +163,7 @@ function FeatureTourSlides({
             >
               <span
                 className={cn(
-                  "h-1.5 rounded-full transition-[width,background-color] duration-220 ease-out motion-reduce:transition-none",
+                  "h-1.5 rounded-full",
                   position === index ? "w-5 bg-foreground" : "w-1.5 bg-muted-foreground/30",
                 )}
               />
