@@ -63,28 +63,68 @@ it.each([false, true])(
   },
 );
 
-it("refreshes independent loaded directories together after a mutation", async () => {
+it("waits for each directory refresh reply before starting the next request budget", async () => {
   const hook = await renderHook(() => useGroupLibrary({ projectId: firstProject, enabled: true }));
+  const replies: Array<() => void> = [];
   try {
     await vi.waitFor(() => expect(hook.result.current.root).toBe("/library"));
-    await Promise.all(["one", "two", "three"].map((dir) => hook.result.current.loadDirectory(dir)));
-    let active = 0;
-    let peak = 0;
-    harness.library.list.mockImplementation(async () => {
-      active += 1;
-      peak = Math.max(peak, active);
-      await new Promise((resolve) => setTimeout(resolve, 80));
-      active -= 1;
-      return { root: "/library", entries: [] };
-    });
-    const start = performance.now();
-    expect(await hook.result.current.mkdir("new-folder")).toBe(true);
-    console.info(
-      `Library mutation refresh, four 80ms reads: ${Math.round(performance.now() - start)}ms`,
+    for (const dir of ["one", "two", "three"]) await hook.result.current.loadDirectory(dir);
+    harness.library.list.mockClear().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          replies.push(() => resolve({ root: "/library", entries: [] }));
+        }),
     );
-    expect(peak).toBe(4);
+    const mutation = hook.result.current.mkdir("new-folder");
+    const verdict = mutation.then((result) => result);
+    for (let index = 0; index < 4; index += 1) {
+      await vi.waitFor(() => expect(replies).toHaveLength(index + 1));
+      expect(harness.library.list).toHaveBeenCalledTimes(index + 1);
+      replies[index]!();
+    }
+    expect(await verdict).toBe(true);
+    expect(harness.library.list.mock.calls.map(([input]) => input.relativePath ?? "")).toEqual([
+      "",
+      "one",
+      "two",
+      "three",
+    ]);
     expect(hook.result.current.entriesByDir.size).toBe(4);
   } finally {
+    replies.forEach((reply) => reply());
     await hook.unmount();
   }
 });
+
+it.each(["mutation", "upload"])(
+  "retains a directory refresh failure after a committed %s",
+  async (operation) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 204 })),
+    );
+    const hook = await renderHook(() =>
+      useGroupLibrary({ projectId: firstProject, enabled: true }),
+    );
+    try {
+      await vi.waitFor(() => expect(hook.result.current.root).toBe("/library"));
+      await hook.result.current.loadDirectory("one");
+      harness.library.list.mockImplementation(async ({ relativePath }) => {
+        if (relativePath === "one") throw new Error("Directory refresh timed out.");
+        return { root: "/library", entries: [] };
+      });
+      const result =
+        operation === "mutation"
+          ? await hook.result.current.mkdir("new-folder")
+          : await hook.result.current.upload(undefined, new File(["hello"], "note.md"));
+      // The write committed; expose failed refresh without inviting another write.
+      expect(result).toBe(true);
+      await vi.waitFor(() => {
+        expect(hook.result.current.busy).toBe(false);
+        expect(hook.result.current.error).toBe("Directory refresh timed out.");
+      });
+    } finally {
+      await hook.unmount();
+    }
+  },
+);

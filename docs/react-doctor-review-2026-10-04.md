@@ -1,12 +1,13 @@
 # React Doctor review of HTTP responses and asynchronous work
 
-This pass reviews the three requested rules only. Five confirmed findings were
-fixed in four production files. Intentional error parsing, ordered operations,
+This pass reviews the three requested rules only. The initial pass proposed five
+findings in four production files; subsequent PR review rejected the parallel
+library refresh and restored its per-request timeout budget. Intentional error parsing, ordered operations,
 and already handled clipboard failures remain unsuppressed. The four large
 refactoring categories are deferred, including their representative samples,
 as agreed with the code owner.
 
-## Evidence and scope
+## Initial scan evidence and scope
 
 - Fetched all three canonical recipes using `curl -fsSL` with
   `Cache-Control: no-cache` and `Pragma: no-cache` before editing:
@@ -36,7 +37,7 @@ as agreed with the code owner.
 | Owner                                                           | Problem and severity                                                                                                                                                                  | Correction and evidence                                                                                                                                                                                                                                                                       |
 | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `apps/web/src/components/chat/group/useGroupLibrary.ts`, upload | **Low:** switching projects while an upload failed caused the hook to return success. The current panel ignores that return value, so this did not show a false success notification. | Handle HTTP failure before checking which project is visible. Keep the original server error for the current project and avoid leaking it into another project. The browser regression failed before the fix and passes afterward.                                                            |
-| Same hook, directory refresh                                    | **Moderate responsiveness issue:** after creating, renaming, restoring, or uploading an entry, every previously loaded folder waited for the preceding folder to finish refreshing.   | Use `Promise.all` for independent reads, matching the hook's existing focus refresh. Chromium measurement with four 80 ms reads: **326 ms before, 81 ms after**. This is controlled latency evidence, not a live-server performance claim. Uploads remain sequential.                         |
+| Same hook, directory refresh                                    | **Rejected optimization:** the server serializes listings under the project root lock, so concurrent client requests spend their timeout while queued.                                | Restore serial refresh after mutations and uploads; retain listing errors instead of clearing them after a committed write. Browser regressions cover request ordering and visible refresh failures.                                                                                          |
 | `apps/web/src/wsTransport.ts`, HTTP negotiation                 | **Moderate:** a 404/503 error body could stall the connection fallback until the five-second deadline, although the status already told the client to use the older connection path.  | Handle 426 separately because its error body carries the compatibility decision; reject other HTTP failures before parsing, cancel their unused bodies, then parse success. Regression cases with stalled 404 and 503 bodies failed before and pass after.                                    |
 | `apps/web/src/wsNativeApi.ts`, voice upload                     | **Moderate:** an older server's 404/405 response could leave voice transcription waiting for an irrelevant body before trying its older API. This request has no body-read deadline.  | Check those compatibility statuses first, cancel the unused body, and trigger the existing fallback. The existing fallback test now covers complete and stalled error bodies; both stalled cases failed before and pass after. Other HTTP errors still retain their server-provided messages. |
 | `apps/web/src/components/DesktopWindowControls.tsx`, Maximize   | **Low:** a rejected native window request left an uncaught promise rejection and no explanation for the button doing nothing. No page crash is established.                           | Add a terminal `.catch` using the existing error toast. Chromium reproduced the unhandled rejection before the fix, then verified the error notification and successful retry afterward. This uses a mocked native bridge, not a packaged Windows run.                                        |
@@ -114,8 +115,9 @@ inline diagnostics, or files were suppressed.
 Regression tests were run on the original implementation and failed for the
 intended reasons before production edits. Focused API tests pass 92 cases;
 Chromium covers the library panel, hook, and window-control failure/retry paths.
-The 81 ms library measurement uses four mocked 80 ms reads, so it proves removal
-of serial waiting but does not establish a production network speedup.
+The original 81 ms library measurement used independent mocked reads and did not
+model the server root lock. It does not justify parallel refresh; that change and
+its concurrency benchmark have been replaced with ordered-request regressions.
 
 Final checks used Node 24.21.0 and Bun 1.4.2. The full workspace suite passed
 **15,001 tests**, with 37 skipped. All **11 focused Chromium tests** passed.
@@ -131,3 +133,28 @@ scan. All five changed findings disappeared and no new findings were introduced.
 Native Electron/Windows window failures and live voice-provider transcription
 were not exercised. No production state, provider selection, or installation was
 changed.
+
+## PR review follow-up
+
+The initial scan/check counts above describe the original submission. The repaired
+branch restores ordered library refresh despite the intentional awaited-loop
+warning; no diagnostic is suppressed. A committed mutation/upload still returns
+success when a later refresh fails, and the panel keeps the refresh error so the
+user can distinguish the write from a stale listing.
+
+Window controls now also handle rejected Minimize, Close, and initial state reads.
+They use the existing toast manager; native state subscription remains active
+when the initial read fails, and unmounted controls do not report stale read errors.
+There was no comparable window-action error helper, so the component shares its
+small formatter across these four Promise paths.
+
+Six follow-up browser regressions failed on the original PR for the intended
+reasons and passed after repair. The two focused Chromium files pass 9 tests;
+HTTP/WebSocket/native API owners pass 92 tests. Full workspace checks are reserved
+for the grouped integration pass.
+
+The original chat-follow CI job failed a real transcript geometry assertion
+(43 pixels from bottom, expected at most 4) in unchanged ChatView code. The exact
+case passes locally without changing the transcript or its assertion. This local
+pass does not erase the CI failure or prove its cause; new-head CI/review evidence
+is still required before delivery.
