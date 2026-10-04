@@ -214,7 +214,9 @@ export function useGroupLibrary(input: {
       if (projectIdRef.current === projectId) {
         const refreshed = await reloadLoadedDirectories(projectId);
         await refreshStatus(projectId);
-        if (projectIdRef.current === projectId && refreshed) setError(null);
+        if (projectIdRef.current === projectId) {
+          if (refreshed) setError(null);
+        }
       }
       succeeded = true;
     } catch (cause) {
@@ -231,14 +233,22 @@ export function useGroupLibrary(input: {
       await library.mkdir({ projectId, relativePath });
     });
 
+  const forgetDirectory = (relativePath: string) => {
+    const keep = (dir: string) => dir !== relativePath && !dir.startsWith(`${relativePath}/`);
+    loadedDirs.current = new Set(Array.from(loadedDirs.current).filter(keep));
+    setEntriesByDir((current) => new Map(Array.from(current).filter(([dir]) => keep(dir))));
+  };
+
   const rename = async (from: string, to: string) =>
     runMutation(async (library, projectId) => {
       await library.rename({ projectId, from, to });
+      if (projectIdRef.current === projectId) forgetDirectory(from);
     });
 
   const deleteEntry = async (relativePath: string) =>
     runMutation(async (library, projectId) => {
       await library.delete({ projectId, relativePath });
+      if (projectIdRef.current === projectId) forgetDirectory(relativePath);
     });
 
   const history = async (relativePath?: string) => {
@@ -285,7 +295,9 @@ export function useGroupLibrary(input: {
         if (projectIdRef.current === projectId) {
           const refreshed = await reloadLoadedDirectories(projectId);
           await refreshStatus(projectId);
-          if (projectIdRef.current === projectId && refreshed) setError(null);
+          if (projectIdRef.current === projectId) {
+            if (refreshed) setError(null);
+          }
         }
         succeeded = true;
       }

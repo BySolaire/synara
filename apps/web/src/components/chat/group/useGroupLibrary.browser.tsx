@@ -7,6 +7,8 @@ const harness = vi.hoisted(() => ({
     list: vi.fn(),
     status: vi.fn(),
     mkdir: vi.fn(),
+    rename: vi.fn(),
+    delete: vi.fn(),
   },
 }));
 
@@ -20,6 +22,14 @@ import { useGroupLibrary } from "./useGroupLibrary";
 const firstProject = ProjectId.makeUnsafe("first");
 const secondProject = ProjectId.makeUnsafe("second");
 
+const directory = (relativePath: string) => ({
+  name: relativePath.split("/").at(-1)!,
+  relativePath,
+  kind: "directory" as const,
+  sizeBytes: 0,
+  modifiedAt: "2026-10-04T00:00:00Z",
+});
+
 beforeEach(() => {
   harness.library.list.mockReset().mockResolvedValue({ root: "/library", entries: [] });
   harness.library.status.mockReset().mockResolvedValue({
@@ -29,6 +39,8 @@ beforeEach(() => {
     lastPushError: null,
   });
   harness.library.mkdir.mockReset().mockResolvedValue({ commitSha: "commit" });
+  harness.library.rename.mockReset().mockResolvedValue({ commitSha: "commit" });
+  harness.library.delete.mockReset().mockResolvedValue({ commitSha: "commit" });
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -123,6 +135,97 @@ it.each(["mutation", "upload"])(
         expect(hook.result.current.busy).toBe(false);
         expect(hook.result.current.error).toBe("Directory refresh timed out.");
       });
+    } finally {
+      await hook.unmount();
+    }
+  },
+);
+
+it.each(["delete", "rename"] as const)(
+  "forgets a committed %s folder and descendants before subsequent refreshes",
+  async (operation) => {
+    let removed = false;
+
+    harness.library.list.mockImplementation(async ({ relativePath = "" }) => {
+      if (removed && (relativePath === "one" || relativePath.startsWith("one/"))) {
+        throw new Error("Library directory not found.");
+      }
+      const entries =
+        relativePath === ""
+          ? [
+              ...(!removed
+                ? [directory("one")]
+                : operation === "rename"
+                  ? [directory("renamed")]
+                  : []),
+              directory("one-more"),
+            ]
+          : [];
+      return { root: "/library", entries };
+    });
+    harness.library[operation].mockImplementation(async () => {
+      removed = true;
+      return { commitSha: "commit" };
+    });
+    const hook = await renderHook(() =>
+      useGroupLibrary({ projectId: firstProject, enabled: true }),
+    );
+    try {
+      await vi.waitFor(() => expect(hook.result.current.root).toBe("/library"));
+      await hook.result.current.loadDirectory("one/nested");
+      harness.library.list.mockClear();
+      const result =
+        operation === "delete"
+          ? await hook.result.current.deleteEntry("one")
+          : await hook.result.current.rename("one", "renamed");
+      expect(result).toBe(true);
+      await vi.waitFor(() => {
+        expect(hook.result.current.entriesByDir.has("one")).toBe(false);
+        expect(hook.result.current.error).toBeNull();
+      });
+      expect(harness.library.list.mock.calls.map(([input]) => input.relativePath ?? "")).toEqual([
+        "",
+        "one-more",
+      ]);
+      expect(Array.from(hook.result.current.entriesByDir.keys())).toEqual(["", "one-more"]);
+      harness.library.list.mockClear();
+      expect(await hook.result.current.mkdir("later")).toBe(true);
+      expect(harness.library.list.mock.calls.map(([input]) => input.relativePath ?? "")).toEqual([
+        "",
+        "one-more",
+      ]);
+      hook.result.current.load();
+      await vi.waitFor(() => expect(harness.library.list).toHaveBeenCalledTimes(4));
+      expect(hook.result.current.error).toBeNull();
+    } finally {
+      await hook.unmount();
+    }
+  },
+);
+
+it.each(["delete", "rename"] as const)(
+  "keeps cached folders after a rejected %s",
+  async (operation) => {
+    const hook = await renderHook(() =>
+      useGroupLibrary({ projectId: firstProject, enabled: true }),
+    );
+    try {
+      await vi.waitFor(() => expect(hook.result.current.root).toBe("/library"));
+      await hook.result.current.loadDirectory("one");
+      harness.library[operation].mockRejectedValue(new Error("Write denied."));
+      const result =
+        operation === "delete"
+          ? await hook.result.current.deleteEntry("one")
+          : await hook.result.current.rename("one", "renamed");
+      expect(result).toBe(false);
+      await vi.waitFor(() => expect(hook.result.current.error).toBe("Write denied."));
+      expect(hook.result.current.entriesByDir.has("one")).toBe(true);
+      harness.library.list.mockClear();
+      expect(await hook.result.current.mkdir("later")).toBe(true);
+      expect(harness.library.list.mock.calls.map(([input]) => input.relativePath ?? "")).toEqual([
+        "",
+        "one",
+      ]);
     } finally {
       await hook.unmount();
     }

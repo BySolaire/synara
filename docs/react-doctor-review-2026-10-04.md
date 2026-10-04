@@ -42,7 +42,10 @@ as agreed with the code owner.
 | `apps/web/src/wsNativeApi.ts`, voice upload                     | **Moderate:** an older server's 404/405 response could leave voice transcription waiting for an irrelevant body before trying its older API. This request has no body-read deadline.  | Check those compatibility statuses first, cancel the unused body, and trigger the existing fallback. The existing fallback test now covers complete and stalled error bodies; both stalled cases failed before and pass after. Other HTTP errors still retain their server-provided messages. |
 | `apps/web/src/components/DesktopWindowControls.tsx`, Maximize   | **Low:** a rejected native window request left an uncaught promise rejection and no explanation for the button doing nothing. No page crash is established.                           | Add a terminal `.catch` using the existing error toast. Chromium reproduced the unhandled rejection before the fix, then verified the error notification and successful retry afterward. This uses a mocked native bridge, not a packaged Windows run.                                        |
 
-No new production helper or UI component was needed. Existing directory loading,
+Committed folder renames and deletions now remove the old path and cached descendants
+before refresh. Failed writes keep their cache. A small hook-local invalidator is
+reused for these two operations; no existing helper owned this cache. No new UI
+component was needed. Existing directory loading,
 compatibility fallback, and toast behavior were reused.
 
 ## Response and clipboard findings retained
