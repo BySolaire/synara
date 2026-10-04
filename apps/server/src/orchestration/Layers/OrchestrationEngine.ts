@@ -96,6 +96,7 @@ type OrchestrationEnginePhase = "running" | "quiescing" | "draining" | "stopped"
 
 interface CommandEnvelope {
   command: OrchestrationCommand;
+  settleOnly: boolean;
   attachmentPrincipal: ManagedAttachmentPrincipal;
   result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
   executionState: Ref.Ref<CommandExecutionState>;
@@ -784,6 +785,40 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         return;
       }
 
+      if (envelope.settleOnly) {
+        const detail =
+          "The connection was interrupted before this message was accepted. Please send it again.";
+        const aggregateRef = commandToAggregateRef(envelope.command);
+        // This runs under the same serialization lock as normal dispatch. The
+        // receipt fences a delayed original RPC, including one still outside
+        // the engine in startup/normalization when settlement arrived.
+        const inserted = yield* commandReceiptRepository.insert({
+          commandId: envelope.command.commandId,
+          aggregateKind: aggregateRef.aggregateKind,
+          aggregateId: aggregateRef.aggregateId,
+          acceptedAt: new Date().toISOString(),
+          resultSequence: commandReadModel.snapshotSequence,
+          status: "rejected",
+          error: detail,
+          fingerprintVersion: commandFingerprint.version,
+          commandFingerprint: commandFingerprint.value,
+        });
+        if (!inserted) {
+          return yield* makeCommandInternalError(
+            envelope.command,
+            "Failed to settle the original message.",
+          );
+        }
+        yield* Deferred.fail(
+          envelope.result,
+          new OrchestrationCommandPreviouslyRejectedError({
+            commandId: envelope.command.commandId,
+            detail,
+          }),
+        );
+        return;
+      }
+
       let command: OrchestrationCommand = envelope.command;
       if (command.type === "thread.turn.start") {
         const pendingImport = yield* sql<{ readonly thread_id: string }>`
@@ -1424,6 +1459,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       const executionState = yield* Ref.make<CommandExecutionState>("queued");
       const envelope: CommandEnvelope = {
         command,
+        settleOnly: context?.settleOnly === true,
         attachmentPrincipal: context?.attachmentPrincipal ?? LOCAL_LOOPBACK_ATTACHMENT_PRINCIPAL,
         result,
         executionState,
