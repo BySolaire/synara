@@ -115,7 +115,11 @@ export class WsTransportRequestInterruptedError extends Data.TaggedError(
   "WsTransportRequestInterruptedError",
 )<{
   readonly message: string;
-  readonly code: "WS_REQUEST_TIMEOUT" | "WS_REQUEST_ABORTED" | "WS_REQUEST_RECONNECTED";
+  readonly code:
+    | "WS_REQUEST_TIMEOUT"
+    | "WS_REQUEST_ABORTED"
+    | "WS_REQUEST_RECONNECTED"
+    | "WS_TURN_SETTLEMENT_UNAVAILABLE";
   readonly method: string;
   readonly timeoutMs?: number;
   readonly cause?: unknown;
@@ -902,6 +906,18 @@ export class WsTransport {
       }
 
       const client = await awaitWithAbort(this.getClient(), abortScope.signal);
+      if (
+        method === ORCHESTRATION_WS_METHODS.settleTurnDispatch &&
+        !this.compatibility?.capabilities.includes(WS_TURN_DISPATCH_SETTLEMENT_CAPABILITY)
+      ) {
+        throw new WsTransportRequestInterruptedError({
+          message:
+            "This server cannot check message delivery. Reconnect to an updated server and check the conversation before sending again.",
+          code: "WS_TURN_SETTLEMENT_UNAVAILABLE",
+          method,
+          retryable: false,
+        });
+      }
 
       if (method === WS_METHODS.gitRunStackedAction) {
         return (await this.runGitActionStream(client, params, abortScope.signal)) as T;
@@ -1015,7 +1031,13 @@ export class WsTransport {
           { signal },
         );
       } catch (error) {
-        if (signal.aborted || isTerminalCompatibilityFailure(error)) throw error;
+        if (
+          signal.aborted ||
+          isTerminalCompatibilityFailure(error) ||
+          (error instanceof WsTransportRequestInterruptedError &&
+            error.code === "WS_TURN_SETTLEMENT_UNAVAILABLE")
+        )
+          throw error;
         // Repeating settlement is safe even if its own acknowledgement was
         // lost: it only reads or rejects the original identity, never starts it.
         await delayMs(Math.max(500, getReconnectRetryDelayMs(attempt++)), signal);
@@ -1262,12 +1284,7 @@ export class WsTransport {
       >
     )[ORCHESTRATION_WS_METHODS.unsubscribeShell];
     if (!probe) return;
-    try {
-      await runtime.runPromise(probe({}).pipe(Effect.timeout(FEATURE_CONNECTION_PROBE_TIMEOUT_MS)));
-    } catch (error) {
-      this.setCompatibility(null);
-      throw error;
-    }
+    await runtime.runPromise(probe({}).pipe(Effect.timeout(FEATURE_CONNECTION_PROBE_TIMEOUT_MS)));
   }
 
   private createSession() {
@@ -1289,6 +1306,7 @@ export class WsTransport {
             if (this.disposed || this.sessionVersion !== sessionVersion || this.reconnectPromise) {
               return;
             }
+            if (this.state !== "open") this.setCompatibility(null);
             void this.reconnect().catch(() => undefined);
           });
         }),
@@ -1373,6 +1391,8 @@ export class WsTransport {
   private reconnect(): Promise<RpcClientInstance> {
     if (this.reconnectPromise) return this.reconnectPromise;
 
+    // Fence detached probe/stream continuations before asynchronous teardown.
+    this.sessionVersion += 1;
     const oldResources = this.takeCurrentRuntime();
     this.resetAllStreamCapacityRetries();
     this.resetAllStreamCompletionRetries();

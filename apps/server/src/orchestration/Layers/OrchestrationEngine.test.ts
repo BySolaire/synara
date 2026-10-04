@@ -214,6 +214,13 @@ describe("OrchestrationEngine", () => {
             _tag: "OrchestrationCommandPreviouslyRejectedError",
           });
         }
+        await system.run(engine.quiesce);
+        const shutdownSettlement = system.run(engine.dispatch(command, { settleOnly: true }));
+        if (accepted) await expect(shutdownSettlement).resolves.toEqual(original);
+        else
+          await expect(shutdownSettlement).rejects.toMatchObject({
+            _tag: "OrchestrationCommandPreviouslyRejectedError",
+          });
         const events = await system.run(Stream.runCollect(engine.readEvents(0)));
         expect(
           Array.from(events).filter((event) => event.type === "thread.turn-start-requested"),
@@ -818,6 +825,13 @@ describe("OrchestrationEngine", () => {
     await expect(
       system.run(engine.dispatch(command, { attachmentPrincipal: principal })),
     ).resolves.toEqual(accepted);
+
+    await expect(system.run(engine.dispatch(command, { settleOnly: true }))).resolves.toEqual(
+      accepted,
+    );
+    await expect(system.run(engine.dispatch(command))).rejects.toThrow(
+      "different managed attachment set or owner",
+    );
 
     const editResendClaim = await system.run(
       repository.claimForAcceptedTurn({

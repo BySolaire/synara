@@ -97,7 +97,9 @@ If a connection drops while sending, Synara shows **Checking message delivery…
 command's durable receipt. An accepted message is retained without resending it to the provider.
 If it was not accepted, Synara records a rejection that also blocks a delayed copy, then restores
 the draft for retry. This recovery requires a server advertising `orchestration.turn-dispatch-settlement`;
-older servers retain their existing error handling. Socket recovery restores active subscriptions
+older servers retain their existing error handling. If recovery reaches a server without that capability,
+Synara reports that delivery is still unknown; reconnect to an updated server and check the conversation
+before sending again. Socket recovery restores active subscriptions
 and reports the connection as open only after the feature socket answers.
 
 Turn off **Settings → General → Move sent messages to top** to keep new messages at the bottom

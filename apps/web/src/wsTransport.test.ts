@@ -366,6 +366,102 @@ describe("WsTransport", () => {
     },
   );
 
+  it("releases settlement ownership when recovery loses the optional capability", async () => {
+    vi.useFakeTimers();
+    bindWindowTimersToCurrentGlobals();
+    const lifetime = new AbortController();
+    try {
+      const { transport, internals } = makeBareTransport();
+      const dispatch = vi.fn(() => Effect.never);
+      const settle = vi.fn(() => Effect.never);
+      const client = {
+        [ORCHESTRATION_WS_METHODS.dispatchCommand]: dispatch,
+        [ORCHESTRATION_WS_METHODS.settleTurnDispatch]: settle,
+      };
+      Object.assign(internals, {
+        lifetime,
+        compatibility: {
+          ...NEGOTIATION_RESULT,
+          capabilities: [WS_TURN_DISPATCH_SETTLEMENT_CAPABILITY],
+        },
+        getClient: vi
+          .fn()
+          .mockResolvedValueOnce(client)
+          .mockImplementation(async () => {
+            Object.assign(internals, { compatibility: NEGOTIATION_RESULT });
+            return client;
+          }),
+        getClientRuntime: () => ({ runPromise: Effect.runPromise }),
+      });
+      const command = {
+        type: "thread.turn.start",
+        commandId: "optional-capability-send",
+        threadId: "optional-capability-thread",
+        message: {
+          messageId: "optional-capability-message",
+          role: "user",
+          text: "hello",
+          attachments: [],
+        },
+      };
+      const send = transport.request(
+        ORCHESTRATION_WS_METHODS.dispatchCommand,
+        { command },
+        { timeoutMs: 20 },
+      );
+      let failure: unknown;
+      const verdict = send.catch((error) => {
+        failure = error;
+      });
+      await vi.advanceTimersByTimeAsync(20);
+      // Observe a terminal result without allowing an unresolved baseline promise to hang the test.
+      expect(getWsSettlingThreadIds().size).toBe(0);
+      await verdict;
+      expect(failure).toMatchObject({ code: "WS_TURN_SETTLEMENT_UNAVAILABLE", retryable: false });
+      expect(settle).not.toHaveBeenCalled();
+      expect(dispatch).toHaveBeenCalledOnce();
+    } finally {
+      lifetime.abort();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps recovery connecting when the detached feature probe rejects", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(200, NEGOTIATION_RESULT)),
+    );
+    const transport = new WsTransport();
+    const runtimeOwner = transport as unknown as {
+      closeRuntime: (...args: unknown[]) => Promise<void>;
+    };
+    const closeRuntime = runtimeOwner.closeRuntime.bind(runtimeOwner);
+    let releaseClose!: () => void;
+    const closing = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    const close = vi.spyOn(runtimeOwner, "closeRuntime").mockImplementation(async (...args) => {
+      await closing;
+      await closeRuntime(...args);
+    });
+    try {
+      await waitForSockets(1);
+      sockets[0]!.open();
+      await vi.waitFor(() => expect(sockets[0]!.sent.length).toBeGreaterThan(0));
+      sockets[0]!.close(1006, "probe connection died");
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(transport.getState()).toBe("connecting");
+      releaseClose();
+      await vi.waitFor(() => expect(sockets.length).toBe(2));
+      sockets[1]!.serveVoidRpc();
+      await vi.waitFor(() => expect(transport.getState()).toBe("open"));
+    } finally {
+      releaseClose();
+      await transport.dispose();
+    }
+  });
+
   it("recovers an unopened feature socket without reporting it as connected", async () => {
     vi.useFakeTimers();
     bindWindowTimersToCurrentGlobals();
@@ -381,6 +477,7 @@ describe("WsTransport", () => {
       await vi.advanceTimersByTimeAsync(10_501);
       expect(sockets[0]!.readyState).toBe(MockWebSocket.CLOSED);
       expect(sockets).toHaveLength(2);
+      expect(transport.getState()).toBe("connecting");
       sockets[1]!.serveVoidRpc();
       await vi.advanceTimersByTimeAsync(1);
       expect(transport.getState()).toBe("open");
