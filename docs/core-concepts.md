@@ -54,10 +54,10 @@ is cancelled, the task and its prompt remain available for retry.
   ordinary project; local composer drafts remain client-only. Gateway draft creation uses
   the local checkout; isolated worktree callers can create a task instead. These tools do
   not change the Beta-only Tasks to-do records.
-- **Inbox** (Beta) — today’s due and overdue to-dos, tasks with an agent, and tasks finished
-  since the working day began at 4am, beside the day’s agent recap. Add a task here to make it due
-  on today’s calendar date, or select it to edit and delegate through the same card as Tasks.
-  **All tasks** opens the complete backlog.
+- **Inbox** (Stable and Beta) — chats needing attention, running and finished work, review
+  requests, and the day’s agent recap, starting at 4am. Beta also shows today’s due and overdue
+  to-dos: add one due today, or select it to edit and delegate through the same card as Tasks.
+  **All tasks** opens the complete backlog in Beta; Stable keeps these to-do controls hidden.
 - **Conversation** — user messages, agent responses, plans, tools, approvals, and subagent activity.
   In a split view, dragging the divider resizes both chats continuously; releasing it saves the layout.
 - **Composer** — objectives, attachments, provider selection, model selection, and task controls
@@ -69,6 +69,12 @@ is cancelled, the task and its prompt remain available for retry.
 
 You do not need every surface open at once. Bring each one in when it answers a question: what is
 running, what changed, whether the UI works, or whether the task is safe to ship.
+
+Desktop quit requests ask for confirmation even when no chats are running. On macOS,
+⌘Q quits the application after confirmation; ⌘W confirms closing the window while the
+application and its running chats stay active. Quitting with no open window uses a
+native confirmation. With an open window and running chats, the quit dialog lists the work that
+will stop and offers to resume it automatically on the next launch.
 
 ## Projects
 
@@ -137,7 +143,7 @@ When due, the thread returns to recent activity and Synara shows a reminder usin
 your notification settings. If Synara and its server are closed, the overdue
 reminder is recovered when they start again.
 
-In Beta, **Auto-fix CI** in the Environment panel's pull request menu watches open PRs
+In Stable and Beta, **Auto-fix CI** in the Environment panel's pull request menu watches open PRs
 for this chat, including other PRs in its stack. One chat can own the active watch for a
 PR. A paused watch releases ownership; resuming it requires that no other chat owns it.
 The server checks every minute and starts at most one fix turn for each failing commit,
