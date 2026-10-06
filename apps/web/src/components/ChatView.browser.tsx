@@ -2330,6 +2330,104 @@ describe("ChatView transcript geometry (full app)", () => {
     document.body.innerHTML = "";
   });
 
+  it.each([false, true])(
+    "groups unpinned work in the fixed sidebar footer (Activity: %s)",
+    async (activityViewEnabled) => {
+      const base = createSnapshotForTargetUser({
+        targetMessageId: MessageId.makeUnsafe("working-sidebar-main"),
+        targetText: "Keep the conversation open",
+        sessionStatus: "running",
+      });
+      const pinned = {
+        ...base.threads[0]!,
+        id: OTHER_THREAD_ID,
+        title: "Pinned working conversation",
+        isPinned: true,
+        messages: [],
+        session: { ...base.threads[0]!.session!, threadId: OTHER_THREAD_ID },
+      };
+      let currentSnapshot: OrchestrationReadModel = { ...base, threads: [...base.threads, pinned] };
+      localStorage.setItem("synara:sidebar-ui:v1", JSON.stringify({ activityViewEnabled }));
+      const previousPins = usePinnedThreadsStore.getState().pinnedThreadIds;
+      usePinnedThreadsStore.setState({ pinnedThreadIds: [OTHER_THREAD_ID] });
+      onTestFinished(() => {
+        usePinnedThreadsStore.setState({ pinnedThreadIds: previousPins });
+      });
+      const mounted = await mountChatView({
+        viewport: { ...DEFAULT_VIEWPORT, width: 1280, height: 800 },
+        snapshot: currentSnapshot,
+      });
+      try {
+        await vi.waitFor(
+          () =>
+            expect(document.querySelector("[data-sidebar-working-section]")?.textContent).toContain(
+              "Working (1)",
+            ),
+          { timeout: 5_000 },
+        );
+        const header = page.getByRole("button", { name: "Working (1)", exact: true });
+        await expect.element(header).toHaveAttribute("aria-expanded", "false");
+        const footer = document.querySelector<HTMLElement>("[data-sidebar-working-host]")!;
+        const sidebar = document.querySelector<HTMLElement>('[data-slot="sidebar-container"]')!;
+        const sourceRows = () => [
+          ...sidebar.querySelectorAll<HTMLElement>(`[data-sidebar-thread-id="${THREAD_ID}"]`),
+        ];
+        await vi.waitFor(() => expect(sourceRows()).toHaveLength(1));
+        expect(sourceRows()[0]!.closest("[inert]")).not.toBeNull();
+        const pinnedRow = sidebar.querySelector<HTMLElement>(
+          `[data-sidebar-thread-id="${OTHER_THREAD_ID}"]`,
+        )!;
+        expect(pinnedRow).toBeTruthy();
+        expect(pinnedRow.closest("[data-sidebar-working-host]")).toBeNull();
+        expect(pinnedRow.closest("[inert]")).toBeNull();
+        expect(mounted.router.state.location.pathname).toBe(`/${THREAD_ID}`);
+        await header.click();
+        await expect.element(header).toHaveAttribute("aria-expanded", "true");
+        await vi.waitFor(() => expect(sourceRows()[0]!.closest("[inert]")).toBeNull());
+        expect(footer.getBoundingClientRect().height).toBeLessThanOrEqual(
+          footer.parentElement!.getBoundingClientRect().height * 0.4,
+        );
+        await page.screenshot({
+          path: `../../node_modules/.cache/working-full-app-${activityViewEnabled ? "activity" : "classic"}.png`,
+        });
+        const composer = await waitForComposerEditor();
+        composer.focus();
+        currentSnapshot = {
+          ...currentSnapshot,
+          snapshotSequence: currentSnapshot.snapshotSequence + 1,
+          threads: currentSnapshot.threads.map((thread) =>
+            thread.id !== THREAD_ID
+              ? thread
+              : {
+                  ...thread,
+                  latestTurn: {
+                    turnId: TurnId.makeUnsafe("working-sidebar-completed"),
+                    state: "completed",
+                    requestedAt: NOW_ISO,
+                    startedAt: NOW_ISO,
+                    completedAt: NOW_ISO,
+                    assistantMessageId: null,
+                  },
+                  session: { ...thread.session!, status: "ready", activeTurnId: null },
+                },
+          ),
+        };
+        fixture.snapshot = currentSnapshot;
+        useStore.getState().syncServerReadModel(currentSnapshot);
+        await expect.element(header).not.toBeInTheDocument();
+        await vi.waitFor(() => {
+          expect(sourceRows()).toHaveLength(1);
+          expect(sourceRows()[0]!.closest("[data-sidebar-working-host]")).toBeNull();
+          expect(sourceRows()[0]!.closest("[inert]")).toBeNull();
+        });
+        expect(document.activeElement).toBe(composer);
+        expect(mounted.router.state.location.pathname).toBe(`/${THREAD_ID}`);
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
   it.each([
     { activityViewEnabled: false, customShortcut: false },
     { activityViewEnabled: true, customShortcut: false },

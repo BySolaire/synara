@@ -614,6 +614,73 @@ export function isThreadActivelyWorking(thread: {
   );
 }
 
+/** Root threads whose status says they are doing work, before pins or requests apply. */
+export function collectActiveWorkThreadIds(
+  threads: readonly SidebarThreadSummary[],
+  preparingWorktreeThreadIds: ReadonlySet<ThreadId>,
+): ReadonlySet<ThreadId> {
+  const ids = new Set<ThreadId>();
+  for (const thread of threads) {
+    if (thread.parentThreadId || thread.archivedAt != null || thread.snoozedUntil != null) continue;
+    if (
+      isThreadActivelyWorking(thread) ||
+      thread.session?.status === "connecting" ||
+      preparingWorktreeThreadIds.has(thread.id)
+    )
+      ids.add(thread.id);
+  }
+  return ids;
+}
+
+/** Derive display-only Working membership without changing pins or thread lifecycle. */
+export function collectWorkingThreadIds(input: {
+  threads: readonly SidebarThreadSummary[];
+  pinnedThreadIdSet: ReadonlySet<ThreadId>;
+  preparingWorktreeThreadIds: ReadonlySet<ThreadId>;
+  /** Settled status from `collectActiveWorkThreadIds`; derived from the threads when omitted. */
+  activeThreadIds?: ReadonlySet<ThreadId>;
+}): ReadonlySet<ThreadId> {
+  const activeThreadIds =
+    input.activeThreadIds ??
+    collectActiveWorkThreadIds(input.threads, input.preparingWorktreeThreadIds);
+  const childrenByParentId = new Map<ThreadId, SidebarThreadSummary[]>();
+  const roots: SidebarThreadSummary[] = [];
+  for (const thread of input.threads) {
+    if (thread.archivedAt != null || thread.snoozedUntil != null) continue;
+    if (!thread.parentThreadId) roots.push(thread);
+    else {
+      const children = childrenByParentId.get(thread.parentThreadId) ?? [];
+      children.push(thread);
+      childrenByParentId.set(thread.parentThreadId, children);
+    }
+  }
+  const workingIds = new Set<ThreadId>();
+  for (const root of roots) {
+    if (!activeThreadIds.has(root.id)) continue;
+    const family: SidebarThreadSummary[] = [];
+    const seen = new Set<ThreadId>();
+    const pending = [root];
+    let needsAttentionOrPinned = false;
+    while (pending.length > 0) {
+      const thread = pending.pop()!;
+      if (seen.has(thread.id)) continue;
+      seen.add(thread.id);
+      family.push(thread);
+      if (
+        input.pinnedThreadIdSet.has(thread.id) ||
+        (canSessionAnswerPendingRequests(thread.session) &&
+          (thread.hasPendingApprovals || thread.hasPendingUserInput))
+      )
+        needsAttentionOrPinned = true;
+      pending.push(...(childrenByParentId.get(thread.id) ?? []));
+    }
+    if (!needsAttentionOrPinned) {
+      for (const thread of family) workingIds.add(thread.id);
+    }
+  }
+  return workingIds;
+}
+
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
   hasPendingApprovals: boolean;
@@ -1576,6 +1643,8 @@ export function deriveSidebarProjectData(input: {
   projects: readonly Pick<Project, "id" | "cwd" | "expanded">[];
   sortedSidebarThreadsByProjectId: ReadonlyMap<ProjectId, SidebarThreadSummary[]>;
   pinnedThreadIds: readonly ThreadId[];
+  /** Display-only relocation; counts and project status still read the complete source. */
+  excludedThreadIds?: ReadonlySet<ThreadId>;
   threadListExtraPagesByProjectCwd: ReadonlyMap<string, number>;
   normalizeProjectCwd: (cwd: string) => string;
   activeSidebarThreadId: ThreadId | undefined;
@@ -1589,7 +1658,10 @@ export function deriveSidebarProjectData(input: {
 
   for (const project of input.projects) {
     const allProjectThreads = input.sortedSidebarThreadsByProjectId.get(project.id) ?? [];
-    const projectThreads = getUnpinnedThreadsForSidebar(allProjectThreads, input.pinnedThreadIds);
+    const projectThreads = getUnpinnedThreadsForSidebar(
+      allProjectThreads.filter((thread) => !input.excludedThreadIds?.has(thread.id)),
+      input.pinnedThreadIds,
+    );
     const projectStatus = resolveProjectStatusIndicator(
       allProjectThreads.map((thread) =>
         input.resolveThreadStatus

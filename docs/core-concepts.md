@@ -35,6 +35,18 @@ is cancelled, the task and its prompt remain available for retry.
   Archiving the open thread or marking it **Done** opens the most recently used unfinished chat
   across projects, ordered by its last human message (or creation time). If none remains, New
   thread reopens an unsent draft. Actions on other threads keep the current chat open.
+  In the classic and Activity views, unpinned chats doing live work move into **Working** at the
+  bottom of the panel, including while connecting or preparing a worktree. This section starts
+  collapsed, shows the number of conversations, remembers its open state, and scrolls independently
+  within 40% of the panel height. The open conversation stays open even when its sidebar row is hidden.
+  Membership follows a status only once it holds (400 ms to enter, 800 ms to leave), so a starting or
+  ending turn moves a row once. The row folds out of one place while it unfolds in the other; Reduced
+  Motion swaps it instantly, and status changes do not interrupt composer focus.
+  Pinned chats stay in **Pinned**. Approval or input requests, completion, cancellation, and failures
+  return chats to their ordinary lists using the existing order, without opening folders automatically.
+  Subagents stay with their parent; actionable requests in that family keep it out of Working.
+  Background-only work does not move a chat. Existing space, project, and visibility filters still apply;
+  Groups and the dedicated Settings, Spaces, and Automations panels retain their organization.
 - **Code review** — pull requests and issues from the GitHub repositories of your projects, with a
   detail pane and three actions on every item (see [Code review](#code-review))
 - **Tasks** (Beta; Stable keeps Kanban) — a to-do list for anything you need to do, with or without

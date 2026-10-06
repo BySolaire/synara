@@ -6,6 +6,7 @@ import {
   readSidebarUiState,
   readSidebarUiStateSnapshot,
   subscribeSidebarUiStateWrites,
+  subscribeSidebarUiState,
 } from "./Sidebar.uiState";
 import type { ActivityScopeSelection } from "./SidebarActivityView.logic";
 
@@ -63,6 +64,7 @@ describe("Sidebar.uiState", () => {
 
   it("defaults collapsed sidebar UI state with no thread list paging", () => {
     expect(readSidebarUiState()).toEqual({
+      workingSectionExpanded: false,
       chatSectionExpanded: false,
       chatThreadListExtraPages: 0,
       projectThreadListExtraPagesByCwd: {},
@@ -73,8 +75,60 @@ describe("Sidebar.uiState", () => {
     });
   });
 
+  it("remembers Working across reloads and periods without working chats", () => {
+    persistSidebarUiState({ ...readSidebarUiState(), workingSectionExpanded: true });
+    expect(readSidebarUiState().workingSectionExpanded).toBe(true);
+    persistSidebarUiState({ ...readSidebarUiState(), chatSectionExpanded: true });
+    expect(readSidebarUiState().workingSectionExpanded).toBe(true);
+  });
+
+  it("adopts Working changes from another window without losing other fields", () => {
+    let onStorage: ((event: StorageEvent) => void) | undefined;
+    window.addEventListener = ((_name: string, listener: (event: StorageEvent) => void) => {
+      onStorage = listener;
+    }) as typeof window.addEventListener;
+    let received = readSidebarUiState();
+    const unsubscribe = subscribeSidebarUiState((state) => {
+      received = state;
+    });
+    window.localStorage.setItem(
+      "synara:sidebar-ui:v1",
+      JSON.stringify({
+        workingSectionExpanded: true,
+        activityViewEnabled: true,
+        activityScope: "project-a",
+      }),
+    );
+    onStorage!({ key: "synara:sidebar-ui:v1" } as StorageEvent);
+    expect(received).toMatchObject({
+      workingSectionExpanded: true,
+      activityViewEnabled: true,
+      activityScope: "project-a",
+    });
+    unsubscribe();
+  });
+
+  it("defaults malformed Working state to collapsed and tolerates unavailable storage", () => {
+    window.localStorage.setItem(
+      "synara:sidebar-ui:v1",
+      JSON.stringify({ workingSectionExpanded: "true" }),
+    );
+    expect(readSidebarUiState().workingSectionExpanded).toBe(false);
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      get() {
+        throw new Error("Storage unavailable");
+      },
+    });
+    expect(readSidebarUiState().workingSectionExpanded).toBe(false);
+    expect(() =>
+      persistSidebarUiState({ ...readSidebarUiState(), workingSectionExpanded: true }),
+    ).not.toThrow();
+  });
+
   it("persists project thread list paging by normalized cwd", () => {
     persistSidebarUiState({
+      workingSectionExpanded: false,
       chatSectionExpanded: true,
       chatThreadListExtraPages: 2,
       projectThreadListExtraPagesByCwd: {
@@ -94,6 +148,7 @@ describe("Sidebar.uiState", () => {
     });
 
     expect(readSidebarUiState()).toEqual({
+      workingSectionExpanded: false,
       chatSectionExpanded: true,
       chatThreadListExtraPages: 2,
       projectThreadListExtraPagesByCwd: {
@@ -140,6 +195,7 @@ describe("Sidebar.uiState", () => {
     );
 
     expect(readSidebarUiState()).toEqual({
+      workingSectionExpanded: false,
       chatSectionExpanded: true,
       chatThreadListExtraPages: 0,
       projectThreadListExtraPagesByCwd: {
@@ -187,6 +243,7 @@ describe("Sidebar.uiState", () => {
     );
 
     expect(readSidebarUiState()).toEqual({
+      workingSectionExpanded: false,
       chatSectionExpanded: false,
       chatThreadListExtraPages: 0,
       projectThreadListExtraPagesByCwd: {},

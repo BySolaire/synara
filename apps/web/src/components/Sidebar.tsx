@@ -384,6 +384,8 @@ import {
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import {
   excludeHiddenProjectAgentCoordinatorThreads,
+  collectActiveWorkThreadIds,
+  collectWorkingThreadIds,
   buildProjectThreadTree,
   derivePinnedProjectIdsForSidebar,
   deriveSidebarProjectData,
@@ -430,6 +432,13 @@ import {
   sortProjectsForSidebar,
   sortThreadsForSidebar,
 } from "./Sidebar.logic";
+import { SidebarWorkingSection } from "./SidebarWorkingSection";
+import { useSidebarWorkingFocus } from "../hooks/useSidebarWorkingFocus";
+import {
+  useSettledThreadIdSet,
+  useSidebarWorkingRelocation,
+  useSidebarWorkingRelocationMotion,
+} from "../hooks/useSidebarWorkingRelocation";
 import type { LastThreadRoute } from "../chatRouteRestore";
 import { useCopyPathToClipboard, useCopyThreadIdToClipboard } from "~/hooks/useCopyToClipboard";
 import { cn } from "~/lib/utils";
@@ -1684,6 +1693,14 @@ export default function Sidebar() {
   const [chatSectionExpanded, setChatSectionExpanded] = useState(
     () => readSidebarUiState().chatSectionExpanded,
   );
+  const [workingSectionExpanded, setWorkingSectionExpanded] = useState(
+    () => readSidebarUiState().workingSectionExpanded,
+  );
+  const [workingSectionContainer, setWorkingSectionContainer] = useState<HTMLDivElement | null>(
+    null,
+  );
+  const sidebarPanelRef = useRef<HTMLDivElement>(null);
+  const toggleWorkingSection = useCallback(() => setWorkingSectionExpanded((open) => !open), []);
   const [chatThreadListExtraPages, setChatThreadListExtraPages] = useState(
     () => readSidebarUiState().chatThreadListExtraPages,
   );
@@ -1723,6 +1740,7 @@ export default function Sidebar() {
     () =>
       subscribeSidebarUiState((state) => {
         setChatSectionExpanded(state.chatSectionExpanded);
+        setWorkingSectionExpanded(state.workingSectionExpanded);
         setChatThreadListExtraPages(state.chatThreadListExtraPages);
         setThreadListExtraPagesByProjectCwd(
           new Map(Object.entries(state.projectThreadListExtraPagesByCwd)),
@@ -2090,6 +2108,108 @@ export default function Sidebar() {
       ),
     [activeSpaceNonGroupSidebarTreeThreads, isOnGroups, pinnedThreadIds, groupSidebarTreeThreads],
   );
+  const workingSurfaceEnabled =
+    !isOnGroups &&
+    !isOnSettings &&
+    !isOnAutomations &&
+    (activityViewEnabled || railPanelView !== "spaces");
+  const preparingWorktreeThreadIds = useMemo(
+    () =>
+      new Set(
+        nonGroupSidebarTreeThreads
+          .filter(
+            (thread) =>
+              activeComposerSendThreadIds.has(thread.id) &&
+              thread.envMode === "worktree" &&
+              thread.latestTurn === null &&
+              thread.session === null,
+          )
+          .map((thread) => thread.id),
+      ),
+    [activeComposerSendThreadIds, nonGroupSidebarTreeThreads],
+  );
+  const activeWorkThreadIds = useSettledThreadIdSet(
+    useMemo(
+      () => collectActiveWorkThreadIds(nonGroupSidebarTreeThreads, preparingWorktreeThreadIds),
+      [nonGroupSidebarTreeThreads, preparingWorktreeThreadIds],
+    ),
+  );
+  const workingThreadIdSet = useMemo(
+    () =>
+      collectWorkingThreadIds({
+        threads: nonGroupSidebarTreeThreads,
+        pinnedThreadIdSet,
+        preparingWorktreeThreadIds,
+        activeThreadIds: activeWorkThreadIds,
+      }),
+    [
+      activeWorkThreadIds,
+      preparingWorktreeThreadIds,
+      nonGroupSidebarTreeThreads,
+      pinnedThreadIdSet,
+    ],
+  );
+  const classicWorkingThreadIdSet = useMemo(
+    () =>
+      new Set(
+        workingSurfaceEnabled && !activityViewEnabled
+          ? activeSpaceNonGroupSidebarTreeThreads
+              .filter(
+                (thread) =>
+                  workingThreadIdSet.has(thread.id) &&
+                  (isOrdinarySpaceProject(projectById.get(thread.projectId), {
+                    homeDir,
+                    chatWorkspaceRoot,
+                    studioWorkspaceRoot,
+                    groupsWorkspaceRoot,
+                  }) ||
+                    (chatsSectionVisible &&
+                      isHomeChatContainerProject(projectById.get(thread.projectId), {
+                        homeDir,
+                        chatWorkspaceRoot,
+                      }))),
+              )
+              .map((thread) => thread.id)
+          : [],
+      ),
+    [
+      workingSurfaceEnabled,
+      activityViewEnabled,
+      activeSpaceNonGroupSidebarTreeThreads,
+      workingThreadIdSet,
+      chatsSectionVisible,
+      projectById,
+      homeDir,
+      chatWorkspaceRoot,
+      studioWorkspaceRoot,
+      groupsWorkspaceRoot,
+    ],
+  );
+  const surfaceWorkingThreadIdSet = activityViewEnabled
+    ? workingThreadIdSet
+    : classicWorkingThreadIdSet;
+  const {
+    shownInWorking: workingRowThreadIdSet,
+    hiddenFromList: workingHiddenFromListThreadIdSet,
+    relocations: workingRelocations,
+  } = useSidebarWorkingRelocation(
+    surfaceWorkingThreadIdSet,
+    workingSurfaceEnabled
+      ? `${activityViewEnabled ? "activity" : "classic"}:${activeSpaceId ?? ""}`
+      : "off",
+  );
+  const classicWorkingRowThreadIdSet = activityViewEnabled
+    ? classicWorkingThreadIdSet
+    : workingRowThreadIdSet;
+  const classicWorkingHiddenThreadIdSet = activityViewEnabled
+    ? classicWorkingThreadIdSet
+    : workingHiddenFromListThreadIdSet;
+  useSidebarWorkingRelocationMotion(
+    sidebarPanelRef,
+    workingRelocations,
+    surfaceWorkingThreadIdSet.size,
+  );
+  useSidebarWorkingFocus(sidebarPanelRef, surfaceWorkingThreadIdSet, workingSectionExpanded);
   const openPrLink = useCallback((event: MouseEvent<HTMLElement>, prUrl: string) => {
     event.preventDefault();
     event.stopPropagation();
@@ -3831,6 +3951,7 @@ export default function Sidebar() {
     (nextLastThreadRoute: LastThreadRoute) => {
       setLastThreadRoute(nextLastThreadRoute);
       persistSidebarUiState({
+        workingSectionExpanded,
         chatSectionExpanded,
         chatThreadListExtraPages,
         projectThreadListExtraPagesByCwd: Object.fromEntries(threadListExtraPagesByProjectCwd),
@@ -3841,6 +3962,7 @@ export default function Sidebar() {
       });
     },
     [
+      workingSectionExpanded,
       activityScope,
       activityViewEnabled,
       chatSectionExpanded,
@@ -4405,6 +4527,28 @@ export default function Sidebar() {
     }
     return byProjectId;
   }, [appSettings.sidebarThreadSortOrder, sidebarThreadsByProjectId]);
+  const classicWorkingRows = useMemo(
+    () =>
+      buildProjectThreadTree({
+        threads: sortThreadsForSidebar(
+          activeSpaceNonGroupSidebarTreeThreads.filter((thread) =>
+            classicWorkingRowThreadIdSet.has(thread.id),
+          ),
+          appSettings.sidebarThreadSortOrder,
+        ),
+        forceVisibleThreadId: activeSidebarThreadId ?? undefined,
+      }),
+    [
+      activeSpaceNonGroupSidebarTreeThreads,
+      classicWorkingRowThreadIdSet,
+      appSettings.sidebarThreadSortOrder,
+      activeSidebarThreadId,
+    ],
+  );
+  const classicWorkingVisibleThreadIds = useMemo(
+    () => (workingSectionExpanded ? classicWorkingRows.map((row) => row.thread.id) : []),
+    [classicWorkingRows, workingSectionExpanded],
+  );
   const handleProjectTitlePointerDownCapture = useCallback(() => {
     suppressProjectClickAfterDragRef.current = false;
   }, []);
@@ -4452,7 +4596,9 @@ export default function Sidebar() {
     }
     return buildProjectThreadTree({
       threads: sortThreadsForSidebar(
-        chatProjects.flatMap((project) => sortedSidebarThreadsByProjectId.get(project.id) ?? []),
+        chatProjects
+          .flatMap((project) => sortedSidebarThreadsByProjectId.get(project.id) ?? [])
+          .filter((thread) => !classicWorkingHiddenThreadIdSet.has(thread.id)),
         appSettings.sidebarThreadSortOrder,
       ),
       forceVisibleThreadId: activeSidebarThreadId ?? undefined,
@@ -4462,6 +4608,7 @@ export default function Sidebar() {
     appSettings.sidebarThreadSortOrder,
     chatSectionExpanded,
     chatProjects,
+    classicWorkingHiddenThreadIdSet,
     sortedSidebarThreadsByProjectId,
   ]);
   const visibleChatThreadIds = useMemo(
@@ -4580,6 +4727,7 @@ export default function Sidebar() {
     () =>
       deriveSidebarProjectData({
         projects: standardProjects,
+        excludedThreadIds: classicWorkingHiddenThreadIdSet,
         sortedSidebarThreadsByProjectId,
         pinnedThreadIds,
         threadListExtraPagesByProjectCwd,
@@ -4590,6 +4738,7 @@ export default function Sidebar() {
         resolveThreadStatus: resolveThreadStatusForSidebar,
       }),
     [
+      classicWorkingHiddenThreadIdSet,
       activeSidebarThreadId,
       threadListExtraPagesByProjectCwd,
       pinnedThreadIds,
@@ -4781,6 +4930,7 @@ export default function Sidebar() {
 
   useEffect(() => {
     persistSidebarUiState({
+      workingSectionExpanded,
       chatSectionExpanded,
       chatThreadListExtraPages,
       projectThreadListExtraPagesByCwd: Object.fromEntries(threadListExtraPagesByProjectCwd),
@@ -4790,6 +4940,7 @@ export default function Sidebar() {
       activityScope,
     });
   }, [
+    workingSectionExpanded,
     activityScope,
     activityViewEnabled,
     chatSectionExpanded,
@@ -4874,9 +5025,17 @@ export default function Sidebar() {
     }
 
     for (const threadId of classicSnoozedVisibleThreadIds) addVisibleThreadId(threadId);
+    if (workingSurfaceEnabled && chatsSectionVisible) {
+      for (const entry of renderedChatEntries) addVisibleThreadId(entry.rowId);
+    }
+    for (const threadId of classicWorkingVisibleThreadIds) addVisibleThreadId(threadId);
     return [...visibleThreadIdSet];
   }, [
     classicSnoozedVisibleThreadIds,
+    chatsSectionVisible,
+    workingSurfaceEnabled,
+    renderedChatEntries,
+    classicWorkingVisibleThreadIds,
     pinnedThreads,
     surfaceProjectSidebarDataById,
     surfaceProjects,
@@ -4884,13 +5043,8 @@ export default function Sidebar() {
   const visibleSidebarThreadIds =
     activityViewEnabled && !isOnGroups ? activityVisibleThreadIds : classicVisibleSidebarThreadIds;
   const visibleSidebarThreadIdSet = useMemo(
-    () =>
-      new Set(
-        activityViewEnabled && !isOnGroups
-          ? visibleSidebarThreadIds
-          : [...visibleSidebarThreadIds, ...visibleChatThreadIds],
-      ),
-    [activityViewEnabled, isOnGroups, visibleChatThreadIds, visibleSidebarThreadIds],
+    () => new Set(visibleSidebarThreadIds),
+    [visibleSidebarThreadIds],
   );
   const visibleSidebarThreads = useMemo(
     // Tree source so an active subagent row also gets PR badges and git targets.
@@ -5262,6 +5416,7 @@ export default function Sidebar() {
             role="button"
             tabIndex={0}
             data-thread-item
+            data-sidebar-thread-id={thread.id}
             aria-label={resolveThreadRowAriaLabel(thread)}
             aria-description={prChip?.tooltip}
             className={cn(
@@ -5403,6 +5558,7 @@ export default function Sidebar() {
         data-thread-hover-anchor={hoverAnchorId}
         className="group/thread-row w-full"
         data-thread-item
+        data-sidebar-thread-id={thread.id}
       >
         <Tooltip>
           <TooltipTrigger
@@ -7003,7 +7159,10 @@ export default function Sidebar() {
             <AppRail {...appRailProps} />
           </div>
         ) : null}
-        <div className={isMobile ? "flex min-h-0 min-w-0 flex-1 flex-col" : "contents"}>
+        <div
+          ref={sidebarPanelRef}
+          className="flex min-h-0 min-w-0 flex-1 flex-col [container-type:size]"
+        >
           <SidebarContent className="gap-0 font-system-ui">
             {showArm64IntelBuildWarning && arm64IntelBuildWarningDescription ? (
               <SidebarGroup className="px-2 pt-2 pb-0">
@@ -7139,6 +7298,12 @@ export default function Sidebar() {
                   ) : activityViewEnabled ? (
                     <SidebarGroup className="px-1.5 py-1.5">
                       <SidebarActivityView
+                        workingThreadIdSet={workingRowThreadIdSet}
+                        feedExcludedThreadIds={workingHiddenFromListThreadIdSet}
+                        preparingWorktreeThreadIds={preparingWorktreeThreadIds}
+                        workingSectionExpanded={workingSectionExpanded}
+                        onToggleWorkingSection={toggleWorkingSection}
+                        workingSectionContainer={workingSectionContainer}
                         threads={activityNonGroupSidebarThreads}
                         projectById={projectById}
                         activeThreadId={visualActiveSidebarThreadId}
@@ -7447,6 +7612,31 @@ export default function Sidebar() {
               </SidebarGroup>
             ) : null}
           </SidebarContent>
+
+          <div
+            ref={setWorkingSectionContainer}
+            data-sidebar-working-host
+            tabIndex={-1}
+            className="shrink-0 outline-none"
+          >
+            {workingSurfaceEnabled && !activityViewEnabled ? (
+              <SidebarWorkingSection
+                count={classicWorkingRows.filter((row) => !row.thread.parentThreadId).length}
+                open={workingSectionExpanded}
+                onToggle={toggleWorkingSection}
+              >
+                {classicWorkingRows.map((row) =>
+                  renderThreadRow(
+                    row.thread,
+                    classicWorkingVisibleThreadIds,
+                    row.depth,
+                    true,
+                    resolveThreadProjectLabel(projectById.get(row.thread.projectId)),
+                  ),
+                )}
+              </SidebarWorkingSection>
+            ) : null}
+          </div>
 
           <SidebarFooter
             // Help and the update button live in the rail; the footer only carries debug tools.

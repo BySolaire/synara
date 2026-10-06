@@ -803,3 +803,120 @@ describe("collectUnreadActivityThreads", () => {
     expect(hasUnreadActivity([activeUnread, otherUnread], activeUnread.id)).toBe(true);
   });
 });
+
+describe("Activity Working partition", () => {
+  it("relocates work before drafts and done while leaving pins and snoozes in place", () => {
+    const working = makeThread({
+      id: "working",
+      hasLiveTailWork: true,
+      settledAt: "2026-08-01T12:00:00.000Z",
+    });
+    const pinned = makeThread({ id: "pinned", hasLiveTailWork: true });
+    const snoozed = {
+      ...makeThread({ id: "snoozed", hasLiveTailWork: true }),
+      snoozedUntil: "2026-08-02T12:00:00.000Z",
+    };
+    const model = buildActivityViewModel({
+      threads: [working, pinned, snoozed],
+      pinnedThreadIdSet: new Set([pinned.id]),
+      draftThreadIdSet: new Set([working.id]),
+      workingThreadIdSet: new Set([working.id, pinned.id, snoozed.id]),
+    });
+    expect(model.working.map((thread) => thread.id)).toEqual([working.id]);
+    expect(model.pinned.map((thread) => thread.id)).toEqual([pinned.id]);
+    expect(model.snoozed.map((thread) => thread.id)).toEqual([snoozed.id]);
+    expect(model.drafts).toEqual([]);
+    expect(model.settled).toEqual([]);
+  });
+
+  it("includes first-turn preparation in scope options, including pinned preparation", () => {
+    const thread = makeThread({ id: "preparing" });
+    const preparing = new Set([thread.id]);
+    expect(collectActivityScopeOptions([thread], () => true, new Set(), preparing)).toEqual([
+      { kind: "project", projectId: PROJECT_ID, threadCount: 1 },
+    ]);
+    const model = buildActivityViewModel({
+      threads: [thread],
+      pinnedThreadIdSet: preparing,
+      preparingWorktreeThreadIds: preparing,
+    });
+    expect(model.pinned).toEqual([thread]);
+    expect(
+      buildActivityViewModel({
+        threads: [thread],
+        pinnedThreadIdSet: new Set(),
+        workingThreadIdSet: preparing,
+      }).working,
+    ).toEqual([thread]);
+  });
+
+  it("respects project scope and returns completed work to the existing human-message order", () => {
+    const first = makeThread({
+      id: "first",
+      latestHumanMessageAt: "2026-08-01T12:00:00.000Z",
+      hasLiveTailWork: true,
+    });
+    const second = makeThread({
+      id: "second",
+      latestHumanMessageAt: "2026-08-01T11:00:00.000Z",
+      latestTurn: completedTurn("2026-08-01T11:05:00.000Z"),
+    });
+    const other = makeThread({
+      id: "other",
+      projectId: ProjectId.makeUnsafe("other"),
+      hasLiveTailWork: true,
+    });
+    const input = {
+      threads: [second, first, other],
+      pinnedThreadIdSet: new Set<ThreadId>(),
+      projectFilterIds: new Set([PROJECT_ID]),
+    };
+    expect(
+      buildActivityViewModel({ ...input, workingThreadIdSet: new Set([first.id, other.id]) })
+        .working,
+    ).toEqual([first]);
+    expect(
+      buildActivityViewModel({
+        ...input,
+        threads: [
+          second,
+          {
+            ...first,
+            hasLiveTailWork: false,
+            latestTurn: completedTurn("2026-08-01T12:05:00.000Z"),
+          },
+        ],
+      }).active.map((thread) => thread.id),
+    ).toEqual([first.id, second.id]);
+  });
+
+  it("appends Working shortcuts after ordinary and snoozed rows only while expanded", () => {
+    const working = makeThread({ id: "working", hasLiveTailWork: true });
+    const recent = makeThread({ id: "recent" });
+    const input = {
+      groupMode: "time" as const,
+      pinnedOpen: true,
+      pinned: [],
+      drafts: [],
+      recent: [recent],
+      today: [],
+      yesterday: [],
+      earlierOpen: false,
+      earlier: [],
+      projectGroups: [],
+      settledOpen: false,
+      settled: [],
+      working: [working],
+      snoozed: [ThreadId.makeUnsafe("snoozed")],
+    };
+    expect(collectVisibleActivityThreadIds({ ...input, workingOpen: false })).toEqual([
+      recent.id,
+      ThreadId.makeUnsafe("snoozed"),
+    ]);
+    expect(collectVisibleActivityThreadIds({ ...input, workingOpen: true })).toEqual([
+      recent.id,
+      ThreadId.makeUnsafe("snoozed"),
+      working.id,
+    ]);
+  });
+});

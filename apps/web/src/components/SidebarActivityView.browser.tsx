@@ -5,14 +5,23 @@
 import "../index.css";
 
 import { ProjectId, ThreadId, type OrchestrationThreadPullRequest } from "@synara/contracts";
-import { useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { page, userEvent } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
 import type { Project, SidebarThreadSummary } from "../types";
 import { DEFAULT_PROJECT_ICON, type ProjectAppearance } from "../lib/projectAppearance";
-import type { ThreadStatusPill } from "./Sidebar.logic";
+import {
+  collectWorkingThreadIds,
+  resolveThreadStatusPill,
+  type ThreadStatusPill,
+} from "./Sidebar.logic";
+import { useSidebarWorkingFocus } from "../hooks/useSidebarWorkingFocus";
+import {
+  useSidebarWorkingRelocation,
+  useSidebarWorkingRelocationMotion,
+} from "../hooks/useSidebarWorkingRelocation";
 import { SidebarActivityView } from "./SidebarActivityView";
 import type { ActivityScopeSelection } from "./SidebarActivityView.logic";
 
@@ -24,6 +33,9 @@ vi.mock("~/lib/wsHttpUrl", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/wsHttpUrl")>()),
   resolveWsHttpUrl: () => projectFavicon,
 }));
+
+const EMPTY_THREAD_IDS: ReadonlySet<ThreadId> = new Set();
+const EMPTY_RELOCATIONS = new Map();
 
 const PROJECT_A = ProjectId.makeUnsafe("activity-project-a");
 const PROJECT_B = ProjectId.makeUnsafe("activity-project-b");
@@ -97,6 +109,11 @@ function renderActivity(input: {
   onProjectContextMenu?: (projectId: ProjectId, position: { x: number; y: number }) => void;
   resolveThreadStatus?: (thread: SidebarThreadSummary) => ThreadStatusPill | null;
   threadsHydrated?: boolean;
+  working?: boolean;
+  /** Folds rows between the feed and Working the way the sidebar does. */
+  fold?: boolean;
+  workingOpen?: boolean;
+  preparingIds?: ReadonlySet<ThreadId>;
   /** Controlled scope (the sidebar's role); omitted, the harness keeps it in local state. */
   scope?: {
     selection: ActivityScopeSelection;
@@ -109,8 +126,40 @@ function renderActivity(input: {
 function ActivityHarness(input: Parameters<typeof renderActivity>[0]) {
   const projects = input.projects ?? [makeProject(PROJECT_A, "Project A")];
   const [localScope, setLocalScope] = useState<ActivityScopeSelection>(null);
-  return (
+  const [workingOpen, setWorkingOpen] = useState(input.workingOpen ?? false);
+  const [footer, setFooter] = useState<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const workingIds = useMemo(
+    () =>
+      collectWorkingThreadIds({
+        threads: input.threads,
+        pinnedThreadIdSet: input.pinnedThreadIdSet ?? new Set(),
+        preparingWorktreeThreadIds: input.preparingIds ?? new Set(),
+      }),
+    [input.threads, input.pinnedThreadIdSet, input.preparingIds],
+  );
+  const { shownInWorking, hiddenFromList, relocations } = useSidebarWorkingRelocation(
+    workingIds,
+    input.fold ? "activity" : "static",
+  );
+  useSidebarWorkingRelocationMotion(
+    panelRef,
+    input.fold ? relocations : EMPTY_RELOCATIONS,
+    workingIds.size,
+  );
+  useSidebarWorkingFocus(panelRef, workingIds, workingOpen);
+  const activity = (
     <SidebarActivityView
+      workingThreadIdSet={
+        input.working ? (input.fold ? shownInWorking : workingIds) : EMPTY_THREAD_IDS
+      }
+      feedExcludedThreadIds={
+        input.working ? (input.fold ? hiddenFromList : workingIds) : EMPTY_THREAD_IDS
+      }
+      preparingWorktreeThreadIds={input.preparingIds ?? EMPTY_THREAD_IDS}
+      workingSectionExpanded={workingOpen}
+      onToggleWorkingSection={() => setWorkingOpen((open) => !open)}
+      workingSectionContainer={input.working ? footer : null}
       threads={input.threads}
       projectById={new Map(projects.map((project) => [project.id, project]))}
       activeThreadId={input.activeThreadId ?? null}
@@ -122,7 +171,18 @@ function ActivityHarness(input: Parameters<typeof renderActivity>[0]) {
       prByThreadId={input.prByThreadId ?? new Map()}
       threadJumpLabelByThreadId={new Map()}
       onVisibleThreadIdsChange={input.onVisibleThreadIdsChange ?? (() => {})}
-      resolveThreadStatus={input.resolveThreadStatus ?? (() => null)}
+      resolveThreadStatus={
+        input.resolveThreadStatus ??
+        ((thread) =>
+          input.working
+            ? resolveThreadStatusPill({
+                thread,
+                hasPendingApprovals: thread.hasPendingApprovals,
+                hasPendingUserInput: thread.hasPendingUserInput,
+                isPreparingWorktree: input.preparingIds?.has(thread.id) ?? false,
+              })
+            : null)
+      }
       onOpenThread={input.onOpenThread ?? (() => {})}
       onOpenThreadPullRequest={() => {}}
       onSetThreadSettled={input.onSetThreadSettled ?? (() => {})}
@@ -138,6 +198,29 @@ function ActivityHarness(input: Parameters<typeof renderActivity>[0]) {
       onCreateChat={() => {}}
       onAddProject={() => {}}
     />
+  );
+  return input.working ? (
+    <>
+      <div
+        ref={panelRef}
+        data-testid="working-panel"
+        className="flex h-[500px] w-[300px] min-h-0 flex-col bg-sidebar text-sidebar-foreground [container-type:size]"
+      >
+        <div data-testid="main-list" className="min-h-0 flex-1 overflow-auto">
+          {activity}
+        </div>
+        <div
+          ref={setFooter}
+          data-testid="working-footer"
+          data-sidebar-working-host
+          tabIndex={-1}
+          className="shrink-0"
+        />
+      </div>
+      <input aria-label="Composer" />
+    </>
+  ) : (
+    activity
   );
 }
 
@@ -673,4 +756,197 @@ describe("SidebarActivityView", () => {
     await vi.waitFor(() => expect(onVisibleThreadIdsChange).toHaveBeenLastCalledWith([recent.id]));
     await mounted.unmount();
   });
+
+  it("moves the open chat into collapsed Working and returns it after completion", async () => {
+    const thread = makeThread(700, { hasLiveTailWork: true });
+    const onVisibleThreadIdsChange = vi.fn();
+    const input = {
+      threads: [thread],
+      activeThreadId: thread.id,
+      working: true,
+      onVisibleThreadIdsChange,
+    };
+    const mounted = await render(renderActivity(input));
+    const header = page.getByRole("button", { name: "Working (1)", exact: true });
+    await expect.element(header).toHaveAttribute("aria-expanded", "false");
+    expect(
+      page.getByTestId(`activity-thread-${thread.id}`).element().closest("[inert]"),
+    ).not.toBeNull();
+    await vi.waitFor(() =>
+      expect(
+        document
+          .querySelector("[data-sidebar-working-section] div[aria-hidden=true]")!
+          .getBoundingClientRect().height,
+      ).toBe(0),
+    );
+    await expect
+      .element(page.getByText("No activity yet", { exact: true }))
+      .not.toBeInTheDocument();
+    await vi.waitFor(() => expect(onVisibleThreadIdsChange).toHaveBeenLastCalledWith([]));
+    await header.click();
+    await expect.element(page.getByTestId(`activity-thread-${thread.id}`)).toBeVisible();
+    expect(document.querySelectorAll(`[data-sidebar-thread-id="${thread.id}"]`)).toHaveLength(1);
+    await vi.waitFor(() => expect(onVisibleThreadIdsChange).toHaveBeenLastCalledWith([thread.id]));
+    await mounted.rerender(
+      renderActivity({ ...input, threads: [{ ...thread, hasLiveTailWork: false }] }),
+    );
+    await expect.element(header).not.toBeInTheDocument();
+    await expect.element(page.getByTestId(`activity-thread-${thread.id}`)).toBeVisible();
+    await mounted.rerender(renderActivity(input));
+    await expect.element(header).toHaveAttribute("aria-expanded", "true");
+    await mounted.unmount();
+  });
+
+  it("folds Activity rows across the footer portal without duplicate action targets", async () => {
+    const thread = makeThread(710);
+    const input = { threads: [thread], working: true, workingOpen: true, fold: true };
+    const mounted = await render(renderActivity(input));
+    const rows = () => [
+      ...document.querySelectorAll<HTMLElement>(`[data-sidebar-thread-id="${thread.id}"]`),
+    ];
+    const inFooter = (row: HTMLElement) => row.closest("[data-sidebar-working-host]") !== null;
+    for (const working of [true, false]) {
+      await mounted.rerender(
+        renderActivity({ ...input, threads: [{ ...thread, hasLiveTailWork: working }] }),
+      );
+      // Both copies render while folding; only the arriving one takes focus and clicks.
+      const [leaving, arriving] = [rows().find((row) => row.inert), rows().find((r) => !r.inert)];
+      expect(rows()).toHaveLength(2);
+      expect(inFooter(leaving!)).toBe(!working);
+      expect(inFooter(arriving!)).toBe(working);
+      expect(leaving!.getAnimations()).toHaveLength(1);
+      expect(arriving!.getAnimations()).toHaveLength(1);
+      await expect.poll(() => rows().length).toBe(1);
+      expect(inFooter(rows()[0]!)).toBe(working);
+      expect(rows()[0]!.inert).toBe(false);
+    }
+    await mounted.unmount();
+  });
+
+  it("keeps pins in Pinned and adopts pin/unpin while work is live", async () => {
+    const thread = makeThread(701, { hasLiveTailWork: true });
+    const input = { threads: [thread], working: true };
+    const mounted = await render(
+      renderActivity({ ...input, pinnedThreadIdSet: new Set([thread.id]) }),
+    );
+    await expect.element(page.getByRole("button", { name: "Pinned", exact: true })).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Working (1)", exact: true }))
+      .not.toBeInTheDocument();
+    await mounted.rerender(renderActivity(input));
+    await expect
+      .element(page.getByRole("button", { name: "Working (1)", exact: true }))
+      .toBeVisible();
+    expect(
+      page.getByTestId(`activity-thread-${thread.id}`).element().closest("[inert]"),
+    ).not.toBeNull();
+    await vi.waitFor(() =>
+      expect(
+        document
+          .querySelector("[data-sidebar-working-section] div[aria-hidden=true]")!
+          .getBoundingClientRect().height,
+      ).toBe(0),
+    );
+    await mounted.rerender(renderActivity({ ...input, pinnedThreadIdSet: new Set([thread.id]) }));
+    await expect.element(page.getByTestId(`activity-thread-${thread.id}`)).toBeVisible();
+    expect(document.querySelectorAll(`[data-sidebar-thread-id="${thread.id}"]`)).toHaveLength(1);
+    await mounted.unmount();
+  });
+
+  it("keeps first worktree preparation scoped to its project without a false empty state", async () => {
+    const thread = makeThread(702, { latestTurn: null, session: null, envMode: "worktree" });
+    const onChange = vi.fn();
+    const input = {
+      threads: [thread],
+      working: true,
+      preparingIds: new Set([thread.id]),
+      scope: { selection: PROJECT_A, onChange },
+    };
+    const mounted = await render(renderActivity(input));
+    await expect
+      .element(page.getByRole("button", { name: "Working (1)", exact: true }))
+      .toBeVisible();
+    expect(onChange).not.toHaveBeenCalled();
+    await expect
+      .element(page.getByText("No activity for this project", { exact: true }))
+      .not.toBeInTheDocument();
+    await mounted.unmount();
+  });
+
+  it("restores actionable approval requests to the normal list and keeps composer focus", async () => {
+    const thread = makeThread(703, { hasLiveTailWork: true });
+    const input = { threads: [thread], working: true };
+    const mounted = await render(renderActivity(input));
+    page.getByRole("textbox", { name: "Composer", exact: true }).element().focus();
+    const requesting = {
+      ...thread,
+      hasPendingApprovals: true,
+      session: {
+        provider: "codex",
+        status: "running",
+        orchestrationStatus: "running",
+        createdAt: thread.createdAt,
+        updatedAt: thread.createdAt,
+      } as SidebarThreadSummary["session"],
+    };
+    await mounted.rerender(renderActivity({ ...input, threads: [requesting] }));
+    await expect
+      .element(page.getByRole("button", { name: "Working (1)", exact: true }))
+      .not.toBeInTheDocument();
+    await expect.element(page.getByTestId(`activity-thread-${thread.id}`)).toBeVisible();
+    expect(document.activeElement).toBe(
+      page.getByRole("textbox", { name: "Composer", exact: true }).element(),
+    );
+    await mounted.unmount();
+  });
+
+  it("moves focused rows to the Working header when they become hidden", async () => {
+    const thread = makeThread(704);
+    const input = { threads: [thread], working: true };
+    const mounted = await render(renderActivity(input));
+    page.getByTestId(`activity-thread-${thread.id}`).element().focus();
+    await mounted.rerender(
+      renderActivity({ ...input, threads: [{ ...thread, hasLiveTailWork: true }] }),
+    );
+    const header = page.getByRole("button", { name: "Working (1)", exact: true });
+    await expect.element(header).toHaveAttribute("aria-expanded", "false");
+    await vi.waitFor(() => expect(document.activeElement).toBe(header.element()));
+    await userEvent.tab();
+    expect(document.activeElement).toBe(
+      page.getByRole("textbox", { name: "Composer", exact: true }).element(),
+    );
+    await mounted.unmount();
+  });
+
+  it.each([false, true])(
+    "bounds fifty working rows and preserves an independent footer in dark=%s",
+    async (dark) => {
+      document.documentElement.classList.toggle("dark", dark);
+      await page.viewport(dark ? 1280 : 390, dark ? 900 : 700);
+      const threads = Array.from({ length: 50 }, (_, index) =>
+        makeThread(800 + index, { hasLiveTailWork: true }),
+      );
+      const mounted = await render(renderActivity({ threads, working: true, workingOpen: true }));
+      await expect
+        .element(page.getByRole("button", { name: "Working (50)", exact: true }))
+        .toBeVisible();
+      const panel = page.getByTestId("working-panel").element();
+      const footer = page.getByTestId("working-footer").element();
+      const viewport = footer.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]')!;
+      await vi.waitFor(() => expect(viewport.scrollHeight).toBeGreaterThan(viewport.clientHeight));
+      expect(footer.getBoundingClientRect().height).toBeLessThanOrEqual(
+        panel.getBoundingClientRect().height * 0.4,
+      );
+      const top = footer.getBoundingClientRect().top;
+      viewport.scrollTop = viewport.scrollHeight;
+      expect(footer.getBoundingClientRect().top).toBe(top);
+      expect(page.getByTestId("main-list").element().scrollTop).toBe(0);
+      await page.getByTestId("working-panel").screenshot({
+        path: `node_modules/.cache/working-activity-${dark ? "dark-desktop" : "light-mobile"}.png`,
+      });
+      await mounted.unmount();
+      document.documentElement.classList.remove("dark");
+      await page.viewport(1280, 900);
+    },
+  );
 });

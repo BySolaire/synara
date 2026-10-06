@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildProjectThreadTree,
+  collectWorkingThreadIds,
   derivePinnedProjectIdsForSidebar,
   derivePinnedThreadIdsForSidebar,
   deriveSidebarProjectData,
@@ -2277,5 +2278,153 @@ describe("sortProjectsForSidebar", () => {
       ProjectId.makeUnsafe("project-2"),
       ProjectId.makeUnsafe("project-1"),
     ]);
+  });
+});
+
+describe("Working thread families", () => {
+  const emptyIds = new Set<ThreadId>();
+  const runningSession = {
+    provider: "codex",
+    status: "running",
+    updatedAt: "2026-03-09T10:00:00.000Z",
+  } as Thread["session"];
+  const classify = (threads: SidebarThreadSummary[], pins = emptyIds, preparing = emptyIds) =>
+    collectWorkingThreadIds({
+      threads,
+      pinnedThreadIdSet: pins,
+      preparingWorktreeThreadIds: preparing,
+    });
+
+  it("includes real work, connection, and first worktree preparation", () => {
+    const work = makeSidebarThreadSummary({
+      id: ThreadId.makeUnsafe("work"),
+      hasLiveTailWork: true,
+    });
+    const connecting = makeSidebarThreadSummary({
+      id: ThreadId.makeUnsafe("connecting"),
+      session: { ...runningSession!, status: "connecting" },
+    });
+    const preparing = makeSidebarThreadSummary({
+      id: ThreadId.makeUnsafe("preparing"),
+      envMode: "worktree",
+    });
+    expect([...classify([work, connecting, preparing], emptyIds, new Set([preparing.id]))]).toEqual(
+      [work.id, connecting.id, preparing.id],
+    );
+  });
+
+  it.each(["hasPendingApprovals", "hasPendingUserInput"] as const)(
+    "keeps actionable %s out even when its badge was dismissed",
+    (field) => {
+      const root = makeSidebarThreadSummary({
+        session: runningSession,
+        hasLiveTailWork: true,
+        [field]: true,
+      });
+      expect([...classify([root])]).toEqual([]);
+    },
+  );
+
+  it("moves subagents with their parent and keeps orphaned children hidden", () => {
+    const root = makeSidebarThreadSummary({ hasLiveTailWork: true });
+    const child = makeSidebarThreadSummary({
+      id: ThreadId.makeUnsafe("child"),
+      parentThreadId: root.id,
+    });
+    const orphan = makeSidebarThreadSummary({
+      id: ThreadId.makeUnsafe("orphan"),
+      parentThreadId: ThreadId.makeUnsafe("missing"),
+      hasLiveTailWork: true,
+    });
+    expect([...classify([root, child, orphan])]).toEqual([root.id, child.id]);
+    expect(
+      buildProjectThreadTree({ threads: [root, child], forceVisibleThreadId: child.id }).map(
+        (row) => row.thread.id,
+      ),
+    ).toEqual([root.id, child.id]);
+  });
+
+  it("keeps a family in place when a child needs attention or is pinned", () => {
+    const root = makeSidebarThreadSummary({ hasLiveTailWork: true });
+    const child = makeSidebarThreadSummary({
+      id: ThreadId.makeUnsafe("child"),
+      parentThreadId: root.id,
+      session: runningSession,
+      hasPendingUserInput: true,
+    });
+    expect([...classify([root, child])]).toEqual([]);
+    expect([
+      ...classify([root, { ...child, hasPendingUserInput: false }], new Set([child.id])),
+    ]).toEqual([]);
+  });
+
+  it("keeps pins in place and immediately adopts pin/unpin changes", () => {
+    const root = makeSidebarThreadSummary({ hasLiveTailWork: true });
+    expect([...classify([root], new Set([root.id]))]).toEqual([]);
+    expect([...classify([root])]).toEqual([root.id]);
+  });
+
+  it("ignores stale running sessions, background-only work, archives, and snoozes", () => {
+    const completed = makeSidebarThreadSummary({
+      session: runningSession,
+      latestTurn: makeLatestTurn(),
+    });
+    const background = makeSidebarThreadSummary({
+      id: ThreadId.makeUnsafe("background"),
+      pendingBackgroundWorkCount: 2,
+    });
+    const archived = makeSidebarThreadSummary({
+      id: ThreadId.makeUnsafe("archived"),
+      hasLiveTailWork: true,
+      archivedAt: "2026-03-09T10:05:00.000Z",
+    });
+    const snoozed = makeSidebarThreadSummary({
+      id: ThreadId.makeUnsafe("snoozed"),
+      hasLiveTailWork: true,
+      snoozedUntil: "2026-03-10T10:00:00.000Z",
+    });
+    expect([...classify([completed, background, archived, snoozed])]).toEqual([]);
+  });
+
+  it.each(["error", "closed", "ready"] as const)(
+    "returns a thread after its session becomes %s",
+    (status) => {
+      const thread = makeSidebarThreadSummary({
+        session: { ...runningSession!, status },
+        latestTurn: makeLatestTurn(),
+      });
+      expect([...classify([thread])]).toEqual([]);
+    },
+  );
+
+  it("does not hide independent child activity when its parent is idle", () => {
+    const root = makeSidebarThreadSummary();
+    const child = makeSidebarThreadSummary({
+      id: ThreadId.makeUnsafe("child"),
+      parentThreadId: root.id,
+      hasLiveTailWork: true,
+    });
+    expect([...classify([root, child])]).toEqual([]);
+  });
+
+  it("excludes relocated rows before paging but preserves project counts and status", () => {
+    const work = makeSidebarThreadSummary({ hasLiveTailWork: true });
+    const idle = makeSidebarThreadSummary({ id: ThreadId.makeUnsafe("idle") });
+    const project = makeProject({ id: work.projectId, expanded: true });
+    const data = deriveSidebarProjectData({
+      projects: [project],
+      sortedSidebarThreadsByProjectId: new Map([[project.id, [work, idle]]]),
+      pinnedThreadIds: [],
+      excludedThreadIds: new Set([work.id]),
+      threadListExtraPagesByProjectCwd: new Map(),
+      normalizeProjectCwd: (cwd) => cwd,
+      activeSidebarThreadId: work.id,
+      previewLimit: 1,
+      previewPageSize: 1,
+    }).get(project.id)!;
+    expect(data.visibleEntries.map((entry) => entry.rowId)).toEqual([idle.id]);
+    expect(data.allProjectThreadCount).toBe(2);
+    expect(data.projectStatus?.label).toBe("Working");
+    expect(data.canShowMoreThreads).toBe(false);
   });
 });
