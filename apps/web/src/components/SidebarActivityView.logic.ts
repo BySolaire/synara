@@ -85,6 +85,7 @@ function compareThreadIds(
 }
 
 export interface ActivityViewModel {
+  working: SidebarThreadSummary[];
   pinned: SidebarThreadSummary[];
   /**
    * Unpinned, idle chats with an unsent composer message, other than the open one;
@@ -125,6 +126,9 @@ function isParkedActivityDraft(
 export function buildActivityViewModel(input: {
   threads: readonly SidebarThreadSummary[];
   pinnedThreadIdSet: ReadonlySet<ThreadId>;
+  workingThreadIdSet?: ReadonlySet<ThreadId>;
+  /** Rows still folding out of the feed stay in it; defaults to `workingThreadIdSet`. */
+  feedExcludedThreadIds?: ReadonlySet<ThreadId> | undefined;
   draftThreadIdSet?: ReadonlySet<ThreadId>;
   /** First sends preparing a worktree have no provider session or turn yet. */
   preparingThreadIdSet?: ReadonlySet<ThreadId>;
@@ -142,13 +146,19 @@ export function buildActivityViewModel(input: {
   const isDraft = (thread: SidebarThreadSummary) =>
     !input.preparingThreadIdSet?.has(thread.id) && isParkedActivityDraft(thread, draftOptions);
   const pinned: SidebarThreadSummary[] = [];
+  const working: SidebarThreadSummary[] = [];
   const drafts: SidebarThreadSummary[] = [];
   const active: SidebarThreadSummary[] = [];
   const settled: SidebarThreadSummary[] = [];
   const snoozed: SidebarThreadSummary[] = [];
 
   for (const thread of input.threads) {
-    if (!isActivityThread(thread, input.preparingThreadIdSet?.has(thread.id))) continue;
+    if (thread.archivedAt != null || thread.parentThreadId) continue;
+    if (
+      !isActivityThread(thread, input.preparingThreadIdSet?.has(thread.id)) &&
+      !input.workingThreadIdSet?.has(thread.id)
+    )
+      continue;
     if (projectFilterIds !== null && !projectFilterIds.has(thread.projectId)) continue;
     // The server clears snooze on expiry. Client clocks must not surface a thread
     // before that durable update, and pins cannot bypass the user's snooze.
@@ -160,6 +170,8 @@ export function buildActivityViewModel(input: {
       pinned.push(thread);
       continue;
     }
+    if (input.workingThreadIdSet?.has(thread.id)) working.push(thread);
+    if ((input.feedExcludedThreadIds ?? input.workingThreadIdSet)?.has(thread.id)) continue;
     if (isDraft(thread)) {
       drafts.push(thread);
       continue;
@@ -178,6 +190,7 @@ export function buildActivityViewModel(input: {
     (left, right) => Number(isDraft(right)) - Number(isDraft(left)) || compareRecency(left, right),
   );
   drafts.sort(compareRecency);
+  working.sort(compareRecency);
   active.sort(compareRecency);
   settled.sort((left, right) => {
     // Optimistically settled threads have no settledAt yet; their latest
@@ -192,7 +205,7 @@ export function buildActivityViewModel(input: {
       parseTimestampMs(left.snoozedUntil) - parseTimestampMs(right.snoozedUntil) ||
       compareThreadIds(left, right),
   );
-  return { pinned, drafts, active, settled, snoozed };
+  return { working, pinned, drafts, active, settled, snoozed };
 }
 
 export type ActivityDateBucket = "today" | "yesterday" | "earlier";
@@ -312,10 +325,16 @@ export function collectActivityScopeOptions(
   threads: readonly SidebarThreadSummary[],
   isRealProject: (projectId: ProjectId) => boolean,
   preparingThreadIdSet?: ReadonlySet<ThreadId>,
+  workingThreadIdSet?: ReadonlySet<ThreadId>,
 ): ActivityScopeOption[] {
   const countByProjectId = new Map<ProjectId, number>();
   for (const thread of threads) {
-    if (!isActivityThread(thread, preparingThreadIdSet?.has(thread.id))) continue;
+    if (thread.archivedAt != null || thread.parentThreadId) continue;
+    if (
+      !isActivityThread(thread, preparingThreadIdSet?.has(thread.id)) &&
+      !workingThreadIdSet?.has(thread.id)
+    )
+      continue;
     countByProjectId.set(thread.projectId, (countByProjectId.get(thread.projectId) ?? 0) + 1);
   }
 
@@ -612,6 +631,9 @@ export function resolveActivitySectionRows<T extends Pick<SidebarThreadSummary, 
  * into the Activity surface.
  */
 export function collectVisibleActivityThreadIds(input: {
+  workingOpen?: boolean;
+  working?: readonly SidebarThreadSummary[];
+  snoozed?: readonly ThreadId[];
   groupMode: ActivityGroupMode;
   pinnedOpen: boolean;
   pinned: readonly SidebarThreadSummary[];
@@ -643,7 +665,13 @@ export function collectVisibleActivityThreadIds(input: {
   }
   if (input.settledOpen) visible.push(...input.settled);
   if (input.revealed) visible.push(...input.revealed.settled);
-  return [...new Set(visible.map((thread) => thread.id))];
+  return [
+    ...new Set([
+      ...visible.map((thread) => thread.id),
+      ...(input.snoozed ?? []),
+      ...(input.workingOpen ? (input.working ?? []).map((thread) => thread.id) : []),
+    ]),
+  ];
 }
 
 /** Threads "Mark all as read" should visit: eligible feed rows with an unseen completion. */

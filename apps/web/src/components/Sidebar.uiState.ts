@@ -14,6 +14,7 @@ const SIDEBAR_UI_STATE_STORAGE_KEY = "synara:sidebar-ui:v1";
 const sameTabWriteListeners = new Set<() => void>();
 
 export type SidebarUiState = {
+  workingSectionExpanded: boolean;
   chatSectionExpanded: boolean;
   chatThreadListExtraPages: number;
   projectThreadListExtraPagesByCwd: Record<string, number>;
@@ -28,6 +29,7 @@ export type SidebarUiState = {
 };
 
 const DEFAULT_SIDEBAR_UI_STATE: SidebarUiState = {
+  workingSectionExpanded: false,
   chatSectionExpanded: false,
   chatThreadListExtraPages: 0,
   projectThreadListExtraPagesByCwd: {},
@@ -88,6 +90,7 @@ export function readSidebarUiState(): SidebarUiState {
     }
 
     const parsed = JSON.parse(raw) as {
+      workingSectionExpanded?: boolean;
       chatSectionExpanded?: boolean;
       chatThreadListExtraPages?: number;
       projectThreadListExtraPagesByCwd?: Record<string, unknown>;
@@ -133,6 +136,7 @@ export function readSidebarUiState(): SidebarUiState {
     }
 
     return {
+      workingSectionExpanded: parsed.workingSectionExpanded === true,
       chatSectionExpanded: parsed.chatSectionExpanded === true,
       chatThreadListExtraPages:
         parsed.chatThreadListExtraPages === undefined && parsed.chatThreadListExpanded === true
@@ -225,6 +229,7 @@ export function persistSidebarUiState(input: SidebarUiState): void {
     window.localStorage.setItem(
       SIDEBAR_UI_STATE_STORAGE_KEY,
       JSON.stringify({
+        workingSectionExpanded: input.workingSectionExpanded === true,
         chatSectionExpanded: input.chatSectionExpanded,
         chatThreadListExtraPages: sanitizeThreadListExtraPages(input.chatThreadListExtraPages),
         projectThreadListExtraPagesByCwd: sanitizeProjectThreadListExtraPagesByCwd(

@@ -15,6 +15,7 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
+import { createPortal } from "react-dom";
 
 import type { OrchestrationThreadPullRequest, ProjectId, ThreadId } from "@synara/contracts";
 import { resolveThreadEnvironmentMode } from "@synara/shared/threadEnvironment";
@@ -91,6 +92,7 @@ import {
   SidebarShowMoreRow,
 } from "./SidebarListSection";
 import { SidebarSectionToolbar } from "./SidebarSectionToolbar";
+import { SidebarWorkingSection } from "./SidebarWorkingSection";
 import { SidebarDraftGlyph, SidebarStatusTrailingGlyph } from "./SidebarStatusTrailingGlyph";
 import { ThreadArchiveActionButton } from "./ThreadArchiveActionButton";
 import { ThreadPinToggleButton } from "./ThreadPinToggleButton";
@@ -111,6 +113,7 @@ const ACTIVITY_LIST_BASE_LIMIT = 20;
 const ACTIVITY_LIST_PAGE_SIZE = 20;
 const EMPTY_PROJECT_GROUPS: ActivityProjectGroup[] = [];
 const EMPTY_THREADS: SidebarThreadSummary[] = [];
+const EMPTY_WORKING_THREAD_IDS: ReadonlySet<ThreadId> = new Set();
 
 /** Keeps a row action (pin, archive, done) from also opening the thread. */
 function stopRowActivation(event: MouseEvent) {
@@ -202,6 +205,7 @@ export function ActivityThreadRow({
             data-thread-hover-anchor={hoverAnchorId}
             className="group/activity-row relative"
             data-thread-item
+            data-sidebar-thread-id={thread.id}
             {...rowGestures}
           />
         }
@@ -600,6 +604,11 @@ export function SidebarActivityView({
   onChangeGroupMode,
   onCreateChat,
   onAddProject,
+  workingThreadIdSet = EMPTY_WORKING_THREAD_IDS,
+  feedExcludedThreadIds,
+  workingSectionExpanded = false,
+  onToggleWorkingSection,
+  workingSectionContainer,
 }: {
   threads: readonly SidebarThreadSummary[];
   projectById: ReadonlyMap<ProjectId, Project>;
@@ -645,6 +654,13 @@ export function SidebarActivityView({
   onCreateChat: () => void;
   /** Same "Add project" action the Projects section header runs. */
   onAddProject: () => void;
+  /** Rows rendered in Working, including rows folding out of it. */
+  workingThreadIdSet?: ReadonlySet<ThreadId>;
+  /** Rows left out of the feed; rows still folding out of the feed are not in it. */
+  feedExcludedThreadIds?: ReadonlySet<ThreadId>;
+  workingSectionExpanded?: boolean;
+  onToggleWorkingSection?: () => void;
+  workingSectionContainer?: HTMLElement | null;
 }) {
   const [pinnedOpen, setPinnedOpen] = useState(true);
   const [earlierOpen, setEarlierOpen] = useState(false);
@@ -683,8 +699,9 @@ export function SidebarActivityView({
     [threads, resolveThreadStatus],
   );
   const scopeOptions = useMemo(
-    () => collectActivityScopeOptions(threads, isRealProject, preparingThreadIdSet),
-    [isRealProject, threads, preparingThreadIdSet],
+    () =>
+      collectActivityScopeOptions(threads, isRealProject, preparingThreadIdSet, workingThreadIdSet),
+    [isRealProject, threads, preparingThreadIdSet, workingThreadIdSet],
   );
   const unreadThreads = useMemo(() => collectUnreadActivityThreads(threads), [threads]);
 
@@ -708,6 +725,8 @@ export function SidebarActivityView({
         activeThreadId,
         settledOverrideByThreadId,
         projectFilterIds,
+        workingThreadIdSet,
+        feedExcludedThreadIds,
       }),
     [
       activeThreadId,
@@ -717,6 +736,8 @@ export function SidebarActivityView({
       projectFilterIds,
       settledOverrideByThreadId,
       threads,
+      workingThreadIdSet,
+      feedExcludedThreadIds,
     ],
   );
   const priorityKey = `${groupMode}:${activeScope ?? "all"}:${priorityGeneration}`;
@@ -861,8 +882,11 @@ export function SidebarActivityView({
         settledOpen,
         settled: settledRows.visible,
         revealed: revealedThreads,
+        workingOpen:
+          workingSectionExpanded && Boolean(workingSectionContainer && onToggleWorkingSection),
+        working: model.working,
+        snoozed: snoozedVisibleThreadIds,
       }),
-      ...snoozedVisibleThreadIds,
     ],
     [
       dateBuckets.today,
@@ -871,6 +895,10 @@ export function SidebarActivityView({
       earlierOpen,
       earlierRows.visible,
       groupMode,
+      model.working,
+      workingSectionExpanded,
+      workingSectionContainer,
+      onToggleWorkingSection,
       pagedProjectGroups,
       pinnedOpen,
       priorityThreads,
@@ -983,6 +1011,7 @@ export function SidebarActivityView({
   // section has rows — a feed with nothing active but a populated Pinned or Done
   // section is not empty.
   const isEmpty =
+    model.working.length === 0 &&
     model.active.length === 0 &&
     model.settled.length === 0 &&
     model.drafts.length === 0 &&
@@ -1166,6 +1195,18 @@ export function SidebarActivityView({
         renderThreadRow={(thread) => renderRow(thread, false)}
         onVisibleThreadIdsChange={setSnoozedVisibleThreadIds}
       />
+      {workingSectionContainer && onToggleWorkingSection
+        ? createPortal(
+            <SidebarWorkingSection
+              count={model.working.length}
+              open={workingSectionExpanded}
+              onToggle={onToggleWorkingSection}
+            >
+              {model.working.map(renderActiveRow)}
+            </SidebarWorkingSection>,
+            workingSectionContainer,
+          )
+        : null}
     </div>
   );
 }
