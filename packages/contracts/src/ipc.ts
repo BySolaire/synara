@@ -1058,6 +1058,10 @@ export interface DesktopBridge {
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
+  /** Synara Canary only: rebuilds and restarts from the tracked ref (`canary:update`). */
+  canary?: {
+    update: () => Promise<{ accepted: boolean; message: string | null }>;
+  };
   /** Stable→Beta opt-in surface. Absent on builds that do not ship it. */
   beta?: {
     getState: () => Promise<DesktopBetaChannelState>;

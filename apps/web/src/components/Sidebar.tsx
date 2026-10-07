@@ -325,6 +325,7 @@ import { useFeedbackDialogStore } from "../feedbackDialogStore";
 import { openExternalLink } from "~/lib/linkChips";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { toastManager } from "./ui/toast";
+import { CanaryUpdateRailButton } from "./CanaryUpdateRailButton";
 import {
   normalizeSidebarProjectThreadListCwd,
   persistSidebarUiState,
@@ -6496,6 +6497,39 @@ export default function Sidebar() {
     ],
   );
 
+  const [updatingCanary, setUpdatingCanary] = useState(false);
+  const handleCanaryUpdateClick = useCallback(async () => {
+    const canary = window.desktopBridge?.canary;
+    const api = readNativeApi();
+    if (!canary || !api || updatingCanary) return;
+    const confirmed = await api.dialogs.confirm(
+      [
+        "Update Synara Canary to the latest commit?",
+        "Canary will close, rebuild (a few minutes), then reopen. Running chats will stop.",
+      ].join("\n"),
+    );
+    if (!confirmed) return;
+    setUpdatingCanary(true);
+    persistAppStateNow();
+    try {
+      const result = await canary.update();
+      if (result.accepted) return;
+      setUpdatingCanary(false);
+      toastManager.add({
+        type: "error",
+        title: "Could not update Canary",
+        description: result.message ?? "An unexpected error occurred.",
+      });
+    } catch (error) {
+      setUpdatingCanary(false);
+      toastManager.add({
+        type: "error",
+        title: "Could not update Canary",
+        description: error instanceof Error ? error.message : "An unexpected error occurred.",
+      });
+    }
+  }, [updatingCanary]);
+
   const handleDesktopUpdateButtonClick = useCallback(() => {
     const bridge = window.desktopBridge;
     if (!bridge || !desktopUpdateState) return;
@@ -7021,6 +7055,12 @@ export default function Sidebar() {
           />
         ) : null}
         <SidebarHelpMenu inRail {...sidebarHelpMenuProps} />
+        {isElectron && desktopUpdateState?.flavor === "canary" && window.desktopBridge?.canary ? (
+          <CanaryUpdateRailButton
+            updating={updatingCanary}
+            onClick={() => void handleCanaryUpdateClick()}
+          />
+        ) : null}
         {showDesktopUpdateButton && desktopUpdateState ? (
           <DesktopUpdateRailButton
             state={desktopUpdateState}

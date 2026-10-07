@@ -5463,6 +5463,40 @@ function registerIpcHandlers(): void {
     } satisfies DesktopUpdateActionResult;
   });
 
+  ipcMain.removeHandler(IPC.canaryUpdate);
+  ipcMain.handle(IPC.canaryUpdate, async () => {
+    if (desktopFlavor !== "canary") {
+      return { accepted: false, message: "Canary updates are only available in Synara Canary." };
+    }
+    // The script stops this app mid-run, so it must outlive us: detached, with its output in
+    // the Canary log. A failed build restores and restarts the previous commit by itself.
+    const logPath = Path.join(BASE_DIR, "canary.log");
+    let logDescriptor: number | null = null;
+    try {
+      FS.mkdirSync(BASE_DIR, { recursive: true });
+      logDescriptor = FS.openSync(logPath, "a", 0o600);
+      FS.writeSync(
+        logDescriptor,
+        `\n[${new Date().toISOString()}] Update requested from the app\n`,
+      );
+      const child = ChildProcess.spawn("bun", ["run", "canary:update"], {
+        cwd: ROOT_DIR,
+        detached: true,
+        stdio: ["ignore", logDescriptor, logDescriptor],
+      });
+      await new Promise<void>((resolve, reject) => {
+        child.once("spawn", () => resolve());
+        child.once("error", reject);
+      });
+      child.unref();
+      return { accepted: true, message: null };
+    } catch (error) {
+      return { accepted: false, message: formatErrorMessage(error) };
+    } finally {
+      if (logDescriptor !== null) FS.closeSync(logDescriptor);
+    }
+  });
+
   ipcMain.removeHandler(IPC.notificationsIsSupported);
   ipcMain.handle(IPC.notificationsIsSupported, async () => Notification.isSupported());
 

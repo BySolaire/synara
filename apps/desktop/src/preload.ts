@@ -272,6 +272,9 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   checkForUpdates: () => ipcRenderer.invoke(IPC.updateCheck),
   downloadUpdate: () => ipcRenderer.invoke(IPC.updateDownload),
   installUpdate: () => ipcRenderer.invoke(IPC.updateInstall),
+  canary: {
+    update: () => ipcRenderer.invoke(IPC.canaryUpdate),
+  },
   onUpdateState: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {
       if (typeof state !== "object" || state === null) return;
