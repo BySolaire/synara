@@ -72,6 +72,8 @@ describe("canary tooling", () => {
     const app = `${source}/apps/desktop/.electron-runtime/Synara Canary.app/Contents/MacOS/Electron`;
     const pattern = new RegExp(canaryAppCommandPattern(source), "u");
     expect(pattern.test(`${app} ${source}/apps/desktop/dist-electron/main.js`)).toBe(true);
+    // macOS reopens the bundle itself without the entry point.
+    expect(pattern.test(app)).toBe(true);
     // The app stops its own backend; another checkout's app is not Canary.
     expect(
       pattern.test(`${app} --max-old-space-size=8192 ${source}/apps/server/dist/index.mjs`),

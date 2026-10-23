@@ -186,13 +186,15 @@ function escapeExtendedRegex(value: string): string {
  * On macOS the launcher opens the app through LaunchServices, which parents it
  * to launchd in its own process group, so signalling the launcher's group leaves
  * Canary and its backend running. This matches the app's main process by its
- * executable and entry point inside the managed checkout.
+ * executable and entry point inside the managed checkout, or by the bare
+ * executable when macOS reopens the bundle itself (Quit & Reopen after a privacy
+ * grant, the Dock, Finder), which passes no entry point.
  */
 export function canaryAppCommandPattern(source: string): string {
   const desktop = Path.join(source, "apps/desktop");
   const runtime = escapeExtendedRegex(Path.join(desktop, ".electron-runtime"));
   const main = escapeExtendedRegex(Path.join(desktop, "dist-electron/main.js"));
-  return `^${runtime}/[^/]+\\.app/Contents/MacOS/Electron ${main}( |$)`;
+  return `^${runtime}/[^/]+\\.app/Contents/MacOS/Electron( ${main}( |$)|$)`;
 }
 
 function stopCanary(paths: CanaryPaths): void {
