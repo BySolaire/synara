@@ -15669,11 +15669,11 @@ describe("ChatView transcript geometry (full app)", () => {
   );
 
   it.each([
-    { sessionStatus: "ready" as const, sendsMessage: true },
-    { sessionStatus: "running" as const, sendsMessage: false },
+    { sessionStatus: "ready" as const, startBehavior: "start-with-message" },
+    { sessionStatus: "running" as const, startBehavior: undefined },
   ])(
     "sends a new /goal as a visible message only when the thread is idle ($sessionStatus)",
-    async ({ sessionStatus, sendsMessage }) => {
+    async ({ sessionStatus, startBehavior }) => {
       useComposerDraftStore.getState().setPrompt(THREAD_ID, "/goal ship the release");
       const restoreNativeApi = installDeterministicSendNativeApi();
       const mounted = await mountChatView({
@@ -15699,24 +15699,79 @@ describe("ChatView transcript geometry (full app)", () => {
         await vi.waitFor(() => expect(goalUpdateIndex()).toBeGreaterThanOrEqual(0));
         const goalUpdate = readDispatchedCommand(wsRequests[goalUpdateIndex()]!);
         expect(goalUpdate?.goal).toBe("ship the release");
-        // Deferred: the visible message starts the work, not a hidden continuation.
-        expect(goalUpdate?.goalStartBehavior).toBe(sendsMessage ? "defer" : undefined);
-        if (sendsMessage) {
-          await vi.waitFor(() =>
-            expect(wsRequests.map(turnStartText).filter((text) => text !== null)).toEqual([
-              "/goal ship the release",
-            ]),
-          );
-          expect(
-            wsRequests.findIndex((request) => turnStartText(request) !== null),
-          ).toBeGreaterThan(goalUpdateIndex());
-        }
+        // One server command owns persistence, the visible message, and the first turn.
+        expect(goalUpdate?.goalStartBehavior).toBe(startBehavior);
+        expect(wsRequests.map(turnStartText).filter((text) => text !== null)).toEqual([]);
       } finally {
         restoreNativeApi();
         await mounted.cleanup();
       }
     },
   );
+
+  it("preserves a rejected first /goal command for retry", async () => {
+    useComposerDraftStore.getState().setPrompt(THREAD_ID, "/goal ship the release");
+    const restoreNativeApi = installDeterministicSendNativeApi();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-goal-retry" as MessageId,
+        targetText: "goal retry",
+      }),
+    });
+    const api = readNativeApi()!;
+    let rejectGoal = true;
+    const goalCommands: unknown[] = [];
+    Object.defineProperty(window, "nativeApi", {
+      configurable: true,
+      value: {
+        ...api,
+        orchestration: {
+          ...api.orchestration,
+          dispatchCommand: async (
+            command: Parameters<typeof api.orchestration.dispatchCommand>[0],
+          ) => {
+            if (command.type === "thread.meta.update" && command.goal !== undefined) {
+              goalCommands.push(command);
+              if (rejectGoal) throw new Error("Goal was not accepted.");
+            }
+            return api.orchestration.dispatchCommand(command);
+          },
+        },
+      },
+    });
+    try {
+      const form = await waitForElement(
+        () => document.querySelector<HTMLFormElement>('form[data-chat-composer-form="true"]'),
+        "Unable to find composer form.",
+      );
+      form.requestSubmit();
+      await expect.element(page.getByText("Could not update thread goal")).toBeInTheDocument();
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+        "/goal ship the release",
+      );
+      rejectGoal = false;
+      form.requestSubmit();
+      await vi.waitFor(() => expect(goalCommands).toHaveLength(2));
+      expect(goalCommands).toEqual([
+        expect.objectContaining({
+          goal: "ship the release",
+          goalStartBehavior: "start-with-message",
+        }),
+        expect.objectContaining({
+          goal: "ship the release",
+          goalStartBehavior: "start-with-message",
+        }),
+      ]);
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe(""),
+      );
+      expect(wsRequests.map(turnStartText).filter((text) => text !== null)).toEqual([]);
+    } finally {
+      restoreNativeApi();
+      await mounted.cleanup();
+    }
+  });
 
   it("activates Debug with /debug and returns to Default from the badge and /default", async () => {
     const mounted = await mountChatView({

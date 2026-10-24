@@ -915,8 +915,8 @@ export function useComposerSlashCommands(input: {
       }
       if (slashInvocation.command === "goal") {
         const goalAction = parseGoalSlashCommandArgs(slashInvocation.args);
-        // A new goal on an idle thread starts work at once: send `/goal …` as the
-        // visible user message instead of letting the server start a hidden turn.
+        // The server accepts the goal, visible message, and first turn together.
+        // Rejected commands leave the composer intact for retry.
         if (
           goalAction.action === "set" &&
           isServerThread &&
@@ -924,11 +924,10 @@ export function useComposerSlashCommands(input: {
           activeThread?.session?.activeTurnId == null &&
           interactionMode !== "plan"
         ) {
-          if (await persistThreadGoal(goalAction.goal, { startBehavior: "defer" })) {
+          if (await persistThreadGoal(goalAction.goal, { startBehavior: "start-with-message" })) {
+            editorActions.clearComposerSlashDraft();
             toastManager.add({ type: "success", title: "Thread goal updated" });
-            return false;
           }
-          editorActions.clearComposerSlashDraft();
           return true;
         }
         editorActions.clearComposerSlashDraft();
