@@ -134,7 +134,8 @@ Wherever a project appears (sidebar rows, pinned rail shortcuts, hover cards, se
 Edit project preview), its glyph is the project's local favicon when one is available, with a folder
 as the fallback. An emoji, icon, or folder color chosen in Edit project takes priority over the
 detected favicon. The folder opens and closes with its sidebar row; a pinned row, or a row showing
-any other glyph, adds a chevron for that state.
+any other glyph, adds a chevron for that state. Detected logos must be image files inside the project;
+links to files outside it are ignored, and logo documents cannot run scripts.
 
 The project picker shows registered projects and local folders. Creating a task worktree does not
 add another project entry. If the current draft already uses an unregistered folder, the picker keeps

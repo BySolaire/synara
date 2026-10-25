@@ -736,9 +736,9 @@ export const projectFaviconEffectRouteLayer = HttpRouter.add(
       sizeBytes: Number(fileInfo.size),
       headers: {
         "Cache-Control": PROJECT_FAVICON_CACHE_CONTROL,
-        ...(nodePath.extname(faviconPath).toLowerCase() === ".svg"
-          ? SVG_DOCUMENT_SECURITY_HEADERS
-          : {}),
+        // Repository-controlled bytes must stay inert even on direct navigation
+        // or when the file contents do not match their image extension.
+        ...SVG_DOCUMENT_SECURITY_HEADERS,
       },
     });
   }).pipe(Effect.catchTag("AuthError", (error) => Effect.succeed(authErrorResponse(error)))),

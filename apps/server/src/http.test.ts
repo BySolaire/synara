@@ -799,6 +799,76 @@ describe("production Effect HTTP routes", () => {
     );
   });
 
+  it.each(["html declaration", "icon symlink", "declaration symlink", "app symlink"])(
+    "does not serve unsafe project logo content: %s",
+    async (scenario) => {
+      const projectCwd = makeTempDir("synara-effect-favicon-boundary-");
+      const outsideCwd = makeTempDir("synara-effect-favicon-outside-");
+      const marker = "outside project marker";
+      if (scenario === "html declaration") {
+        writeFileSync(
+          path.join(projectCwd, "index.html"),
+          '<link rel="icon" href="/payload.html">',
+        );
+        writeFileSync(path.join(projectCwd, "payload.html"), "<!doctype html><p>inert html</p>");
+      } else if (scenario === "icon symlink") {
+        const outsideIcon = path.join(outsideCwd, "favicon.svg");
+        writeFileSync(outsideIcon, marker);
+        symlinkSync(outsideIcon, path.join(projectCwd, "favicon.svg"));
+      } else if (scenario === "declaration symlink") {
+        const outsideSource = path.join(outsideCwd, "index.html");
+        writeFileSync(outsideSource, '<link rel="icon" href="/logo.svg">');
+        writeFileSync(path.join(projectCwd, "logo.svg"), "<svg>inert logo</svg>");
+        symlinkSync(outsideSource, path.join(projectCwd, "index.html"));
+      } else {
+        mkdirSync(path.join(outsideCwd, "public"));
+        writeFileSync(path.join(outsideCwd, "public", "favicon.svg"), marker);
+        symlinkSync(outsideCwd, path.join(projectCwd, "dashboard"), "dir");
+      }
+      const resolver = await Effect.runPromise(
+        makeProjectFaviconResolver.pipe(Effect.provide(NodeServices.layer)),
+      );
+      await withEffectServer(makeConfig(), { kind: "favicon", resolver }, async (origin) => {
+        const response = await fetch(
+          `${origin}/api/project-favicon?cwd=${encodeURIComponent(projectCwd)}&fallback=none`,
+        );
+        expect(response.status).toBe(204);
+        await expect(response.text()).resolves.toBe("");
+      });
+    },
+  );
+
+  it.each(["svg", "png", "ico"])(
+    "serves only sandboxed image responses through an in-project link: %s",
+    async (extension) => {
+      const projectCwd = makeTempDir("synara-effect-favicon-image-");
+      const projectLink = path.join(makeTempDir("synara-effect-favicon-alias-"), "project");
+      symlinkSync(projectCwd, projectLink, "dir");
+      const iconPath = path.join(projectCwd, `brand.${extension}`);
+      const logo =
+        extension === "svg" ? '<svg xmlns="http://www.w3.org/2000/svg"/>' : "image bytes";
+      writeFileSync(iconPath, logo);
+      symlinkSync(iconPath, path.join(projectCwd, `favicon.${extension}`));
+      const resolver = await Effect.runPromise(
+        makeProjectFaviconResolver.pipe(Effect.provide(NodeServices.layer)),
+      );
+      await withEffectServer(makeConfig(), { kind: "favicon", resolver }, async (origin) => {
+        const response = await fetch(
+          `${origin}/api/project-favicon?cwd=${encodeURIComponent(projectLink)}&fallback=none`,
+        );
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toMatch(/^image\//);
+        expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+        const policy = response.headers.get("content-security-policy");
+        expect(policy).toContain("sandbox");
+        expect(policy).toContain("default-src 'none'");
+        expect(policy).not.toContain("allow-scripts");
+        expect(policy).not.toContain("allow-same-origin");
+        await expect(response.text()).resolves.toBe(logo);
+      });
+    },
+  );
+
   it.each([
     { host: "0.0.0.0", allowInsecureRemote: true },
     { publicUrl: new URL("https://synara.example.test/") },
