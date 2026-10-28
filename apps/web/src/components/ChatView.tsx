@@ -273,6 +273,7 @@ import {
   resolveDefaultEnvironmentPanelOpen,
   resolveDraftFallbackModelSelection,
   resolveEnvironmentPanelOpen,
+  resolveComposerHighlightedItemId,
   resolveEnvironmentPanelPreferenceUpdate,
   resolveEnvironmentPanelVisible,
   resolveGitRepoUiState,
@@ -3664,17 +3665,22 @@ export default function ChatView({
     activeThread?.id,
   ]);
 
+  const resolvedComposerHighlightedItemId = useMemo(
+    () =>
+      resolveComposerHighlightedItemId({
+        menuOpen: composerMenuOpen,
+        highlightedItemId: composerHighlightedItemId,
+        items: composerMenuItems,
+      }),
+    [composerHighlightedItemId, composerMenuItems, composerMenuOpen],
+  );
   useEffect(() => {
-    if (!composerMenuOpen) {
-      setComposerHighlightedItemId(null);
-      return;
+    // Menu arrays can change without changing the highlight. Depend on the resolved
+    // primitive so these commits do not schedule redundant state updates.
+    if (resolvedComposerHighlightedItemId !== composerHighlightedItemId) {
+      setComposerHighlightedItemId(resolvedComposerHighlightedItemId);
     }
-    setComposerHighlightedItemId((existing) =>
-      existing && composerMenuItems.some((item) => item.id === existing)
-        ? existing
-        : (composerMenuItems[0]?.id ?? null),
-    );
-  }, [setComposerHighlightedItemId, composerMenuItems, composerMenuOpen]);
+  }, [composerHighlightedItemId, resolvedComposerHighlightedItemId, setComposerHighlightedItemId]);
 
   useEffect(() => {
     // Async setState (post-paint) keeps this thread-change reset out of the
